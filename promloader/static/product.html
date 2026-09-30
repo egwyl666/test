@@ -54,11 +54,11 @@
             </div>
             <div data-lang-block="ru">
               <label class="field"><span>Название</span><input name="name" maxlength="255" placeholder="Например: Кроссовки Nike Air Max 90 белые"></label>
-              <label class="field"><span>Описание <span class="muted">(пустая строка — новый абзац, HTML тоже можно)</span></span><textarea name="description" rows="8"></textarea></label>
+              <div class="field"><span class="field-label">Описание</span><textarea name="description" rows="12"></textarea></div>
             </div>
             <div data-lang-block="ua" class="hidden">
               <label class="field"><span>Назва</span><input name="name_ua" maxlength="255"></label>
-              <label class="field"><span>Опис</span><textarea name="description_ua" rows="8"></textarea></label>
+              <div class="field"><span class="field-label">Опис</span><textarea name="description_ua" rows="12"></textarea></div>
             </div>
           </div>
 
@@ -141,6 +141,7 @@
 
   <script src="/static/common.js"></script>
   <script src="/static/preview.js"></script>
+  <script src="/static/richtext.js"></script>
   <script src="/static/product.js"></script>
 </body>
 </html>

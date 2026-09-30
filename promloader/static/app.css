@@ -308,3 +308,30 @@ table.rules .handle { cursor: grab; color: var(--muted); text-align: center; wid
 .ai-loading::before { content: ""; width: 16px; height: 16px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 640px) { .ai-result .ai-cols { grid-template-columns: 1fr; } }
+
+/* ---------- редактор описания ---------- */
+.field-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+div.field { margin-bottom: 14px; }
+.rt { border: 1px solid var(--line); border-radius: 8px; background: #fff; overflow: hidden; }
+.rt:focus-within { border-color: var(--accent); outline: 2px solid var(--accent-soft); }
+.rt-toolbar { display: flex; flex-wrap: wrap; gap: 2px; padding: 5px; border-bottom: 1px solid var(--line); background: #fafafb; align-items: center; }
+.rt-toolbar button { border: 1px solid transparent; background: none; border-radius: 6px; padding: 4px 8px; font: inherit; font-size: 13px; cursor: pointer; color: var(--text); min-width: 30px; }
+.rt-toolbar button:hover:not(:disabled) { background: #fff; border-color: var(--line); }
+.rt-toolbar button.on { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.rt-toolbar button:disabled { opacity: .35; cursor: default; }
+.rt-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.rt-spacer { flex: 1; }
+.rt-area { min-height: 220px; max-height: 520px; overflow: auto; padding: 10px 12px; line-height: 1.55; outline: none; font-size: 14px; }
+.rt-area:empty::before { content: attr(data-placeholder); color: #a8adb5; }
+.rt-area p { margin: 0 0 8px; }
+.rt-area h3 { font-size: 16px; margin: 12px 0 6px; }
+.rt-area ul, .rt-area ol { margin: 0 0 8px; padding-left: 22px; }
+.rt-area table { border-collapse: collapse; margin: 4px 0 10px; }
+.rt-area td, .rt-area th { border: 1px solid var(--line); padding: 4px 10px; }
+.rt-area img { max-width: 100%; }
+.rt-source { border: none !important; border-radius: 0 !important; min-height: 220px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; outline: none !important; }
+.rt-foot { display: flex; gap: 10px; padding: 4px 12px 6px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--line); background: #fafafb; min-height: 24px; }
+.rt-foot .warn { color: var(--warn); }
+.pp .desc h3 { font-size: 16px; margin: 14px 0 6px; }
+.pp .desc table { border-collapse: collapse; margin: 6px 0; }
+.pp .desc td, .pp .desc th { border-bottom: 1px dotted #ddd; padding: 6px 14px 6px 0; }

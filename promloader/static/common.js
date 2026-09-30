@@ -80,24 +80,28 @@ function formatDate(iso) {
 const ALLOWED_TAGS = new Set(["P", "BR", "B", "STRONG", "I", "EM", "U", "UL", "OL", "LI", "H2", "H3", "H4", "TABLE", "TBODY", "THEAD", "TR", "TD", "TH", "SPAN", "DIV", "A", "IMG"]);
 const ALLOWED_ATTRS = { A: ["href"], IMG: ["src", "alt"] };
 
+// Эти теги удаляются вместе с содержимым; остальные неразрешённые — «разворачиваются» (остаётся текст).
+const DROP_TAGS = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "XML", "META", "TITLE", "HEAD", "LINK",
+  "NOSCRIPT", "TEMPLATE", "SVG", "MATH", "FORM", "INPUT", "BUTTON", "SELECT", "TEXTAREA"]);
+
 function sanitizeHtml(html) {
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
-  const walk = (node) => {
-    for (const child of Array.from(node.children)) {
-      if (!ALLOWED_TAGS.has(child.tagName)) {
-        if (["SCRIPT", "STYLE", "IFRAME", "OBJECT"].includes(child.tagName)) child.remove();
-        else child.replaceWith(...child.childNodes);
-        continue;
-      }
+  const clean = (node) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === Node.COMMENT_NODE) { child.remove(); continue; }
+      if (child.nodeType !== Node.ELEMENT_NODE) continue;
+      const tag = child.tagName.toUpperCase();
+      if (DROP_TAGS.has(tag)) { child.remove(); continue; }
+      clean(child);  // сначала вглубь: иначе вложенное в развёрнутый тег не проверится
+      if (!ALLOWED_TAGS.has(tag)) { child.replaceWith(...child.childNodes); continue; }
       for (const attr of Array.from(child.attributes)) {
-        const ok = (ALLOWED_ATTRS[child.tagName] || []).includes(attr.name) && !/^\s*javascript:/i.test(attr.value);
+        const ok = (ALLOWED_ATTRS[tag] || []).includes(attr.name) && !/^\s*(javascript|vbscript):/i.test(attr.value);
         if (!ok) child.removeAttribute(attr.name);
       }
-      walk(child);
     }
   };
   const root = doc.body.firstChild;
-  walk(root);
+  clean(root);
   return root.innerHTML;
 }
 

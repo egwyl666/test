@@ -17,6 +17,12 @@ const state = {
 };
 
 const form = $("#form");
+const richEditors = ["description", "description_ua"].map((name) => createRichText(form.elements[name], {
+  getParams: readParams,
+  placeholder: name === "description"
+    ? "Опишите товар: для чего он, чем хорош, размеры, материал, комплектация. Кнопки сверху — для жирного текста, списков и таблицы характеристик."
+    : "Опис українською — або натисніть «Перевести на украинский» в ИИ-помощнике",
+}));
 const backupKey = () => `promloader:draft:${state.id || "new"}`;
 
 // ---------- резервная копия в браузере ----------
@@ -221,7 +227,7 @@ function renderSupplier(p) {
   if (lockable) {
     for (const field of locked) {
       const input = form.elements[field];
-      const target = input && input.closest ? input.closest("label.field")?.querySelector("span") : $(`[data-lock=${field}]`);
+      const target = input && input.closest ? input.closest(".field")?.querySelector("span") : $(`[data-lock=${field}]`);
       if (!target) continue;
       const b = document.createElement("button");
       b.type = "button";
@@ -482,7 +488,7 @@ document.addEventListener("paste", (e) => {
     return;
   }
   const text = e.clipboardData?.getData("text") || "";
-  const inField = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName);
+  const inField = ["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   if (!inField && /^https?:\/\/\S+\.(jpe?g|png|gif|webp)(\?\S*)?$/i.test(text.trim())) {
     e.preventDefault();
     addImageUrl(text.trim());
