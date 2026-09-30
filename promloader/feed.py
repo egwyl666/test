@@ -77,6 +77,8 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
         for img in products.image_rows(p["id"])[: products.MAX_IMAGES]:
             _sub(offer, "picture", products.image_src(img, base_url))
         _sub(offer, "vendorCode", p["external_id"])
+        if p.get("barcode"):
+            _sub(offer, "barcode", p["barcode"])
         if p["vendor"]:
             _sub(offer, "vendor", p["vendor"])
         if p["country"]:

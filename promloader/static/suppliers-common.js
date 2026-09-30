@@ -10,7 +10,8 @@ function runSummary(stats) {
   if (!stats || stats.total === undefined) return "";
   const parts = [
     ["created", "новых"], ["updated", "изменено"], ["price_changed", "цен изменилось"], ["missing", "пропало"],
-    ["returned", "вернулось"], ["errors", "с ошибками"], ["queued", "отправлено на Prom"],
+    ["returned", "вернулось"], ["joined", "объединено с другими поставщиками"], ["errors", "с ошибками"],
+    ["queued", "отправлено на Prom"],
   ].filter(([k]) => stats[k]).map(([k, label]) => `${label}: ${stats[k]}`);
   return parts.join(" · ") || "без изменений";
 }

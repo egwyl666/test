@@ -219,7 +219,7 @@ function renderSupplier(p) {
     box.innerHTML = `Товар поставщика <a href="/supplier?id=${p.supplier.id}"><b>${esc(p.supplier.name)}</b></a>.
       ${p.supplier.missing ? "<b>Сейчас его нет в прайсе поставщика.</b> " : ""}
       Цена и наличие обновляются из прайса. Поля, которые вы поменяли руками, помечены <span class="lock" style="cursor:default">🔒 своё</span> —
-      поставщик их не перезапишет.`;
+      поставщик их не перезапишет.${renderOffers(p)}`;
   }
   // значки у полей
   $$(".lock[data-field]").forEach((b) => b.remove());
@@ -253,6 +253,18 @@ function renderSupplier(p) {
   } else {
     margin.textContent = "";
   }
+}
+
+function renderOffers(p) {
+  if (!p.offers || p.offers.length < 2) return "";
+  const presence = (o) => o.missing ? "нет в прайсе" : (META.presence[o.presence] || o.presence);
+  return `<div style="margin-top:8px"><b>Этот товар есть у нескольких поставщиков</b> — описание и фото от
+    «${esc(p.supplier.name)}», цена и наличие — от самого дешёвого, у кого он есть:
+    <table class="offers">${p.offers.map((o) => `<tr class="${o.active ? "active" : ""}">
+      <td>${o.active ? "✓ " : ""}${esc(o.supplier_name)}</td>
+      <td>закупка ${esc(formatPrice(o.cost_price ?? o.price, p.currency))}</td>
+      <td>${esc(presence(o))}${o.quantity != null ? `, ${o.quantity} шт.` : ""}</td>
+      <td class="muted">${esc(o.sku)}</td></tr>`).join("")}</table></div>`;
 }
 
 async function unlockField(field) {

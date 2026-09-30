@@ -25,7 +25,7 @@ STATUSES = {
 
 TEXT_FIELDS = (
     "external_id", "name", "name_ua", "description", "description_ua", "currency",
-    "unit", "presence", "group_name", "vendor", "country", "keywords",
+    "unit", "presence", "group_name", "vendor", "country", "keywords", "barcode",
 )
 NUMBER_FIELDS = ("price", "old_price", "cost_price", "rrp")
 INT_FIELDS = ("quantity",)
@@ -158,6 +158,7 @@ def get(product_id: int) -> dict:
     p = _row_to_dict(row)
     p["images"] = [{"id": i["id"], "src": image_src(i), "external": bool(i["url"])} for i in image_rows(product_id)]
     p["check"] = validate(p)
+    p["offers"] = offers(product_id)
     p["supplier"] = None
     if p["supplier_id"]:
         s = db.query_one("SELECT id, name FROM suppliers WHERE id = ?", (p["supplier_id"],))
@@ -165,6 +166,41 @@ def get(product_id: int) -> dict:
         if s:
             p["supplier"] = {"id": s["id"], "name": s["name"], "missing": bool(item and item["missing"])}
     return p
+
+
+COMMERCIAL = ("price", "old_price", "cost_price", "rrp", "presence", "quantity", "currency")
+
+
+def choose_offer(items: list[dict]) -> dict | None:
+    """Лучшее предложение: самая низкая закупка среди тех, у кого товар есть; иначе — среди оставшихся в прайсах."""
+    def cost(i):
+        d = i["data"]
+        value = d.get("cost_price") if d.get("cost_price") is not None else d.get("price")
+        return float("inf") if value is None else value
+
+    live = [i for i in items if not i["missing"]]
+    in_stock = [i for i in live if i["data"].get("presence", "available") != "not_available"]
+    pool = in_stock or live
+    return min(pool, key=lambda i: (cost(i), i["supplier_id"])) if pool else None
+
+
+def offer_items(product_id: int) -> list[dict]:
+    rows = db.query("""SELECT si.supplier_id, si.sku, si.missing, si.data, s.name AS supplier_name
+                       FROM supplier_items si JOIN suppliers s ON s.id = si.supplier_id
+                       WHERE si.product_id = ? ORDER BY si.supplier_id""", (product_id,))
+    return [{**dict(r), "data": json.loads(r["data"])["data"]} for r in rows]
+
+
+def offers(product_id: int) -> list[dict]:
+    """Предложения поставщиков по товару (для карточки)."""
+    items = offer_items(product_id)
+    best = choose_offer(items)
+    return [{
+        "supplier_id": i["supplier_id"], "supplier_name": i["supplier_name"], "sku": i["sku"],
+        "cost_price": i["data"].get("cost_price"), "price": i["data"].get("price"), "rrp": i["data"].get("rrp"),
+        "presence": i["data"].get("presence", "available"), "quantity": i["data"].get("quantity"),
+        "missing": bool(i["missing"]), "active": best is not None and i is best,
+    } for i in items]
 
 
 def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier_id: int | None = None) -> dict:

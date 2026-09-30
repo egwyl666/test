@@ -362,3 +362,7 @@ div.field { margin-bottom: 14px; }
 .modal { position: fixed; inset: 0; background: rgba(20, 20, 30, .45); z-index: 150; display: flex; align-items: center; justify-content: center; padding: 16px; }
 .modal-box { background: #fff; border-radius: 12px; padding: 22px; width: 520px; max-width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
 .modal-box h2 { margin-top: 0; }
+
+table.offers { border-collapse: collapse; margin-top: 6px; font-size: 13px; }
+table.offers td { padding: 3px 12px 3px 0; }
+table.offers tr.active td { font-weight: 600; color: var(--accent); }

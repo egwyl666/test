@@ -21,6 +21,7 @@ from . import products
 TARGETS = {
     "": "— не импортировать —",
     "external_id": "Артикул / код",
+    "barcode": "Штрихкод (EAN) — для объединения поставщиков",
     "name": "Название",
     "name_ua": "Название (укр.)",
     "price": "Цена (розничная)",
@@ -48,6 +49,7 @@ HINTS = [
     ("old_price", r"стар\w* цен|цена до|стара ціна|old.?price"),
     ("cost_price", r"закуп|вход|опт|дроп|drop|cost|purchase|собіварт|себестоим"),
     ("rrp", r"ррц|rrp|рекоменд|роздр|розн"),
+    ("barcode", r"штрих|barcode|^ean|gtin"),
     ("external_id", r"^@id$|артикул|vendor.?code|код|sku|external|ідентиф|идентиф|^id$"),
     ("name", r"назв|наимен|товар|name"),
     ("price", r"цен|ціна|price|стоим|вартість"),

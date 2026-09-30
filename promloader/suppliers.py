@@ -27,10 +27,10 @@ NEW_STATUSES = ("draft", "ready")
 # поля товара, которыми управляет прайс поставщика
 SYNC_FIELDS = (
     "name", "name_ua", "description", "description_ua", "price", "old_price", "cost_price", "rrp", "currency",
-    "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords",
+    "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords", "barcode",
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
-            "missing_action", "auto_sync", "interval_hours")
+            "missing_action", "auto_sync", "interval_hours", "merge_by_barcode")
 
 BROKEN_FEED_MIN = 20       # защита включается, если у поставщика было хотя бы столько товаров
 BROKEN_FEED_RATIO = 0.5    # ...и в новом прайсе осталось меньше этой доли
@@ -60,6 +60,7 @@ def _parse(row) -> dict:
     s["mapping"] = json.loads(s["mapping"] or "{}")
     s["defaults"] = json.loads(s["defaults"] or "{}")
     s["auto_sync"] = bool(s["auto_sync"])
+    s["merge_by_barcode"] = bool(s.get("merge_by_barcode", 1))
     s["running"] = s["id"] in _running
     return s
 
@@ -128,7 +129,7 @@ def update(supplier_id: int, data: dict) -> dict:
             value = max(0, int(value or 0))
         elif key == "interval_hours":
             value = max(0.0, float(value or 0))
-        elif key == "auto_sync":
+        elif key in ("auto_sync", "merge_by_barcode"):
             value = 1 if value else 0
         elif key == "new_status" and value not in NEW_STATUSES:
             raise SupplierError("Статус новых товаров: draft или ready")
@@ -155,7 +156,12 @@ def delete(supplier_id: int) -> None:
     """Поставщик удаляется, его товары остаются как обычные (без привязки)."""
     row = _row(supplier_id)
     with db.tx() as c:
-        c.execute("UPDATE products SET supplier_id = NULL, locked_fields = '[]' WHERE supplier_id = ?", (supplier_id,))
+        c.execute("""UPDATE products SET supplier_id = (
+                         SELECT si.supplier_id FROM supplier_items si
+                         WHERE si.product_id = products.id AND si.supplier_id != ? ORDER BY si.supplier_id LIMIT 1)
+                     WHERE supplier_id = ?""", (supplier_id, supplier_id))
+        c.execute("UPDATE products SET locked_fields = '[]' WHERE supplier_id IS NULL AND locked_fields != '[]' "
+                  "AND id IN (SELECT product_id FROM supplier_items WHERE supplier_id = ?)", (supplier_id,))
         c.execute("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
     if row["source_file"]:
         (db.suppliers_dir() / row["source_file"]).unlink(missing_ok=True)
@@ -256,8 +262,32 @@ def _item_fields(item: dict) -> dict:
     return fields
 
 
+def recompute_offer(c, product_id: int, pricer: pricing.Pricer) -> bool:
+    """Цена и наличие товара с несколькими поставщиками — по лучшему предложению. True, если товар изменился."""
+    rows = c.execute("SELECT supplier_id, sku, missing, data FROM supplier_items WHERE product_id = ?", (product_id,)).fetchall()
+    if len(rows) < 2:
+        return False
+    items = [{"supplier_id": r["supplier_id"], "missing": r["missing"], "data": json.loads(r["data"])["data"]} for r in rows]
+    product = c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    best = products.choose_offer(items)
+    if best is None:
+        target = {"presence": "not_available", "quantity": 0 if product["quantity"] is not None else None}
+    else:
+        data = dict(best["data"])
+        data["group_name"] = product["group_name"]
+        pricer.apply(data, best["supplier_id"])
+        target = {k: data[k] for k in products.COMMERCIAL if k in data}
+        if not any(not i["missing"] and i["data"].get("presence", "available") != "not_available" for i in items):
+            target["presence"] = "not_available"
+    locked = set(json.loads(product["locked_fields"] or "[]"))
+    updates = {k: v for k, v in target.items() if (k not in locked or k in ("presence", "quantity")) and product[k] != v}
+    if updates:
+        products._touch(c, product_id, updates, product["status"])
+    return bool(updates)
+
+
 def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats: dict, changed: list[int],
-               trash: list[str]) -> None:
+               trash: list[str], multi: set[int]) -> None:
     sku = item["data"]["external_id"]
     fields = _item_fields(item)
     urls = item["image_urls"]
@@ -276,6 +306,11 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
                 _sample(stats, f"{sku}: артикул {external_id} уже занят товаром другого поставщика")
                 return
             product = other  # товар уже был (создан руками или импортом) — привязываем его к поставщику
+    if product is None and s["merge_by_barcode"] and fields.get("barcode"):
+        # тот же товар у другого поставщика — добавляем как ещё одно предложение
+        product = c.execute("SELECT * FROM products WHERE barcode = ? ORDER BY id LIMIT 1", (fields["barcode"],)).fetchone()
+        if product is not None:
+            stats["joined"] = stats.get("joined", 0) + 1
 
     if product is None:
         cols = ["external_id", "supplier_id", "status", "created_at", "updated_at"] + list(fields)
@@ -292,6 +327,16 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
         product_id = product["id"]
         locked = set(json.loads(product["locked_fields"] or "[]"))
         returned = bool(existing and existing["missing"])
+        others = c.execute("SELECT COUNT(*) FROM supplier_items WHERE product_id = ? AND NOT (supplier_id = ? AND sku = ?)",
+                           (product_id, s["id"], sku)).fetchone()[0]
+        primary = product["supplier_id"] in (None, s["id"])
+        if not primary:
+            fields = {}  # описание и фото ведёт основной поставщик; цену и наличие считаем по лучшему предложению
+        elif others:
+            fields = {k: v for k, v in fields.items() if k not in products.COMMERCIAL}
+        if others or not primary:
+            multi.add(product_id)
+            returned = False
         updates = {k: v for k, v in fields.items() if k not in locked and product[k] != v}
         if returned:
             # вернулся в прайс: наличие берём от поставщика, даже если его правили руками
@@ -300,9 +345,9 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
                 updates["quantity"] = fields["quantity"]
             updates = {k: v for k, v in updates.items() if product[k] != v}
             stats["returned"] += 1
-        if product["supplier_id"] != s["id"]:
+        if product["supplier_id"] is None:
             updates["supplier_id"] = s["id"]
-        images_changed = (
+        images_changed = primary and (
             "images" not in locked and (urls or files)
             and (existing is None or existing["images_hash"] != img_hash)
         )
@@ -363,11 +408,12 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
 
     ts = db.now()
     changed: list[int] = []
+    multi: set[int] = set()
     for start in range(0, len(valid), CHUNK):
         trash: list[str] = []
         with db.tx() as c:
             for item in valid[start:start + CHUNK]:
-                _apply_one(c, s, item, embedded.get(item["row"], []), ts, run_id, stats, changed, trash)
+                _apply_one(c, s, item, embedded.get(item["row"], []), ts, run_id, stats, changed, trash, multi)
         for name in trash:
             (db.uploads_dir() / name).unlink(missing_ok=True)
 
@@ -378,13 +424,31 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
         for item in gone:
             c.execute("UPDATE supplier_items SET missing = 1 WHERE id = ?", (item["id"],))
             stats["missing"] += 1
-            if s["missing_action"] != "not_available" or not item["product_id"]:
+            if not item["product_id"]:
+                continue
+            other_offers = c.execute("SELECT COUNT(*) FROM supplier_items WHERE product_id = ? AND id != ?",
+                                     (item["product_id"], item["id"])).fetchone()[0]
+            if other_offers:
+                multi.add(item["product_id"])  # у другого поставщика товар может быть — решит пересчёт
+                continue
+            if s["missing_action"] != "not_available":
                 continue
             p = c.execute("SELECT status, presence, quantity FROM products WHERE id = ?", (item["product_id"],)).fetchone()
             if p and (p["presence"] != "not_available" or p["quantity"] not in (None, 0)):
                 qty = 0 if p["quantity"] is not None else None
                 products._touch(c, item["product_id"], {"presence": "not_available", "quantity": qty}, p["status"])
                 changed.append(item["product_id"])
+
+    if multi:
+        pricer = pricing.Pricer()
+        ids = sorted(multi)
+        for start in range(0, len(ids), CHUNK):
+            with db.tx() as c:
+                for pid in ids[start:start + CHUNK]:
+                    if recompute_offer(c, pid, pricer):
+                        changed.append(pid)
+                        stats["price_changed"] += 1
+        stats["multi_offer"] = len(multi)
     return stats, changed
 
 
@@ -461,14 +525,18 @@ def recover() -> None:
 
 def reapply(product_id: int) -> None:
     """После снятия закрепления возвращает данные поставщика в незакреплённые поля."""
-    item = db.query_one("SELECT si.*, p.supplier_id AS psid FROM supplier_items si JOIN products p ON p.id = si.product_id "
-                        "WHERE si.product_id = ?", (product_id,))
+    # данные основного поставщика (того, кто ведёт описание и фото)
+    item = db.query_one("SELECT si.* FROM supplier_items si JOIN products p ON p.id = si.product_id "
+                        "WHERE si.product_id = ? ORDER BY si.supplier_id = p.supplier_id DESC, si.id LIMIT 1", (product_id,))
     if item is None:
         return
+    multi = db.query_one("SELECT COUNT(*) AS n FROM supplier_items WHERE product_id = ?", (product_id,))["n"] > 1
     stored = json.loads(item["data"])
     data = dict(stored["data"])
     pricing.Pricer().apply(data, item["supplier_id"])
     fields = _item_fields({"data": data, "params": stored["params"]})
+    if multi:
+        fields = {k: v for k, v in fields.items() if k not in products.COMMERCIAL}
     trash: list[str] = []
     with db.tx() as c:
         p = c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -484,6 +552,8 @@ def reapply(product_id: int) -> None:
             c.execute("UPDATE supplier_items SET images_hash = '' WHERE id = ?", (item["id"],))
         if updates or images:
             products._touch(c, product_id, updates, p["status"])
+        if multi:
+            recompute_offer(c, product_id, pricing.Pricer())
     for name in trash:
         (db.uploads_dir() / name).unlink(missing_ok=True)
 
@@ -494,10 +564,16 @@ def recalc_prices() -> dict:
     rows = db.query("SELECT id, supplier_id, cost_price, rrp, price, group_name, status, locked_fields FROM products "
                     "WHERE cost_price IS NOT NULL OR rrp IS NOT NULL")
     changed = []
+    multi = {r["product_id"] for r in db.query(
+        "SELECT product_id FROM supplier_items WHERE product_id IS NOT NULL GROUP BY product_id HAVING COUNT(*) > 1")}
     for start in range(0, len(rows), CHUNK):
         with db.tx() as c:
             for p in rows[start:start + CHUNK]:
                 if "price" in json.loads(p["locked_fields"] or "[]"):
+                    continue
+                if p["id"] in multi:  # несколько поставщиков — цена по лучшему предложению и его правилу
+                    if recompute_offer(c, p["id"], pricer):
+                        changed.append(p["id"])
                     continue
                 data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"]}
                 pricer.apply(data, p["supplier_id"])

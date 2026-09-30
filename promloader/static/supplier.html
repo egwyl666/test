@@ -70,6 +70,8 @@
           <select id="new-status"><option value="draft">черновиками — сначала проверю сам</option><option value="ready">сразу «готов к отправке»</option></select></label>
       </div>
       <datalist id="groups"></datalist>
+      <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="merge-barcode">
+        Объединять с товарами других поставщиков по штрихкоду <span class="muted">(если отмечена колонка «Штрихкод»: цена и наличие — от того, у кого дешевле)</span></label>
       <label class="small"><input type="checkbox" id="auto-sync"> Сразу отправлять изменения на Prom
         <span class="muted">(цены и наличие товаров, которые уже на Prom или готовы к отправке)</span></label>
       <div class="toolbar" style="margin:16px 0 0">

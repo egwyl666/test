@@ -19,6 +19,7 @@ function settingsBody() {
     prefix: $("#prefix").value,
     new_status: $("#new-status").value,
     auto_sync: $("#auto-sync").checked,
+    merge_by_barcode: $("#merge-barcode").checked,
     defaults: { group_name: $("#def-group").value, currency: $("#def-currency").value },
   };
   if (gridOpened) Object.assign(body, grid.body());
@@ -39,6 +40,7 @@ function fill(s) {
   $("#prefix").value = s.prefix;
   $("#new-status").value = s.new_status;
   $("#auto-sync").checked = s.auto_sync;
+  $("#merge-barcode").checked = s.merge_by_barcode;
   $("#def-group").value = s.defaults.group_name || "";
   $("#def-currency").value = s.defaults.currency || "UAH";
   $("#products-link").href = `/?supplier=${s.id}`;
