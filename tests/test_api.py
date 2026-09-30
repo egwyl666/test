@@ -181,3 +181,28 @@ def test_import_accepts_xml(client):
     up = client.post("/api/import/upload", files={"file": ("feed.yml", make_yml(BASE))}).json()
     assert up["sheets"] == ["XML"]
     assert client.post("/api/import/upload", files={"file": ("page.xml", b"<!DOCTYPE html><html></html>")}).status_code == 400
+
+
+def test_launcher_helpers(client, monkeypatch):
+    import socket
+
+    from promloader import launcher
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        busy = s.getsockname()[1]
+        s.listen()
+        assert launcher.port_free(busy) is False
+    assert launcher.first_run("/nonexistent-dir")
+
+    # «уже запущен» определяется по ответу /api/meta нашей программы
+    class Resp:
+        def __init__(self, code, text="", headers=None):
+            self.status_code, self.text, self.headers = code, text, headers or {}
+
+    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: Resp(200, client.get("/api/meta").text))
+    assert launcher.running_at(8000)
+    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: Resp(200, "<html>другой сайт</html>"))
+    assert not launcher.running_at(8000)
+    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: Resp(401, "", {"www-authenticate": 'Basic realm="Prom Loader"'}))
+    assert launcher.running_at(8000)

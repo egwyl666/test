@@ -19,6 +19,19 @@
   </header>
 
   <main style="max-width:820px">
+    <div class="panel hidden" id="welcome" style="border:2px solid var(--accent)">
+      <h2>👋 Добро пожаловать в Prom Loader!</h2>
+      <p>Программа работает у вас на компьютере. Пока открыто чёрное окно — она работает; закроете окно — выключится.
+        В следующий раз запускайте её ярлыком <b>«Prom Loader»</b> на рабочем столе.</p>
+      <p style="margin-bottom:6px"><b>С чего начать:</b></p>
+      <ol style="margin-top:0;line-height:1.7">
+        <li>Ниже впишите <b>название магазина</b> — оно видно в превью карточек.</li>
+        <li>Если уже есть <b>API-токен Prom</b> — вставьте его ниже и нажмите «Проверить подключение». Нет токена — можно пока без него: товары создаются и сохраняются, отправить на Prom сможете позже.</li>
+        <li>По желанию подключите <b>ИИ-помощника</b> (бесплатно через Google Gemini) — раздел ниже.</li>
+        <li>Дальше: <a href="/product">создайте первый товар</a>, <a href="/import">загрузите Excel</a> или <a href="/suppliers">добавьте поставщика</a>.</li>
+      </ol>
+      <p class="small muted" style="margin-bottom:0">Подробная инструкция — файл «КАК-ЗАПУСТИТЬ.md» в папке программы.</p>
+    </div>
     <h1>Настройки</h1>
     <form id="form" class="panel" onsubmit="return false">
       <h2>Подключение к Prom.ua</h2>
@@ -195,6 +208,7 @@
       }
     };
 
+    if (new URLSearchParams(location.search).has("welcome")) $("#welcome").classList.remove("hidden");
     api("/api/settings").then(fill).catch((err) => toast(err.message, "error"));
   </script>
 </body>
