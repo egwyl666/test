@@ -376,3 +376,5 @@ table.offers tr.active td { font-weight: 600; color: var(--accent); }
 .order-item img, .order-item .noimg { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; background: var(--bg); }
 .order-item .price { font-weight: 600; white-space: nowrap; }
 @media (max-width: 800px) { .order-grid { grid-template-columns: 1fr; } }
+
+input.invalid, select.invalid { border-color: var(--err); background: var(--err-soft); }

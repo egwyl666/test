@@ -91,7 +91,16 @@ function addParamRow(name = "", value = "", focus = false) {
   if (focus) row.querySelector("input").focus();
 }
 
+function markInvalid(field, message) {
+  const el = form.elements[field];
+  if (!el || !el.classList) return;
+  el.classList.add("invalid");
+  el.title = message;
+}
+
 function changed(field) {
+  const el = form.elements[field];
+  if (el && el.classList) { el.classList.remove("invalid"); el.title = ""; }
   const values = formValues();
   state.pending[field] = values[field];
   writeBackup();
@@ -149,6 +158,15 @@ async function save() {
     } catch (err) {
       // вернуть неотправленное, не затирая то, что ввели за время запроса
       state.pending = { ...payload, ...state.pending };
+      if (err.status === 400 && err.field && err.field in state.pending) {
+        // ошибка в одном поле не должна мешать сохранить остальные
+        delete state.pending[err.field];
+        markInvalid(err.field, err.message);
+        writeBackup();
+        setSaveState("failed", `${err.message} — исправьте поле, остальное сохраняется`);
+        if (Object.keys(state.pending).length) state.retryTimer = setTimeout(() => save().catch(() => {}), 50);
+        throw err;
+      }
       writeBackup();
       if (err.network || err.status >= 500) {
         setSaveState("failed", "Нет связи — изменения сохранены в браузере, повторяю…");
@@ -483,7 +501,8 @@ function bindPhotoDrag() {
   };
 }
 
-onPageFileDrop(uploadFiles, { accept: isImage, text: "Отпустите — фото добавятся к товару" });
+onPageFileDrop(uploadFiles, { accept: isImage, text: "Отпустите — фото добавятся к товару",
+                              rejectText: "это не фото. Подходят JPG, PNG, WEBP, GIF" });
 $("#photo-drop").addEventListener("click", async () => uploadFiles(await pickFiles({ accept: "image/*" })));
 $("#btn-pick").addEventListener("click", async () => uploadFiles(await pickFiles({ accept: "image/*" })));
 $("#btn-url").addEventListener("click", () => {

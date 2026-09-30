@@ -151,7 +151,8 @@ async function quickCreate(files) {
   loadProducts();
 }
 
-onPageFileDrop(quickCreate, { accept: isImage, text: "Отпустите — на каждое фото создастся товар" });
+onPageFileDrop(quickCreate, { accept: isImage, text: "Отпустите — на каждое фото создастся товар",
+                              rejectText: "это не фото. Excel и прайсы загружайте через «Импорт файла»" });
 $("#quick-drop").addEventListener("click", async () => quickCreate(await pickFiles({ accept: "image/*" })));
 
 // ---------- очередь отправки ----------

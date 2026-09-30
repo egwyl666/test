@@ -56,7 +56,12 @@ def label(s: dict) -> str:
 def _validate(data: dict) -> dict:
     out = {}
     if "days" in data:
-        days = sorted({int(d) for d in data["days"]})
+        if not isinstance(data["days"], list):
+            raise ScheduleError("Дни недели передаются списком")
+        try:
+            days = sorted({int(d) for d in data["days"]})
+        except (TypeError, ValueError):
+            raise ScheduleError("Неверный день недели")
         if not days or any(d < 0 or d > 6 for d in days):
             raise ScheduleError("Выберите хотя бы один день недели")
         out["days"] = json.dumps(days)

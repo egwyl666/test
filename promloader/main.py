@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import re
 import json
 import logging
 import os
@@ -191,7 +192,10 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(notify.NotifyError)
 @app.exception_handler(autostart.AutostartError)
 async def user_error(request: Request, exc: Exception):
-    return JSONResponse({"detail": str(exc)}, status_code=400)
+    body = {"detail": str(exc)}
+    if getattr(exc, "field", None):
+        body["field"] = exc.field
+    return JSONResponse(body, status_code=400)
 
 
 @app.exception_handler(KeyError)
@@ -254,7 +258,7 @@ async def meta():
 async def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier: str = ""):
     """supplier: '' — все, 'none' — без поставщика, число — товары поставщика."""
     supplier_id = 0 if supplier == "none" else (int(supplier) if supplier.isdigit() else None)
-    return products.list_products(status, q, min(limit, 1000), offset, supplier_id)
+    return products.list_products(status, q, max(1, min(limit, 1000)), max(0, offset), supplier_id)
 
 
 @app.post("/api/products")
@@ -469,9 +473,16 @@ async def save_settings(data: dict = Body(...)):
     for key in ("gemini_model", "claude_model"):
         if key in data:
             db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
-    for key in ("public_base_url", "prom_api_base", "shop_name"):
+    for key in ("public_base_url", "prom_api_base"):
         if key in data:
-            db.set_setting(key, str(data[key] or "").strip())
+            url = str(data[key] or "").strip().rstrip("/")
+            if url and not re.match(r"^https?://", url):
+                url = "https://" + url  # «shop.example.com» -> «https://shop.example.com»
+            if url and not re.match(r"^https?://[^\s/]+\.[^\s]+$|^https?://(localhost|127\.0\.0\.1)(:\d+)?(/\S*)?$", url):
+                raise HTTPException(400, f"Не похоже на адрес сайта: {data[key]}")
+            db.set_setting(key, url)
+    if "shop_name" in data:
+        db.set_setting("shop_name", str(data["shop_name"] or "").strip())
     if "import_settings" in data:
         raw = (data["import_settings"] or "").strip()
         if raw:
@@ -593,6 +604,10 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
 
 @app.post("/api/import/{token}/preview")
 async def import_preview(token: str, body: dict = Body(...)):
+    return await asyncio.to_thread(_import_preview, token, body)
+
+
+def _import_preview(token: str, body: dict) -> dict:
     items, _ = _build(token, body)
     for item in items:
         eid = item["data"].get("external_id")
@@ -602,6 +617,10 @@ async def import_preview(token: str, body: dict = Body(...)):
 
 @app.post("/api/import/{token}/commit")
 async def import_commit(token: str, body: dict = Body(...)):
+    return await asyncio.to_thread(_import_commit, token, body)  # большой импорт не подвешивает интерфейс
+
+
+def _import_commit(token: str, body: dict) -> dict:
     items, images = _build(token, body)
     embedded = images if body.get("use_embedded_images", True) else {}
     status = body.get("status") if body.get("status") in ("draft", "ready") else "draft"
@@ -880,7 +899,7 @@ async def ai_bulk_revert(job_id: int):
 
 @app.get("/api/orders")
 async def list_orders(status: str = "", limit: int = 100, offset: int = 0):
-    return {**orders.list_orders(status, min(limit, 500), offset), "statuses": orders.STATUSES,
+    return {**orders.list_orders(status, max(1, min(limit, 500)), max(0, offset)), "statuses": orders.STATUSES,
             "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS, "enabled": orders.enabled()}
 
 

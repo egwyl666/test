@@ -83,7 +83,7 @@ def _cell_text(value) -> str:
         return value.strftime("%Y-%m-%d %H:%M") if value.time() != datetime.min.time() else value.strftime("%Y-%m-%d")
     if isinstance(value, date):
         return value.isoformat()
-    return str(value).strip()
+    return products.clean_text(value).strip()
 
 
 def _read_csv(path: Path) -> list[list[str]]:
@@ -289,7 +289,10 @@ def build_products(
             continue
         if target not in TARGETS and not target.startswith("param:"):
             raise ImportError_(f"Неизвестное поле «{target}»")
-        idx = openpyxl.utils.column_index_from_string(letter) - 1
+        try:
+            idx = openpyxl.utils.column_index_from_string(str(letter).upper()) - 1
+        except ValueError:
+            raise ImportError_(f"Неверное обозначение колонки «{letter}»")
         if target == "param":
             header = headers[idx] if idx < len(headers) else ""
             if header.lower().startswith("param:"):

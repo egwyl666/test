@@ -39,12 +39,23 @@ KEEP_FORMATS = {"JPEG": "jpg", "PNG": "png", "GIF": "gif"}
 
 
 class ProductError(ValueError):
-    pass
+    def __init__(self, message: str, field: str | None = None):
+        super().__init__(message)
+        self.field = field
 
 
 # ---------- нормализация ----------
 
 _num_junk = re.compile(r"[^\d,.\-]")
+_sci = re.compile(r"^[+-]?\d+(?:[.,]\d+)?[eE][+-]?\d+$")
+_currency_words = re.compile(r"грн\.?|uah|usd|eur|руб\.?|₴|\$|€", re.I)
+# символы, недопустимые в XML (из-за них Prom отклонит весь файл импорта); \x0b — перенос строки из Excel
+_xml_bad = re.compile("[\x00-\x08\x0c\x0e-\x1f\ufffe\uffff]")
+
+
+def clean_text(value) -> str:
+    """Убирает невидимые управляющие символы; перенос строки Excel (Alt+Enter) превращает в обычный."""
+    return _xml_bad.sub("", str(value).replace("\x0b", "\n"))
 
 
 def parse_number(value) -> float | None:
@@ -56,6 +67,13 @@ def parse_number(value) -> float | None:
     original = str(value).strip()
     if original in {"", "-", "—", "–"}:
         return None
+    if _sci.match(original):  # 1,2E+03 — так Excel иногда сохраняет числа в CSV
+        number = float(original.replace(",", "."))
+        if number != number or abs(number) > 1e12:
+            raise ProductError(f"Не похоже на число: {value!r}")
+        return number
+    if re.search(r"[A-Za-zА-Яа-яЁёІіЇїЄє∞]", _currency_words.sub("", original)):
+        raise ProductError(f"Не похоже на число: {value!r}")
     text = _num_junk.sub("", original.replace(" ", ""))
     if not any(ch.isdigit() for ch in text):
         raise ProductError(f"Не похоже на число: {value!r}")
@@ -97,11 +115,20 @@ def parse_presence(value) -> str | None:
 
 def parse_params(value) -> list[dict]:
     if isinstance(value, str):
-        value = json.loads(value or "[]")
+        try:
+            value = json.loads(value or "[]")
+        except ValueError:
+            raise ProductError("Характеристики переданы в неверном формате")
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProductError("Характеристики должны быть списком «название — значение»")
     params = []
-    for item in value or []:
-        name = str(item.get("name", "")).strip()
-        val = str(item.get("value", "")).strip()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(item.get("name", "")).strip()
+        val = clean_text(item.get("value", "")).strip()
         if name or val:
             params.append({"name": name, "value": val})
     return params
@@ -113,14 +140,19 @@ def normalize(data: dict) -> dict:
     for key, value in data.items():
         if key not in EDITABLE:
             continue
-        if key in TEXT_FIELDS:
-            out[key] = "" if value is None else str(value).strip()
-        elif key in NUMBER_FIELDS:
-            out[key] = parse_number(value)
-        elif key in INT_FIELDS:
-            out[key] = parse_int(value)
-        elif key == "params":
-            out[key] = json.dumps(parse_params(value), ensure_ascii=False)
+        try:
+            if key in TEXT_FIELDS:
+                out[key] = "" if value is None else clean_text(value).strip()
+            elif key in NUMBER_FIELDS:
+                out[key] = parse_number(value)
+            elif key in INT_FIELDS:
+                out[key] = parse_int(value)
+            elif key == "params":
+                out[key] = json.dumps(parse_params(value), ensure_ascii=False)
+            if key == "presence":
+                out[key] = parse_presence(out[key]) or "available"
+        except ProductError as exc:
+            raise ProductError(str(exc), field=key)  # интерфейс подсветит именно это поле
     if "presence" in out:
         out["presence"] = parse_presence(out["presence"]) or "available"
     if "currency" in out:

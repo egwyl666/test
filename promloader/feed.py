@@ -33,8 +33,8 @@ def category_id(group_name: str) -> str:
 
 
 def _sub(parent, tag, text, **attrs):
-    el = ET.SubElement(parent, tag, attrs)
-    el.text = text
+    el = ET.SubElement(parent, tag, {k: products.clean_text(v) for k, v in attrs.items()})
+    el.text = None if text is None else products.clean_text(text)
     return el
 
 

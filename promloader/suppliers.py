@@ -126,9 +126,15 @@ def update(supplier_id: int, data: dict) -> dict:
                 raise SupplierError(f"{key}: ожидается объект")
             value = json.dumps(value, ensure_ascii=False)
         elif key == "header_row":
-            value = max(0, int(value or 0))
+            try:
+                value = max(0, int(value or 0))
+            except (TypeError, ValueError):
+                raise SupplierError("Строка с заголовками — это номер строки, например 1")
         elif key == "interval_hours":
-            value = max(0.0, float(value or 0))
+            try:
+                value = max(0.0, float(value or 0))
+            except (TypeError, ValueError):
+                raise SupplierError("Интервал обновления — число часов")
         elif key in ("auto_sync", "merge_by_barcode"):
             value = 1 if value else 0
         elif key == "new_status" and value not in NEW_STATUSES:

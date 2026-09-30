@@ -40,8 +40,15 @@ def list_rules() -> list[dict]:
 
 def save_rules(rules: list[dict]) -> list[dict]:
     """Полная замена списка правил (порядок = приоритет)."""
+    if not isinstance(rules, list):
+        raise ValueError("правила должны быть списком")
+    known = {r["id"] for r in db.query("SELECT id FROM suppliers")}
     clean = []
     for i, r in enumerate(rules):
+        if not isinstance(r, dict):
+            raise ValueError("неверный формат правила")
+        if r.get("supplier_id") not in (None, "") and int(r["supplier_id"]) not in known:
+            raise ValueError("поставщик из правила не найден — обновите страницу")
         rounding = r.get("rounding") or "none"
         if rounding not in ROUNDING:
             raise ValueError(f"Неизвестное округление: {rounding}")

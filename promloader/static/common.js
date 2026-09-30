@@ -25,6 +25,7 @@ async function api(path, options = {}) {
     if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
     const err = new Error(typeof detail === "string" && detail ? detail : `Ошибка ${response.status}`);
     err.status = response.status;
+    err.field = body && body.field;
     throw err;
   }
   return body;
@@ -185,7 +186,8 @@ function initNav() {
 }
 
 // Перетаскивание файлов на всю страницу.
-function onPageFileDrop(handler, { accept = (f) => true, text = "Отпустите, чтобы добавить" } = {}) {
+function onPageFileDrop(handler, { accept = (f) => true, text = "Отпустите, чтобы добавить",
+                                   rejectText = "Этот файл сюда не подходит" } = {}) {
   let depth = 0;
   let overlay = null;
   const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
@@ -210,7 +212,10 @@ function onPageFileDrop(handler, { accept = (f) => true, text = "Отпусти�
     e.preventDefault();
     depth = 0;
     if (overlay) { overlay.remove(); overlay = null; }
-    const files = Array.from(e.dataTransfer.files).filter(accept);
+    const all = Array.from(e.dataTransfer.files);
+    const files = all.filter(accept);
+    const rejected = all.filter((f) => !accept(f));
+    if (rejected.length) toast(`${rejected.map((f) => `«${f.name}»`).join(", ")}: ${rejectText}`, "error");
     if (files.length) handler(files);
   });
 }
