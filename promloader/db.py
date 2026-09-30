@@ -144,6 +144,10 @@ MIGRATIONS = {
         "supplier_id": "INTEGER REFERENCES suppliers(id) ON DELETE SET NULL",
         "locked_fields": "TEXT NOT NULL DEFAULT '[]'",
         "prom_id": "INTEGER",
+        "pending_fields": "TEXT NOT NULL DEFAULT '[]'",
+    },
+    "sync_jobs": {
+        "kind": "TEXT NOT NULL DEFAULT 'import'",
     },
 }
 

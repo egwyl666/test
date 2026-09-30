@@ -205,6 +205,10 @@ async function loadJobs() {
 }
 
 function summarizeResult(r) {
+  if (r.mode === "quick") {
+    const errs = Object.keys(r.errors || {}).length;
+    return `быстрое обновление цен и наличия${errs ? `, с ошибками: ${errs}` : ""}`;
+  }
   const parts = [];
   for (const [key, label] of [["imported", "импортировано"], ["created", "создано"], ["updated", "обновлено"], ["not_changed", "без изменений"], ["with_errors_count", "с ошибками"]]) {
     if (r[key]) parts.push(`${label}: ${r[key]}`);

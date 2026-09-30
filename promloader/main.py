@@ -359,6 +359,8 @@ def _settings_view() -> dict:
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
         "auto_update": config.get("auto_update") != "0",
         "photo_tunnel": config.get("photo_tunnel") != "0",
+        "quick_updates": db.get_setting("quick_updates") != "0",
+        "quick_updates_error": db.get_setting("quick_updates_error"),
         "github_token": config.mask(config.get("github_token")),
         "update_repo": config.get("update_repo") or updater.DEFAULT_REPO,
         "version": updater.current_version(),
@@ -376,6 +378,10 @@ async def get_settings():
 async def save_settings(data: dict = Body(...)):
     if data.get("prom_token"):
         db.set_setting("prom_token", data["prom_token"].strip())
+    if "quick_updates" in data:
+        db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
+        if data["quick_updates"]:
+            db.set_setting("quick_updates_error", "")
     if "photo_tunnel" in data:
         db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
     if "auto_update" in data:

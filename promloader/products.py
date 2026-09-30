@@ -300,9 +300,21 @@ def unlock(product_id: int, names: list[str]) -> None:
         c.execute("UPDATE products SET locked_fields = ? WHERE id = ?", (json.dumps(locked), product_id))
 
 
+NOT_TRACKED = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields"}
+
+
 def _touch(c, product_id: int, fields: dict, status: str) -> None:
-    """Любое изменение поднимает ревизию. Уже выгруженный товар снова ждёт отправки."""
+    """Любое изменение поднимает ревизию. Уже выгруженный товар снова ждёт отправки.
+
+    Запоминаем, какие поля поменялись с последней отправки: если только цена/наличие —
+    хватит быстрого обновления вместо полного импорта. Пустой fields — это изменение фото.
+    """
     fields = dict(fields)
+    changed = [f for f in fields if f not in NOT_TRACKED] or (["images"] if not fields else [])
+    if changed:
+        row = c.execute("SELECT pending_fields FROM products WHERE id = ?", (product_id,)).fetchone()
+        pending = set(json.loads(row["pending_fields"] or "[]")) if row else set()
+        fields["pending_fields"] = json.dumps(sorted(pending | set(changed)))
     if status in ("synced", "error", "sending"):
         fields["status"] = "ready"
     sets = ", ".join(f"{k} = ?" for k in fields)

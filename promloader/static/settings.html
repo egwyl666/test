@@ -159,6 +159,9 @@
         <textarea name="import_settings" id="import-settings" rows="6" style="font-family:monospace;font-size:13px"></textarea>
       </label>
       <label class="field"><span>Адрес API</span><input id="api-base" name="prom_api_base"></label>
+      <label class="small" style="display:block;margin-bottom:12px"><input type="checkbox" id="quick-updates">
+        Быстрое обновление цен и наличия (если у товара на Prom поменялись только цена, наличие или количество)
+        <span class="err-text" id="quick-error"></span></label>
       <button class="btn" id="save-adv">Сохранить</button>
     </div>
   </main>
@@ -207,7 +210,8 @@
       save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value,
              photo_tunnel: $("#photo-tunnel").checked });
     };
-    $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value });
+    $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value,
+                                          quick_updates: $("#quick-updates").checked });
     $("#new-key").onclick = () => {
       if (confirm("Старая ссылка перестанет работать — её нужно будет заменить в кабинете Prom. Продолжить?")) {
         save({ regenerate_feed_key: true });
@@ -265,6 +269,9 @@
     function fillUpdates(s) {
       $("#version").textContent = s.version;
       $("#photo-tunnel").checked = s.photo_tunnel;
+      $("#quick-updates").checked = s.quick_updates;
+      $("#quick-error").textContent = !s.quick_updates && s.quick_updates_error
+        ? `Выключено автоматически: Prom не принял быстрый запрос (${s.quick_updates_error}). Товары отправляются обычным импортом.` : "";
       $("#auto-update").checked = s.auto_update;
       $("#github-token").value = "";
       $("#github-state").textContent = s.github_token ? `(сейчас: ${s.github_token})` : "(не задан)";

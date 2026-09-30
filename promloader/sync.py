@@ -53,16 +53,43 @@ def enqueue(product_ids: list[int]) -> dict:
 
     job_id = None
     if accepted:
+        quick_ids = {pid for pid in accepted if _quick_ok(int(pid))}
+        groups = [("quick", {k: v for k, v in accepted.items() if k in quick_ids}),
+                  ("import", {k: v for k, v in accepted.items() if k not in quick_ids})]
         ts = db.now()
         with db.tx() as c:
             for pid in accepted:
                 c.execute("UPDATE products SET status = 'sending', last_error = '' WHERE id = ?", (int(pid),))
-            cur = c.execute(
-                "INSERT INTO sync_jobs (status, products, next_run_at, created_at, updated_at) VALUES ('pending', ?, ?, ?, ?)",
-                (json.dumps(accepted), ts, ts, ts),
-            )
-            job_id = cur.lastrowid
+            for kind, group in groups:
+                if not group:
+                    continue
+                cur = c.execute(
+                    "INSERT INTO sync_jobs (status, kind, products, next_run_at, created_at, updated_at) "
+                    "VALUES ('pending', ?, ?, ?, ?, ?)",
+                    (kind, json.dumps(group), ts, ts, ts),
+                )
+                job_id = cur.lastrowid
     return {"job_id": job_id, "accepted": len(accepted), "rejected": rejected}
+
+
+# Поля, изменение которых можно передать быстрым запросом (закупка/РРЦ на Prom не уходят вовсе).
+QUICK_FIELDS = {"price", "presence", "quantity", "cost_price", "rrp"}
+QUICK_CHUNK = 100
+
+
+def quick_enabled() -> bool:
+    return db.get_setting("quick_updates") != "0"
+
+
+def _quick_ok(product_id: int) -> bool:
+    """Товар уже на Prom и с тех пор поменялись только цена/наличие/количество."""
+    if not quick_enabled():
+        return False
+    row = db.query_one("SELECT synced_at, pending_fields FROM products WHERE id = ?", (product_id,))
+    if row is None or not row["synced_at"]:
+        return False
+    pending = set(json.loads(row["pending_fields"] or "[]"))
+    return bool(pending) and pending <= QUICK_FIELDS
 
 
 def list_jobs(limit: int = 20) -> list[dict]:
@@ -110,7 +137,8 @@ def _finish_products(job_products: dict, ok: bool, message: str = "", per_produc
             own_error = per_product.get(row["external_id"])
             if ok and not own_error:
                 c.execute(
-                    "UPDATE products SET status = 'synced', last_error = '', synced_at = ? WHERE id = ?", (ts, int(pid))
+                    "UPDATE products SET status = 'synced', last_error = '', synced_at = ?, pending_fields = '[]' "
+                    "WHERE id = ?", (ts, int(pid))
                 )
             else:
                 c.execute(
@@ -167,7 +195,58 @@ async def _photo_base_url(product_ids: list[int]) -> str:
         raise PromError(str(exc), retryable=True)
 
 
+def _quick_items(ids: list[int]) -> list[dict]:
+    marks = ",".join("?" * len(ids))
+    rows = db.query(f"SELECT external_id, price, presence, quantity FROM products WHERE id IN ({marks})", ids)
+    items = []
+    for r in rows:
+        item = {"id": r["external_id"], "price": r["price"], "presence": r["presence"]}
+        if r["quantity"] is not None:
+            item["quantity_in_stock"] = r["quantity"]
+        items.append(item)
+    return items
+
+
+def _quick_errors(body: dict) -> dict:
+    errors = body.get("errors") or {}
+    if isinstance(errors, dict):
+        return {str(k): str(v) for k, v in errors.items()}
+    found = {}
+    for item in errors if isinstance(errors, list) else []:
+        if isinstance(item, dict):
+            key = item.get("id") or item.get("external_id")
+            if key is not None:
+                found[str(key)] = str(item.get("message") or item.get("error") or item)
+    return found
+
+
+async def _start_quick(job: dict, client: PromClient) -> None:
+    """Быстрое обновление цены/наличия через /products/edit_by_external_id (пачками по 100)."""
+    job_products = json.loads(job["products"])
+    ids = [int(pid) for pid in job_products]
+    errors, processed = {}, 0
+    try:
+        for start in range(0, len(ids), QUICK_CHUNK):
+            body = await client.edit_by_external_id(_quick_items(ids[start:start + QUICK_CHUNK]))
+            errors.update(_quick_errors(body if isinstance(body, dict) else {}))
+            processed += len(body.get("processed_ids") or []) if isinstance(body, dict) else 0
+    except PromError as err:
+        if err.retryable:
+            raise
+        # Prom не принял формат быстрого запроса — выключаем быстрый способ и отправляем обычным импортом
+        log.warning("Быстрое обновление отклонено Prom (%s) — переключаюсь на обычный импорт", err)
+        db.set_setting("quick_updates", "0")
+        db.set_setting("quick_updates_error", str(err))
+        _update_job(job["id"], kind="import", attempts=0, last_error="", next_run_at=db.now())
+        return
+    result = {"mode": "quick", "processed": processed, "errors": errors}
+    _update_job(job["id"], status="done", result=json.dumps(result, ensure_ascii=False))
+    _finish_products(job_products, ok=True, per_product=errors)
+
+
 async def _start(job: dict, client: PromClient) -> None:
+    if job.get("kind") == "quick":
+        return await _start_quick(job, client)
     job_products = json.loads(job["products"])
     ids = [int(pid) for pid in job_products]
     content = feed.build(ids, await _photo_base_url(ids))
