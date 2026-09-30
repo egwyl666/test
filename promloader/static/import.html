@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Импорт из Excel — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/import">Импорт из Excel</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Массовый импорт из Excel</h1>
+    <div class="steps">
+      <span class="step active" data-step="1">1. Файл</span>
+      <span class="step" data-step="2">2. Строки и колонки</span>
+      <span class="step" data-step="3">3. Проверка и импорт</span>
+    </div>
+
+    <!-- шаг 1 -->
+    <section id="step1" class="panel">
+      <div class="dropzone" id="file-drop" style="padding:50px">
+        <b style="font-size:17px">Перетащите сюда файл Excel (.xlsx) или CSV</b><br>
+        или нажмите, чтобы выбрать<br><br>
+        <span class="small">Ссылки на фото можно указать в колонке (через запятую или с новой строки).
+        Картинки, вставленные прямо в ячейки Excel, тоже подхватятся.</span>
+      </div>
+    </section>
+
+    <!-- шаг 2 -->
+    <section id="step2" class="panel hidden">
+      <div class="import-options">
+        <label class="field" style="margin:0"><span>Файл</span><input id="filename" disabled></label>
+        <label class="field" style="margin:0"><span>Лист</span><select id="sheet"></select></label>
+        <label class="field" style="margin:0"><span>Строка с заголовками (0 — нет)</span><input id="header-row" type="number" min="0" value="1"></label>
+        <label class="field" style="margin:0"><span>Какие строки импортировать</span><input id="rows-spec" placeholder="например: 2-50, 55, 60-"></label>
+      </div>
+      <div class="import-options">
+        <label class="field" style="margin:0"><span>Группа для всех (если нет колонки)</span><input id="def-group" list="groups"></label>
+        <label class="field" style="margin:0"><span>Наличие по умолчанию</span><select id="def-presence"><option value="">— из файла / по количеству —</option></select></label>
+        <label class="field" style="margin:0"><span>Валюта по умолчанию</span><select id="def-currency"><option>UAH</option><option>USD</option><option>EUR</option></select></label>
+        <label class="small" id="embedded-wrap" style="margin-bottom:10px"><input type="checkbox" id="use-embedded" checked> <span id="embedded-label"></span></label>
+      </div>
+      <datalist id="groups"></datalist>
+      <p class="small muted" style="margin:0 0 10px">
+        Над каждой колонкой выберите, что в ней лежит. Отметьте строки галочками (Shift+клик — диапазон) или впишите диапазон выше.
+        <span id="rows-info"></span>
+      </p>
+      <div class="grid-wrap"><table class="grid" id="grid"></table></div>
+      <div class="toolbar" style="margin:14px 0 0">
+        <button class="btn" id="back-1">← Другой файл</button>
+        <span class="spacer"></span>
+        <span class="small muted" id="selected-info"></span>
+        <button class="btn primary" id="to-3">Проверить →</button>
+      </div>
+    </section>
+
+    <!-- шаг 3 -->
+    <section id="step3" class="hidden">
+      <div class="panel">
+        <div class="summary" id="summary"></div>
+        <div class="toolbar" style="margin:0">
+          <label class="small"><input type="radio" name="status" value="draft" checked> сохранить как черновики</label>
+          <label class="small"><input type="radio" name="status" value="ready"> сразу «готов к отправке»</label>
+          <label class="small"><input type="checkbox" id="update-existing" checked> обновлять товары с тем же артикулом</label>
+          <label class="small"><input type="checkbox" id="only-bad"> показать только с ошибками</label>
+          <span class="spacer"></span>
+          <button class="btn" id="back-2">← Назад</button>
+          <button class="btn primary" id="commit">Импортировать</button>
+        </div>
+      </div>
+      <div class="panel" id="result" style="display:none"></div>
+      <div style="margin-top:16px" class="preview-grid" id="preview"></div>
+    </section>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/preview.js"></script>
+  <script src="/static/import.js"></script>
+</body>
+</html>

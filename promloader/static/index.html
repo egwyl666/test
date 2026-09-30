@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Товары — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/import">Импорт из Excel</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+    <div class="right">
+      <a class="btn primary" href="/product">+ Новый товар</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="panel" id="jobs-panel" style="margin-bottom:16px">
+      <div class="toolbar" style="margin-bottom:6px">
+        <h2 style="margin:0">Отправка на Prom</h2>
+        <span class="spacer"></span>
+        <span class="small muted" id="jobs-hint"></span>
+      </div>
+      <div class="jobs" id="jobs"><div class="muted small">Пока ничего не отправлялось.</div></div>
+    </div>
+
+    <div class="panel">
+      <div class="toolbar">
+        <div class="chips" id="chips"></div>
+        <span class="spacer"></span>
+        <input id="search" placeholder="Поиск: название, артикул, группа" style="max-width:300px">
+      </div>
+      <div class="toolbar" id="bulk">
+        <label class="small"><input type="checkbox" id="check-all"> выбрать все</label>
+        <span class="small muted" id="selected-count"></span>
+        <span class="spacer"></span>
+        <button class="btn primary" data-action="send" disabled>Отправить на Prom</button>
+        <button class="btn" data-action="ready" disabled>Пометить «готов»</button>
+        <button class="btn" data-action="draft" disabled>В черновики</button>
+        <button class="btn danger" data-action="delete" disabled>Удалить</button>
+      </div>
+      <div class="dropzone" id="quick-drop" style="margin-bottom:14px">
+        <b>Быстрое создание:</b> перетащите сюда фото — на каждое фото создастся черновик товара
+        <span class="small">(название возьмётся из имени файла, дальше заполните цену и описание)</span>
+      </div>
+      <table class="list">
+        <thead>
+          <tr>
+            <th style="width:32px"></th>
+            <th style="width:64px"></th>
+            <th>Товар</th>
+            <th class="hide-sm">Группа</th>
+            <th>Цена</th>
+            <th class="hide-sm">Наличие</th>
+            <th>Статус</th>
+            <th class="hide-sm">Изменён</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div id="empty" class="empty-state hidden">
+        <p>Товаров пока нет.</p>
+        <p><a class="btn primary" href="/product">Создать товар</a> &nbsp; <a class="btn" href="/import">Импорт из Excel</a></p>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/list.js"></script>
+</body>
+</html>

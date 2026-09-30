@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Товар — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/import">Импорт из Excel</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="editor-head">
+      <a href="/" class="btn small">← К списку</a>
+      <h1 id="title">Новый товар</h1>
+      <span id="status"></span>
+      <span id="save-state" class="save-state"></span>
+      <span style="flex:1"></span>
+      <button class="btn" id="btn-duplicate" disabled>Дублировать</button>
+      <button class="btn danger" id="btn-delete" disabled>Удалить</button>
+      <button class="btn primary" id="btn-send" disabled>Отправить на Prom</button>
+    </div>
+
+    <div class="editor">
+      <div>
+        <form id="form" autocomplete="off" onsubmit="return false">
+          <div class="panel">
+            <h2>Фото</h2>
+            <div class="photos" id="photos"></div>
+            <div class="dropzone" id="photo-drop">
+              <b>Перетащите фото сюда</b> или в любое место окна<br>
+              <span class="small">можно вставить из буфера (Ctrl+V) · до 10 фото · первое — главное, порядок меняется перетаскиванием</span>
+            </div>
+            <div class="toolbar" style="margin:10px 0 0">
+              <button type="button" class="btn small" id="btn-pick">Выбрать файлы</button>
+              <button type="button" class="btn small" id="btn-url">Добавить по ссылке</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="lang-tabs" id="lang-tabs">
+              <button type="button" data-lang="ru" class="active">Русский</button>
+              <button type="button" data-lang="ua">Українська</button>
+            </div>
+            <div data-lang-block="ru">
+              <label class="field"><span>Название</span><input name="name" maxlength="255" placeholder="Например: Кроссовки Nike Air Max 90 белые"></label>
+              <label class="field"><span>Описание <span class="muted">(пустая строка — новый абзац, HTML тоже можно)</span></span><textarea name="description" rows="8"></textarea></label>
+            </div>
+            <div data-lang-block="ua" class="hidden">
+              <label class="field"><span>Назва</span><input name="name_ua" maxlength="255"></label>
+              <label class="field"><span>Опис</span><textarea name="description_ua" rows="8"></textarea></label>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2>Цена и наличие</h2>
+            <div class="row">
+              <label class="field"><span>Цена</span><input name="price" inputmode="decimal" placeholder="0"></label>
+              <label class="field"><span>Старая цена (для скидки)</span><input name="old_price" inputmode="decimal"></label>
+              <label class="field narrow"><span>Валюта</span>
+                <select name="currency"><option>UAH</option><option>USD</option><option>EUR</option></select>
+              </label>
+            </div>
+            <div class="row">
+              <label class="field"><span>Наличие</span><select name="presence" id="presence"></select></label>
+              <label class="field"><span>Количество</span><input name="quantity" inputmode="numeric"></label>
+              <label class="field narrow"><span>Ед. изм.</span><input name="unit" list="units"></label>
+            </div>
+            <datalist id="units"><option>шт.</option><option>упаковка</option><option>комплект</option><option>пара</option><option>м</option><option>кг</option><option>л</option></datalist>
+          </div>
+
+          <div class="panel">
+            <h2>Каталог</h2>
+            <div class="row">
+              <label class="field"><span>Группа</span><input name="group_name" list="groups" placeholder="Например: Кроссовки"></label>
+              <label class="field"><span>Артикул / код</span><input name="external_id" placeholder="создастся автоматически"></label>
+            </div>
+            <datalist id="groups"></datalist>
+            <div class="row">
+              <label class="field"><span>Производитель</span><input name="vendor"></label>
+              <label class="field"><span>Страна</span><input name="country"></label>
+            </div>
+            <label class="field"><span>Ключевые слова (через запятую — для поиска на Prom)</span><input name="keywords"></label>
+          </div>
+
+          <div class="panel params">
+            <h2>Характеристики</h2>
+            <div id="params"></div>
+            <button type="button" class="btn small" id="btn-add-param">+ Добавить характеристику</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="preview-col">
+        <div class="panel" style="margin-bottom:16px">
+          <h2>Проверка перед отправкой</h2>
+          <ul class="check-list" id="check"></ul>
+          <div id="last-error" class="err-text"></div>
+        </div>
+        <div class="preview-tabs">
+          <button type="button" data-view="page" class="active">Страница товара</button>
+          <button type="button" data-view="tile">В каталоге</button>
+          <div class="lang lang-tabs" id="preview-lang" style="margin:0">
+            <button type="button" data-lang="ru" class="active">RU</button>
+            <button type="button" data-lang="ua">UA</button>
+          </div>
+        </div>
+        <div id="preview"></div>
+        <p class="small muted">Превью приблизительное: итоговое оформление определяет Prom.</p>
+      </div>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/preview.js"></script>
+  <script src="/static/product.js"></script>
+</body>
+</html>

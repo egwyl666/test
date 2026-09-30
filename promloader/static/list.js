@@ -1,0 +1,192 @@
+// Список товаров, массовые действия и очередь отправки.
+
+const list = { status: "", q: "", items: [], selected: new Set() };
+
+async function loadProducts() {
+  const params = new URLSearchParams({ status: list.status, q: list.q, limit: 500 });
+  const data = await api(`/api/products?${params}`);
+  list.items = data.items;
+  const ids = new Set(data.items.map((p) => p.id));
+  list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
+  renderChips(data.counts);
+  renderRows();
+}
+
+function renderChips(counts) {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const chips = [["", "Все", total], ...Object.entries(META.statuses).map(([k, v]) => [k, v, counts[k] || 0])];
+  $("#chips").innerHTML = chips
+    .filter(([k, , n]) => !k || n)
+    .map(([k, label, n]) => `<button class="chip ${k === list.status ? "active" : ""}" data-status="${k}">${esc(label)}<b>${n}</b></button>`)
+    .join("");
+  $$("#chips .chip").forEach((c) => c.addEventListener("click", () => {
+    list.status = c.dataset.status;
+    loadProducts();
+  }));
+}
+
+function renderRows() {
+  const tbody = $("#rows");
+  $("#empty").classList.toggle("hidden", list.items.length > 0 || list.status !== "" || list.q !== "");
+  tbody.innerHTML = list.items.map((p) => {
+    const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.join(" · "))}</div>` : "";
+    const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
+    return `
+    <tr class="item" data-id="${p.id}">
+      <td><input type="checkbox" class="sel" ${list.selected.has(p.id) ? "checked" : ""}></td>
+      <td>${p.thumb ? `<img class="thumb" src="${esc(p.thumb)}" alt="" loading="lazy">` : `<div class="thumb empty">▢</div>`}</td>
+      <td>
+        <div class="name">${esc(p.name) || '<span class="muted">Без названия</span>'}</div>
+        <div class="small muted">${esc(p.external_id)} · фото: ${p.image_count}</div>
+        ${problems}${promError}
+      </td>
+      <td class="hide-sm">${esc(p.group_name)}</td>
+      <td class="price">${esc(formatPrice(p.price, p.currency))}</td>
+      <td class="hide-sm small">${esc(META.presence[p.presence] || "")}${p.quantity !== null ? ` · ${p.quantity}` : ""}</td>
+      <td>${statusBadge(p.status)}</td>
+      <td class="hide-sm small muted">${esc(formatDate(p.updated_at))}</td>
+    </tr>`;
+  }).join("");
+
+  $$("#rows tr.item").forEach((tr) => {
+    const id = Number(tr.dataset.id);
+    tr.addEventListener("click", (e) => {
+      if (e.target.classList.contains("sel")) return;
+      location.href = `/product?id=${id}`;
+    });
+    tr.querySelector(".sel").addEventListener("change", (e) => {
+      if (e.target.checked) list.selected.add(id); else list.selected.delete(id);
+      updateBulk();
+    });
+  });
+  updateBulk();
+}
+
+function updateBulk() {
+  const n = list.selected.size;
+  $("#selected-count").textContent = n ? `выбрано: ${n}` : "";
+  $$("#bulk [data-action]").forEach((b) => (b.disabled = !n));
+  $("#check-all").checked = n > 0 && n === list.items.length;
+}
+
+$("#check-all").addEventListener("change", (e) => {
+  list.selected = e.target.checked ? new Set(list.items.map((p) => p.id)) : new Set();
+  renderRows();
+});
+
+let searchTimer;
+$("#search").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); loadProducts(); }, 250);
+});
+
+$$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () => {
+  const ids = [...list.selected];
+  const action = b.dataset.action;
+  try {
+    if (action === "send") {
+      const res = await api("/api/sync", { method: "POST", json: { ids } });
+      if (res.accepted) toast(`В очереди на Prom: ${res.accepted}`, "ok");
+      if (res.rejected.length) {
+        const first = res.rejected[0];
+        toast(`Не отправлено ${res.rejected.length}: «${first.name || "без названия"}» — ${first.reasons.join("; ")}`, "error");
+      }
+      loadJobs();
+    } else if (action === "delete") {
+      if (!confirm(`Удалить товаров: ${ids.length}? Это нельзя отменить.`)) return;
+      await api("/api/products/delete", { method: "POST", json: { ids } });
+      list.selected.clear();
+    } else {
+      await api("/api/products/status", { method: "POST", json: { ids, status: action } });
+    }
+    loadProducts();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}));
+
+// ---------- быстрое создание из фото ----------
+
+async function quickCreate(files) {
+  files = files.filter(isImage);
+  if (!files.length) return;
+  let done = 0;
+  for (const file of files) {
+    const name = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+    try {
+      const p = await api("/api/products", { method: "POST", json: { name } });
+      const body = new FormData();
+      body.append("files", file);
+      await api(`/api/products/${p.id}/images`, { method: "POST", body });
+      done++;
+    } catch (err) {
+      toast(`${file.name}: ${err.message}`, "error");
+    }
+  }
+  if (done) toast(`Создано черновиков: ${done}`, "ok");
+  loadProducts();
+}
+
+onPageFileDrop(quickCreate, { accept: isImage, text: "Отпустите — на каждое фото создастся товар" });
+$("#quick-drop").addEventListener("click", async () => quickCreate(await pickFiles({ accept: "image/*" })));
+
+// ---------- очередь отправки ----------
+
+const JOB_STATUS = {
+  pending: ["sending", "В очереди"],
+  waiting: ["sending", "Prom обрабатывает"],
+  done: ["synced", "Готово"],
+  failed: ["error", "Ошибка"],
+  retried: ["draft", "Повторена"],
+};
+
+let jobsTimer;
+async function loadJobs() {
+  clearTimeout(jobsTimer);
+  let jobs = [];
+  try { jobs = await api("/api/sync/jobs"); } catch { /* повторим позже */ }
+  const active = jobs.some((j) => j.status === "pending" || j.status === "waiting");
+  $("#jobs-hint").textContent = active ? "обновляется автоматически" : "";
+  if (jobs.length) {
+    $("#jobs").innerHTML = jobs.slice(0, 6).map((j) => {
+      const [cls, label] = JOB_STATUS[j.status] || ["draft", j.status];
+      let msg = j.last_error || "";
+      if (j.status === "done" && j.result) msg = summarizeResult(j.result);
+      if (j.status === "pending" && j.attempts) msg = `попытка ${j.attempts + 1}: ${j.last_error}`;
+      return `<div class="job">
+        <span class="badge ${cls}">${label}</span>
+        <span>#${j.id} · товаров: ${j.count}</span>
+        <span class="msg" title="${esc(msg)}">${esc(msg)}</span>
+        <span class="muted">${esc(formatDate(j.updated_at))}</span>
+        ${j.status === "failed" ? `<button class="btn small" data-retry="${j.id}">Повторить</button>` : ""}
+      </div>`;
+    }).join("");
+    $$("#jobs [data-retry]").forEach((b) => b.addEventListener("click", async () => {
+      try {
+        const res = await api(`/api/sync/jobs/${b.dataset.retry}/retry`, { method: "POST" });
+        toast(`Повторно в очереди: ${res.accepted}`, "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+      loadJobs();
+      loadProducts();
+    }));
+  }
+  if (active) {
+    jobsTimer = setTimeout(() => { loadJobs(); loadProducts(); }, 3000);
+  }
+}
+
+function summarizeResult(r) {
+  const parts = [];
+  for (const [key, label] of [["imported", "импортировано"], ["created", "создано"], ["updated", "обновлено"], ["not_changed", "без изменений"], ["with_errors_count", "с ошибками"]]) {
+    if (r[key]) parts.push(`${label}: ${r[key]}`);
+  }
+  return parts.join(", ") || (r.status ? `статус: ${r.status}` : "");
+}
+
+(async () => {
+  await loadMeta();
+  await loadProducts();
+  loadJobs();
+})();

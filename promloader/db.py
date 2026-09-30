@@ -1,0 +1,142 @@
+"""SQLite-хранилище. Всё, что пользователь ввёл, сразу попадает сюда — Prom лишь получает копию."""
+
+import os
+import sqlite3
+import threading
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS products (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_id     TEXT UNIQUE,
+    name            TEXT NOT NULL DEFAULT '',
+    name_ua         TEXT NOT NULL DEFAULT '',
+    description     TEXT NOT NULL DEFAULT '',
+    description_ua  TEXT NOT NULL DEFAULT '',
+    price           REAL,
+    old_price       REAL,
+    currency        TEXT NOT NULL DEFAULT 'UAH',
+    unit            TEXT NOT NULL DEFAULT 'шт.',
+    quantity        INTEGER,
+    presence        TEXT NOT NULL DEFAULT 'available',
+    group_name      TEXT NOT NULL DEFAULT '',
+    vendor          TEXT NOT NULL DEFAULT '',
+    country         TEXT NOT NULL DEFAULT '',
+    keywords        TEXT NOT NULL DEFAULT '',
+    params          TEXT NOT NULL DEFAULT '[]',
+    status          TEXT NOT NULL DEFAULT 'draft',
+    last_error      TEXT NOT NULL DEFAULT '',
+    revision        INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    synced_at       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS images (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    file        TEXT,
+    url         TEXT,
+    position    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS images_product ON images(product_id, position);
+
+CREATE TABLE IF NOT EXISTS sync_jobs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    status       TEXT NOT NULL,
+    products     TEXT NOT NULL,
+    import_id    TEXT,
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    next_run_at  TEXT NOT NULL,
+    last_error   TEXT NOT NULL DEFAULT '',
+    result       TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+"""
+
+_lock = threading.RLock()
+_conn: sqlite3.Connection | None = None
+_data_dir: Path | None = None
+
+
+def now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def data_dir() -> Path:
+    assert _data_dir is not None, "db.init() не вызван"
+    return _data_dir
+
+
+def uploads_dir() -> Path:
+    return data_dir() / "uploads"
+
+
+def imports_dir() -> Path:
+    return data_dir() / "imports"
+
+
+def init(path: str | os.PathLike | None = None) -> None:
+    """Открывает (или создаёт) базу. Повторный вызов переключает на другой каталог — удобно для тестов."""
+    global _conn, _data_dir
+    base = Path(path or os.environ.get("PROMLOADER_DATA", "data")).resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "uploads").mkdir(exist_ok=True)
+    (base / "imports").mkdir(exist_ok=True)
+    with _lock:
+        if _conn is not None:
+            _conn.close()
+        conn = sqlite3.connect(base / "promloader.sqlite3", check_same_thread=False, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(SCHEMA)
+        _conn = conn
+        _data_dir = base
+
+
+@contextmanager
+def tx():
+    """Транзакция: либо всё записано, либо ничего."""
+    with _lock:
+        assert _conn is not None, "db.init() не вызван"
+        _conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield _conn
+        except BaseException:
+            _conn.execute("ROLLBACK")
+            raise
+        else:
+            _conn.execute("COMMIT")
+
+
+def query(sql: str, params=()) -> list[sqlite3.Row]:
+    with _lock:
+        assert _conn is not None, "db.init() не вызван"
+        return _conn.execute(sql, params).fetchall()
+
+
+def query_one(sql: str, params=()) -> sqlite3.Row | None:
+    rows = query(sql, params)
+    return rows[0] if rows else None
+
+
+def get_setting(key: str, default: str = "") -> str:
+    row = query_one("SELECT value FROM settings WHERE key = ?", (key,))
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with tx() as c:
+        c.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )

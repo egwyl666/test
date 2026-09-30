@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Настройки — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/import">Импорт из Excel</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+  </header>
+
+  <main style="max-width:820px">
+    <h1>Настройки</h1>
+    <form id="form" class="panel" onsubmit="return false">
+      <h2>Подключение к Prom.ua</h2>
+      <label class="field">
+        <span>API-токен <span class="muted" id="token-state"></span></span>
+        <input name="prom_token" type="password" placeholder="вставьте новый токен, чтобы заменить" autocomplete="new-password">
+      </label>
+      <p class="small muted" style="margin-top:-6px">
+        Токен выдаёт Prom (кабинет компании → Настройки → Управление API-токенами, или через менеджера).
+        Нужны права на товары. Токен хранится только на этом сервере.
+      </p>
+      <label class="field">
+        <span>Публичный адрес этого сайта</span>
+        <input name="public_base_url" placeholder="https://loader.example.com">
+      </label>
+      <p class="small muted" style="margin-top:-6px">
+        Prom сам скачивает фото по ссылкам, поэтому загруженные сюда фото должны быть доступны из интернета.
+        Если программа запущена на домашнем компьютере — используйте VPS или туннель (например, Cloudflare Tunnel).
+      </p>
+      <label class="field"><span>Название магазина (для превью)</span><input name="shop_name"></label>
+      <div class="toolbar">
+        <button class="btn primary" id="save">Сохранить</button>
+        <button class="btn" id="check">Проверить подключение</button>
+        <span id="check-result" class="small"></span>
+      </div>
+    </form>
+
+    <div class="panel">
+      <h2>Автоимпорт по ссылке</h2>
+      <p class="small muted">
+        Эту ссылку можно указать в кабинете Prom в разделе импорта «по ссылке» с автообновлением.
+        Тогда Prom сам будет регулярно забирать все товары, кроме черновиков — даже если кнопку «Отправить» никто не нажмёт.
+      </p>
+      <div class="row">
+        <input id="feed-url" readonly>
+        <button class="btn narrow" id="copy-feed" style="flex:0 0 auto">Копировать</button>
+        <button class="btn" id="new-key" style="flex:0 0 auto">Новый ключ</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Дополнительно</h2>
+      <label class="field">
+        <span>Параметры импорта Prom (JSON, передаются в /products/import_file)</span>
+        <textarea name="import_settings" id="import-settings" rows="6" style="font-family:monospace;font-size:13px"></textarea>
+      </label>
+      <label class="field"><span>Адрес API</span><input id="api-base" name="prom_api_base"></label>
+      <button class="btn" id="save-adv">Сохранить</button>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script>
+    let current = {};
+
+    function fill(s) {
+      current = s;
+      const f = $("#form");
+      f.prom_token.value = "";
+      $("#token-state").textContent = s.prom_token_set ? `(сейчас: ${s.prom_token})` : "(не задан)";
+      f.public_base_url.value = s.public_base_url;
+      f.shop_name.value = s.shop_name;
+      $("#import-settings").value = s.import_settings;
+      $("#api-base").value = s.prom_api_base;
+      $("#feed-url").value = s.public_base_url ? s.feed_url : "Сначала укажите публичный адрес сайта";
+      for (const [key, locked] of Object.entries(s.locked)) {
+        const el = document.querySelector(`[name=${key}]`);
+        if (el && locked) { el.disabled = true; el.title = "Задано переменной окружения"; }
+      }
+    }
+
+    async function save(data) {
+      try {
+        fill(await api("/api/settings", { method: "POST", json: data }));
+        toast("Сохранено", "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    }
+
+    $("#save").onclick = () => {
+      const f = $("#form");
+      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value });
+    };
+    $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value });
+    $("#new-key").onclick = () => {
+      if (confirm("Старая ссылка перестанет работать — её нужно будет заменить в кабинете Prom. Продолжить?")) {
+        save({ regenerate_feed_key: true });
+      }
+    };
+    $("#copy-feed").onclick = async () => {
+      try { await navigator.clipboard.writeText($("#feed-url").value); toast("Скопировано", "ok"); }
+      catch { $("#feed-url").select(); }
+    };
+    $("#check").onclick = async () => {
+      const out = $("#check-result");
+      out.textContent = "Проверяю…";
+      out.style.color = "";
+      try {
+        const res = await api("/api/settings/check", { method: "POST" });
+        out.textContent = res.message;
+        out.style.color = res.ok ? "var(--ok)" : "var(--err)";
+      } catch (err) {
+        out.textContent = err.message;
+        out.style.color = "var(--err)";
+      }
+    };
+
+    api("/api/settings").then(fill).catch((err) => toast(err.message, "error"));
+  </script>
+</body>
+</html>
