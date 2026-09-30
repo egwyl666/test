@@ -143,6 +143,7 @@ MIGRATIONS = {
         "rrp": "REAL",
         "supplier_id": "INTEGER REFERENCES suppliers(id) ON DELETE SET NULL",
         "locked_fields": "TEXT NOT NULL DEFAULT '[]'",
+        "prom_id": "INTEGER",
     },
 }
 

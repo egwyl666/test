@@ -15,8 +15,8 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, autostart, backup, config, db, excel, feed, phototunnel, pricing, products, runtime, schedule,
-               suppliers, sync, updater)
+from . import (ai, autostart, backup, config, db, excel, feed, phototunnel, pricing, products, promcatalog, runtime,
+               schedule, suppliers, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -746,3 +746,33 @@ async def resolve_schedule(schedule_id: int, decision: str = Body(..., embed=Tru
 @app.post("/api/autostart")
 async def set_autostart(enabled: bool = Body(..., embed=True)):
     return {"enabled": await asyncio.to_thread(autostart.set_enabled, enabled)}
+
+
+# ---------- каталог с Prom ----------
+
+@app.get("/api/prom/catalog")
+async def prom_catalog_state():
+    return promcatalog.state()
+
+
+@app.post("/api/prom/catalog")
+async def prom_catalog_load():
+    if promcatalog.state().get("running") and promcatalog._lock.locked():
+        raise HTTPException(409, "Каталог уже загружается")
+    if not config.get("prom_token"):
+        raise HTTPException(400, "Сначала укажите API-токен Prom в «Настройках»")
+    task = asyncio.create_task(_catalog_bg())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    await asyncio.sleep(0.05)
+    return promcatalog.state()
+
+
+async def _catalog_bg() -> None:
+    try:
+        await promcatalog.run(sync.make_client)
+    except PromError:
+        pass
+    except Exception as exc:
+        log.exception("Сбой загрузки каталога Prom")
+        promcatalog._set_state(running=False, error=f"Внутренняя ошибка: {exc}")

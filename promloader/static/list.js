@@ -212,8 +212,44 @@ function summarizeResult(r) {
   return parts.join(", ") || (r.status ? `статус: ${r.status}` : "");
 }
 
+// ---------- каталог с Prom ----------
+
+let catalogTimer;
+async function showCatalogState(state) {
+  clearTimeout(catalogTimer);
+  const box = $("#catalog-state");
+  if (!state.running && !state.finished_at) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  if (state.running) {
+    box.innerHTML = `<span class="badge sending">Загружаю каталог с Prom</span> обработано товаров: ${state.seen || 0}…`;
+    catalogTimer = setTimeout(async () => {
+      const next = await api("/api/prom/catalog");
+      if (!next.running) { loadProducts(); loadMeta(); }
+      showCatalogState(next);
+    }, 1500);
+  } else if (state.error) {
+    box.innerHTML = `<span class="badge error">Каталог не загружен</span> ${esc(state.error)}`;
+  } else {
+    const warn = state.no_external_id
+      ? `<div class="err-text" style="color:var(--warn)">У ${state.no_external_id} товаров в кабинете Prom нет «внешнего ID». Перед массовой отправкой
+         из программы проверьте на одном таком товаре, что Prom обновил его, а не создал копию.</div>` : "";
+    box.innerHTML = `<span class="badge synced">Каталог загружен</span> ${esc(formatDate(state.finished_at))}:
+      новых ${state.created}, обновлено ${state.updated}${state.skipped ? `, пропущено (удалённые) ${state.skipped}` : ""}${warn}`;
+  }
+}
+
+$("#prom-catalog").addEventListener("click", async () => {
+  if (!confirm("Загрузить в программу все товары из вашего кабинета Prom? Уже существующие в программе товары с тем же артикулом обновятся.")) return;
+  try {
+    showCatalogState(await api("/api/prom/catalog", { method: "POST" }));
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
 (async () => {
   await loadMeta();
+  api("/api/prom/catalog").then(showCatalogState).catch(() => {});
   $("#supplier-filter").innerHTML = `<option value="">Все поставщики</option><option value="none">Без поставщика</option>` +
     META.suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   $("#supplier-filter").value = list.supplier;
