@@ -11,7 +11,9 @@
     <a class="logo" href="/">Prom<span>Loader</span></a>
     <nav>
       <a href="/">Товары</a>
-      <a href="/import">Импорт из Excel</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
       <a href="/settings">Настройки</a>
     </nav>
   </header>
@@ -31,8 +33,9 @@
     <div class="editor">
       <div>
         <form id="form" autocomplete="off" onsubmit="return false">
+          <div id="supplier-box" class="supplier-box hidden"></div>
           <div class="panel">
-            <h2>Фото</h2>
+            <h2 data-lock="images">Фото</h2>
             <div class="photos" id="photos"></div>
             <div class="dropzone" id="photo-drop">
               <b>Перетащите фото сюда</b> или в любое место окна<br>
@@ -73,6 +76,7 @@
               <label class="field"><span>Количество</span><input name="quantity" inputmode="numeric"></label>
               <label class="field narrow"><span>Ед. изм.</span><input name="unit" list="units"></label>
             </div>
+            <div class="small muted" id="margin" style="margin:-4px 0 6px"></div>
             <datalist id="units"><option>шт.</option><option>упаковка</option><option>комплект</option><option>пара</option><option>м</option><option>кг</option><option>л</option></datalist>
           </div>
 
@@ -91,7 +95,7 @@
           </div>
 
           <div class="panel params">
-            <h2>Характеристики</h2>
+            <h2 data-lock="params">Характеристики</h2>
             <div id="params"></div>
             <button type="button" class="btn small" id="btn-add-param">+ Добавить характеристику</button>
           </div>

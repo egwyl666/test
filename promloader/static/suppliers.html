@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Поставщики — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+    <div class="right">
+      <button class="btn primary" id="add">+ Добавить поставщика</button>
+    </div>
+  </header>
+
+  <main>
+    <h1>Поставщики</h1>
+    <p class="muted" style="margin-top:-8px">
+      Поставщик — это прайс (ссылка или файл), для которого один раз настраивается, что лежит в каждой колонке.
+      Дальше обновление идёт само: новые товары создаются, цены и наличие обновляются, пропавшие товары снимаются с продажи.
+      Ваши ручные правки в карточках не затираются.
+    </p>
+    <div class="cards" id="cards"></div>
+    <div id="empty" class="panel empty-state hidden">
+      <p>Поставщиков пока нет.</p>
+      <p><button class="btn primary" id="add2">Добавить первого поставщика</button></p>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/suppliers-common.js"></script>
+  <script>
+    let timer;
+    async function load() {
+      clearTimeout(timer);
+      const list = await api("/api/suppliers");
+      $("#empty").classList.toggle("hidden", list.length > 0);
+      $("#cards").innerHTML = list.map((s) => `
+        <div class="supplier-card">
+          <h2><a href="/supplier?id=${s.id}">${esc(s.name)}</a></h2>
+          <div class="src">${s.url ? "🔗 " + esc(s.url) : s.source_name ? "📄 " + esc(s.source_name) : "источник не задан"}</div>
+          <div class="stat-row">
+            <div><b>${s.items_active}</b>в прайсе</div>
+            <div><b>${s.items_total - s.items_active}</b>пропало</div>
+            <div><b>${s.products}</b>товаров</div>
+          </div>
+          ${runLine(s)}
+          <div class="small muted">${scheduleText(s)}</div>
+          <div class="toolbar" style="margin:0">
+            <a class="btn small" href="/supplier?id=${s.id}">Настроить</a>
+            <a class="btn small" href="/?supplier=${s.id}">Товары</a>
+            <span class="spacer"></span>
+            <button class="btn small primary" data-run="${s.id}" ${s.running ? "disabled" : ""}>${s.running ? "Обновляется…" : "Обновить сейчас"}</button>
+          </div>
+        </div>`).join("");
+      $$("[data-run]").forEach((b) => b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          await api(`/api/suppliers/${b.dataset.run}/run`, { method: "POST", json: {} });
+          toast("Обновление запущено", "ok");
+        } catch (err) {
+          toast(err.message, "error");
+        }
+        load();
+      }));
+      if (list.some((s) => s.running)) timer = setTimeout(load, 2000);
+    }
+
+    async function add() {
+      const name = prompt("Название поставщика");
+      if (name === null) return;
+      const s = await api("/api/suppliers", { method: "POST", json: { name } });
+      location.href = `/supplier?id=${s.id}`;
+    }
+    $("#add").onclick = add;
+    $("#add2").onclick = add;
+    load().catch((err) => toast(err.message, "error"));
+  </script>
+</body>
+</html>

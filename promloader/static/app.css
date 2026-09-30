@@ -269,3 +269,28 @@ table.grid td.rn label { display: flex; gap: 6px; align-items: center; justify-c
   .row { flex-direction: column; gap: 0; }
   table.list .hide-sm { display: none; }
 }
+
+/* ---------- поставщики ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; }
+.supplier-card { background: var(--panel); border-radius: var(--radius); box-shadow: var(--shadow); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.supplier-card h2 { margin: 0; }
+.supplier-card h2 a { color: var(--text); }
+.supplier-card .src { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-row { display: flex; gap: 18px; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.stat-row b { color: var(--text); font-size: 16px; display: block; }
+.run-line { font-size: 13px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.run-msg { font-size: 12px; color: var(--err); }
+.runs { width: 100%; border-collapse: collapse; font-size: 13px; }
+.runs td { padding: 7px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+.runs details summary { cursor: pointer; color: var(--muted); }
+.lock { border: none; background: var(--warn-soft); color: var(--warn); font-size: 11px; font-weight: 600; border-radius: 10px; padding: 1px 7px; margin-left: 6px; cursor: pointer; }
+.lock:hover { background: var(--warn); color: #fff; }
+.supplier-box { background: var(--accent-soft); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 14px; line-height: 1.6; }
+.supplier-box.missing { background: var(--err-soft); }
+.source-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+table.rules { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.rules th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 6px; }
+table.rules td { padding: 4px; border-top: 1px solid var(--line); }
+table.rules input, table.rules select { padding: 6px 8px; font-size: 13px; }
+table.rules .num { width: 90px; }
+table.rules .handle { cursor: grab; color: var(--muted); text-align: center; width: 24px; }

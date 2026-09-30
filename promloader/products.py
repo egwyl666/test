@@ -27,9 +27,11 @@ TEXT_FIELDS = (
     "external_id", "name", "name_ua", "description", "description_ua", "currency",
     "unit", "presence", "group_name", "vendor", "country", "keywords",
 )
-NUMBER_FIELDS = ("price", "old_price")
+NUMBER_FIELDS = ("price", "old_price", "cost_price", "rrp")
 INT_FIELDS = ("quantity",)
 EDITABLE = TEXT_FIELDS + NUMBER_FIELDS + INT_FIELDS + ("params",)
+# Поля, которые при ручной правке закрепляются: обновление прайса поставщика их больше не перезапишет.
+LOCKABLE = tuple(f for f in EDITABLE if f not in ("external_id", "cost_price", "rrp")) + ("images",)
 
 MAX_IMAGES = 10
 MAX_IMAGE_SIDE = 4000
@@ -133,6 +135,7 @@ def normalize(data: dict) -> dict:
 def _row_to_dict(row) -> dict:
     p = dict(row)
     p["params"] = json.loads(p["params"] or "[]")
+    p["locked_fields"] = json.loads(p.get("locked_fields") or "[]")
     return p
 
 
@@ -155,14 +158,25 @@ def get(product_id: int) -> dict:
     p = _row_to_dict(row)
     p["images"] = [{"id": i["id"], "src": image_src(i), "external": bool(i["url"])} for i in image_rows(product_id)]
     p["check"] = validate(p)
+    p["supplier"] = None
+    if p["supplier_id"]:
+        s = db.query_one("SELECT id, name FROM suppliers WHERE id = ?", (p["supplier_id"],))
+        item = db.query_one("SELECT missing FROM supplier_items WHERE product_id = ?", (product_id,))
+        if s:
+            p["supplier"] = {"id": s["id"], "name": s["name"], "missing": bool(item and item["missing"])}
     return p
 
 
-def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0) -> dict:
+def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier_id: int | None = None) -> dict:
     where, args = [], []
     if status:
         where.append("status = ?")
         args.append(status)
+    if supplier_id == 0:
+        where.append("supplier_id IS NULL")
+    elif supplier_id:
+        where.append("supplier_id = ?")
+        args.append(supplier_id)
     if q:
         where.append("(name LIKE ? OR name_ua LIKE ? OR external_id LIKE ? OR group_name LIKE ?)")
         args += [f"%{q}%"] * 4
@@ -171,7 +185,8 @@ def list_products(status: str = "", q: str = "", limit: int = 200, offset: int =
     rows = db.query(
         f"""SELECT p.*, (SELECT COALESCE(i.url, '/media/' || i.file) FROM images i
                          WHERE i.product_id = p.id ORDER BY i.position, i.id LIMIT 1) AS thumb,
-                        (SELECT COUNT(*) FROM images i WHERE i.product_id = p.id) AS image_count
+                        (SELECT COUNT(*) FROM images i WHERE i.product_id = p.id) AS image_count,
+                        (SELECT s.name FROM suppliers s WHERE s.id = p.supplier_id) AS supplier_name
             FROM products p {clause} ORDER BY p.updated_at DESC, p.id DESC LIMIT ? OFFSET ?""",
         args + [limit, offset],
     )
@@ -203,6 +218,9 @@ def validate(p: dict, image_count: int | None = None) -> dict:
         errors.append("Не указана цена")
     elif price <= 0:
         errors.append("Цена должна быть больше нуля")
+    cost = p.get("cost_price")
+    if cost is not None and price is not None and price < cost:
+        warnings.append("Цена ниже закупочной")
     old_price = p.get("old_price")
     if old_price is not None and price is not None and old_price <= price:
         warnings.append("Старая цена не больше текущей — скидка не покажется")
@@ -241,7 +259,8 @@ def create(data: dict) -> int:
     return product_id
 
 
-def update(product_id: int, data: dict) -> dict:
+def update(product_id: int, data: dict, lock: bool = True) -> dict:
+    """lock=True — правка руками: у товара поставщика изменённые поля закрепляются."""
     fields = normalize(data)
     with db.tx() as c:
         row = c.execute("SELECT status FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -253,8 +272,32 @@ def update(product_id: int, data: dict) -> dict:
             ).fetchone()
             if clash:
                 raise ProductError(f"Артикул {fields['external_id']} уже занят другим товаром")
+        if lock:
+            _lock(c, product_id, [f for f in fields if f in LOCKABLE])
         _touch(c, product_id, fields, row["status"])
     return get(product_id)
+
+
+def _lock(c, product_id: int, names: list[str]) -> None:
+    if not names:
+        return
+    row = c.execute("SELECT supplier_id, cost_price, rrp, locked_fields FROM products WHERE id = ?", (product_id,)).fetchone()
+    # закрепление нужно только товарам, которые что-то может перезаписать: прайс поставщика или пересчёт наценки
+    if row is None or (row["supplier_id"] is None and row["cost_price"] is None and row["rrp"] is None):
+        return
+    locked = json.loads(row["locked_fields"] or "[]")
+    merged = sorted(set(locked) | set(names))
+    if merged != sorted(locked):
+        c.execute("UPDATE products SET locked_fields = ? WHERE id = ?", (json.dumps(merged), product_id))
+
+
+def unlock(product_id: int, names: list[str]) -> None:
+    with db.tx() as c:
+        row = c.execute("SELECT locked_fields FROM products WHERE id = ?", (product_id,)).fetchone()
+        if row is None:
+            raise KeyError(product_id)
+        locked = [f for f in json.loads(row["locked_fields"] or "[]") if f not in names]
+        c.execute("UPDATE products SET locked_fields = ? WHERE id = ?", (json.dumps(locked), product_id))
 
 
 def _touch(c, product_id: int, fields: dict, status: str) -> None:
@@ -342,6 +385,7 @@ def add_image_file(product_id: int, content: bytes) -> dict:
             status = _product_status(c, product_id)
             pos = _next_position(c, product_id)
             cur = c.execute("INSERT INTO images (product_id, file, position) VALUES (?, ?, ?)", (product_id, name, pos))
+            _lock(c, product_id, ["images"])
             _touch(c, product_id, {}, status)
     except BaseException:
         (db.uploads_dir() / name).unlink(missing_ok=True)
@@ -357,6 +401,7 @@ def add_image_url(product_id: int, url: str) -> dict:
         status = _product_status(c, product_id)
         pos = _next_position(c, product_id)
         cur = c.execute("INSERT INTO images (product_id, url, position) VALUES (?, ?, ?)", (product_id, url, pos))
+        _lock(c, product_id, ["images"])
         _touch(c, product_id, {}, status)
     return {"id": cur.lastrowid, "src": url, "external": True}
 
@@ -367,6 +412,7 @@ def delete_image(product_id: int, image_id: int) -> None:
         if row is None:
             raise KeyError(image_id)
         c.execute("DELETE FROM images WHERE id = ?", (image_id,))
+        _lock(c, product_id, ["images"])
         _touch(c, product_id, {}, _product_status(c, product_id))
     if row["file"]:
         (db.uploads_dir() / row["file"]).unlink(missing_ok=True)
@@ -379,6 +425,7 @@ def reorder_images(product_id: int, image_ids: list[int]) -> None:
             raise ProductError("Список фото устарел — обновите страницу")
         for pos, image_id in enumerate(image_ids):
             c.execute("UPDATE images SET position = ? WHERE id = ?", (pos, image_id))
+        _lock(c, product_id, ["images"])
         _touch(c, product_id, {}, _product_status(c, product_id))
 
 
@@ -396,6 +443,7 @@ def replace_images(product_id: int, urls: list[str], files: list[bytes]) -> None
         for url in urls:
             c.execute("INSERT INTO images (product_id, url, position) VALUES (?, ?, ?)", (product_id, url, pos))
             pos += 1
+        _lock(c, product_id, ["images"])
         _touch(c, product_id, {}, status)
     for name in old:
         (db.uploads_dir() / name).unlink(missing_ok=True)

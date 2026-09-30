@@ -194,9 +194,75 @@ function applyServer(product) {
   $("#btn-send").disabled = product.status === "sending";
   $("#btn-send").textContent = product.status === "sending" ? "Отправляется…" : "Отправить на Prom";
   renderCheck(product.check);
+  renderSupplier(product);
   renderPhotos();
   renderPreview();
   if (product.status === "sending") pollStatus();
+}
+
+// ---------- поставщик и закреплённые поля ----------
+
+const LOCK_LABEL = { images: "фото", params: "характеристики" };
+
+function renderSupplier(p) {
+  const box = $("#supplier-box");
+  const locked = new Set(p.locked_fields || []);
+  box.classList.toggle("hidden", !p.supplier);
+  if (p.supplier) {
+    box.classList.toggle("missing", p.supplier.missing);
+    box.innerHTML = `Товар поставщика <a href="/supplier?id=${p.supplier.id}"><b>${esc(p.supplier.name)}</b></a>.
+      ${p.supplier.missing ? "<b>Сейчас его нет в прайсе поставщика.</b> " : ""}
+      Цена и наличие обновляются из прайса. Поля, которые вы поменяли руками, помечены <span class="lock" style="cursor:default">🔒 своё</span> —
+      поставщик их не перезапишет.`;
+  }
+  // значки у полей
+  $$(".lock[data-field]").forEach((b) => b.remove());
+  const lockable = p.supplier || p.cost_price !== null || p.rrp !== null;
+  if (lockable) {
+    for (const field of locked) {
+      const input = form.elements[field];
+      const target = input && input.closest ? input.closest("label.field")?.querySelector("span") : $(`[data-lock=${field}]`);
+      if (!target) continue;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "lock";
+      b.dataset.field = field;
+      b.textContent = "🔒 своё";
+      b.title = p.supplier ? "Изменено вручную. Нажмите, чтобы снова брать значение у поставщика" : "Изменено вручную. Нажмите, чтобы снова считать по наценке";
+      b.onclick = (e) => { e.preventDefault(); unlockField(field); };
+      target.appendChild(b);
+    }
+  }
+  const cost = p.cost_price;
+  const margin = $("#margin");
+  if (cost !== null || p.rrp !== null) {
+    const parts = [];
+    if (cost !== null) parts.push(`закупка ${formatPrice(cost, p.currency)}`);
+    if (p.rrp !== null) parts.push(`РРЦ ${formatPrice(p.rrp, p.currency)}`);
+    if (cost !== null && p.price) {
+      const m = p.price - cost;
+      parts.push(`маржа ${formatPrice(m, p.currency)} (${Math.round((m / cost) * 100)}%)`);
+    }
+    margin.textContent = parts.join(" · ") + (locked.has("price") ? "" : " · цена считается по правилам наценки");
+  } else {
+    margin.textContent = "";
+  }
+}
+
+async function unlockField(field) {
+  const what = LOCK_LABEL[field] || "это поле";
+  const source = state.product.supplier ? "из прайса поставщика" : "по правилам наценки";
+  if (!confirm(`Вернуть ${what} ${source}? Ваше значение будет заменено.`)) return;
+  try {
+    await flush();
+    const p = await api(`/api/products/${state.id}/unlock`, { method: "POST", json: { fields: [field] } });
+    if (field === "params") renderParams(p.params);
+    else if (form.elements[field]) form.elements[field].value = p[field] ?? "";
+    applyServer(p);
+    toast("Значение возвращено", "ok");
+  } catch (err) {
+    toast(err.message, "error");
+  }
 }
 
 function renderCheck(check) {

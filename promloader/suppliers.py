@@ -1,0 +1,510 @@
+"""Поставщики: источник прайса (ссылка или файл) + настройки колонок + обновление по расписанию.
+
+Обновление:
+- новые позиции создают товары (черновики или сразу «готов»), существующие обновляются;
+- поля, которые пользователь правил руками (locked_fields), не перезаписываются;
+- цена считается по правилам наценки от закупки/РРЦ;
+- пропавшие из прайса позиции получают «нет в наличии», вернувшиеся — снова наличие поставщика;
+- если прайс «похудел» больше чем вдвое, обновление останавливается: скорее всего, у поставщика сбой.
+"""
+
+import hashlib
+import json
+import logging
+import re
+import threading
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import httpx
+
+from . import db, excel, pricing, products
+
+log = logging.getLogger("promloader.suppliers")
+
+MISSING_ACTIONS = {"not_available": "ставить «нет в наличии»", "keep": "ничего не менять"}
+NEW_STATUSES = ("draft", "ready")
+# поля товара, которыми управляет прайс поставщика
+SYNC_FIELDS = (
+    "name", "name_ua", "description", "description_ua", "price", "old_price", "cost_price", "rrp", "currency",
+    "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords",
+)
+EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
+            "missing_action", "auto_sync", "interval_hours")
+
+BROKEN_FEED_MIN = 20       # защита включается, если у поставщика было хотя бы столько товаров
+BROKEN_FEED_RATIO = 0.5    # ...и в новом прайсе осталось меньше этой доли
+CHUNK = 500                # товаров на транзакцию: интерфейс не подвисает во время большого обновления
+SYNC_CHUNK = 2000          # товаров в одной задаче выгрузки на Prom
+MAX_DOWNLOAD = 200 * 1024 * 1024
+
+_running: set[int] = set()
+_running_lock = threading.Lock()
+
+
+class SupplierError(ValueError):
+    pass
+
+
+# ---------- чтение ----------
+
+def _row(supplier_id: int):
+    row = db.query_one("SELECT * FROM suppliers WHERE id = ?", (supplier_id,))
+    if row is None:
+        raise KeyError(supplier_id)
+    return row
+
+
+def _parse(row) -> dict:
+    s = dict(row)
+    s["mapping"] = json.loads(s["mapping"] or "{}")
+    s["defaults"] = json.loads(s["defaults"] or "{}")
+    s["auto_sync"] = bool(s["auto_sync"])
+    s["running"] = s["id"] in _running
+    return s
+
+
+def _run_dict(row) -> dict:
+    r = dict(row)
+    r["stats"] = json.loads(r["stats"] or "{}")
+    return r
+
+
+def list_suppliers() -> list[dict]:
+    result = []
+    for row in db.query("SELECT * FROM suppliers ORDER BY name COLLATE NOCASE"):
+        s = _parse(row)
+        counts = db.query_one(
+            """SELECT COUNT(*) AS total, SUM(missing = 0) AS active, SUM(product_id IS NOT NULL) AS linked
+               FROM supplier_items WHERE supplier_id = ?""", (s["id"],))
+        s["items_total"] = counts["total"] or 0
+        s["items_active"] = counts["active"] or 0
+        s["products"] = counts["linked"] or 0
+        last = db.query_one("SELECT * FROM supplier_runs WHERE supplier_id = ? ORDER BY id DESC LIMIT 1", (s["id"],))
+        s["last_run"] = _run_dict(last) if last else None
+        result.append(s)
+    return result
+
+
+def get(supplier_id: int) -> dict:
+    s = _parse(_row(supplier_id))
+    s["runs"] = [_run_dict(r) for r in db.query(
+        "SELECT * FROM supplier_runs WHERE supplier_id = ? ORDER BY id DESC LIMIT 15", (supplier_id,))]
+    counts = db.query_one(
+        "SELECT COUNT(*) AS total, SUM(missing = 0) AS active FROM supplier_items WHERE supplier_id = ?", (supplier_id,))
+    s["items_total"] = counts["total"] or 0
+    s["items_active"] = counts["active"] or 0
+    return s
+
+
+# ---------- настройки ----------
+
+def create(name: str) -> int:
+    name = (name or "").strip() or "Новый поставщик"
+    ts = db.now()
+    with db.tx() as c:
+        cur = c.execute("INSERT INTO suppliers (name, created_at, updated_at) VALUES (?, ?, ?)", (name, ts, ts))
+    return cur.lastrowid
+
+
+def _next_run(interval_hours: float) -> str | None:
+    if not interval_hours or interval_hours <= 0:
+        return None
+    return (datetime.now(timezone.utc) + timedelta(hours=interval_hours)).isoformat(timespec="seconds")
+
+
+def update(supplier_id: int, data: dict) -> dict:
+    current = _row(supplier_id)
+    fields = {}
+    for key in EDITABLE:
+        if key not in data:
+            continue
+        value = data[key]
+        if key in ("mapping", "defaults"):
+            if not isinstance(value, dict):
+                raise SupplierError(f"{key}: ожидается объект")
+            value = json.dumps(value, ensure_ascii=False)
+        elif key == "header_row":
+            value = max(0, int(value or 0))
+        elif key == "interval_hours":
+            value = max(0.0, float(value or 0))
+        elif key == "auto_sync":
+            value = 1 if value else 0
+        elif key == "new_status" and value not in NEW_STATUSES:
+            raise SupplierError("Статус новых товаров: draft или ready")
+        elif key == "missing_action" and value not in MISSING_ACTIONS:
+            raise SupplierError("Неизвестное действие для пропавших товаров")
+        else:
+            value = str(value or "").strip()
+        fields[key] = value
+    if "rows" in fields and fields["rows"]:
+        excel.parse_row_spec(fields["rows"], 10)  # проверка синтаксиса
+    if "url" in fields and fields["url"] and not re.match(r"^https?://", fields["url"]):
+        raise SupplierError("Ссылка на прайс должна начинаться с http:// или https://")
+    if "interval_hours" in fields and fields["interval_hours"] != current["interval_hours"]:
+        fields["next_run_at"] = _next_run(fields["interval_hours"])
+    if fields:
+        fields["updated_at"] = db.now()
+        with db.tx() as c:
+            c.execute(f"UPDATE suppliers SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                      list(fields.values()) + [supplier_id])
+    return get(supplier_id)
+
+
+def delete(supplier_id: int) -> None:
+    """Поставщик удаляется, его товары остаются как обычные (без привязки)."""
+    row = _row(supplier_id)
+    with db.tx() as c:
+        c.execute("UPDATE products SET supplier_id = NULL, locked_fields = '[]' WHERE supplier_id = ?", (supplier_id,))
+        c.execute("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+    if row["source_file"]:
+        (db.suppliers_dir() / row["source_file"]).unlink(missing_ok=True)
+
+
+# ---------- источник ----------
+
+def _direct_url(url: str) -> str:
+    """Ссылку на Google Таблицу превращаем в ссылку на скачивание .xlsx."""
+    m = re.match(r"https://docs\.google\.com/spreadsheets/d/([\w-]+)", url)
+    if m:
+        return f"https://docs.google.com/spreadsheets/d/{m.group(1)}/export?format=xlsx"
+    return url
+
+
+def download(url: str, transport: httpx.BaseTransport | None = None) -> tuple[bytes, str]:
+    try:
+        with httpx.Client(follow_redirects=True, timeout=180, transport=transport,
+                          headers={"User-Agent": "PromLoader/1.0"}) as client:
+            with client.stream("GET", _direct_url(url)) as r:
+                if r.status_code >= 400:
+                    raise SupplierError(f"Поставщик ответил ошибкой HTTP {r.status_code}")
+                chunks, size = [], 0
+                for chunk in r.iter_bytes():
+                    size += len(chunk)
+                    if size > MAX_DOWNLOAD:
+                        raise SupplierError("Прайс больше 200 МБ")
+                    chunks.append(chunk)
+    except httpx.HTTPError as exc:
+        raise SupplierError(f"Не удалось скачать прайс: {exc}")
+    content = b"".join(chunks)
+    if not content.strip():
+        raise SupplierError("По ссылке пустой файл")
+    return content, url.rsplit("/", 1)[-1].split("?")[0] or "price"
+
+
+def store_source(supplier_id: int, content: bytes, filename: str) -> Path:
+    """Сохраняет прайс как текущий файл поставщика."""
+    _row(supplier_id)
+    suffix = excel.detect_suffix(content, filename)
+    folder = db.suppliers_dir()
+    for old in folder.glob(f"{supplier_id}.*"):
+        old.unlink()
+    path = folder / f"{supplier_id}{suffix}"
+    path.write_bytes(content)
+    with db.tx() as c:
+        c.execute("UPDATE suppliers SET source_file = ?, source_name = ?, updated_at = ? WHERE id = ?",
+                  (path.name, filename, db.now(), supplier_id))
+    return path
+
+
+def source_path(supplier_id: int, refetch: bool = False, transport=None) -> Path:
+    row = _row(supplier_id)
+    if refetch and row["url"]:
+        content, name = download(row["url"], transport)
+        return store_source(supplier_id, content, name)
+    if row["source_file"]:
+        path = db.suppliers_dir() / row["source_file"]
+        if path.exists():
+            return path
+    if row["url"]:
+        content, name = download(row["url"], transport)
+        return store_source(supplier_id, content, name)
+    raise SupplierError("У поставщика нет ни ссылки на прайс, ни загруженного файла")
+
+
+# ---------- обновление ----------
+
+def _images_hash(urls: list[str], files: list[bytes]) -> str:
+    h = hashlib.sha1(json.dumps(urls).encode())
+    for b in files:
+        h.update(hashlib.sha1(b).digest())
+    return h.hexdigest()
+
+
+def _replace_images(c, product_id: int, urls: list[str], files: list[bytes], trash: list[str]) -> None:
+    trash += [r["file"] for r in c.execute("SELECT file FROM images WHERE product_id = ? AND file IS NOT NULL", (product_id,))]
+    c.execute("DELETE FROM images WHERE product_id = ?", (product_id,))
+    pos = 0
+    for content in files:
+        try:
+            name = products.store_image_bytes(content)
+        except products.ProductError:
+            continue
+        c.execute("INSERT INTO images (product_id, file, position) VALUES (?, ?, ?)", (product_id, name, pos))
+        pos += 1
+    for url in urls:
+        if pos >= products.MAX_IMAGES:
+            break
+        c.execute("INSERT INTO images (product_id, url, position) VALUES (?, ?, ?)", (product_id, url, pos))
+        pos += 1
+
+
+def _item_fields(item: dict) -> dict:
+    fields = {k: item["data"][k] for k in SYNC_FIELDS if k in item["data"]}
+    if item["params"]:
+        fields["params"] = json.dumps(products.parse_params(item["params"]), ensure_ascii=False)
+    return fields
+
+
+def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats: dict, changed: list[int],
+               trash: list[str]) -> None:
+    sku = item["data"]["external_id"]
+    fields = _item_fields(item)
+    urls = item["image_urls"]
+    img_hash = _images_hash(urls, files)
+    existing = c.execute("SELECT * FROM supplier_items WHERE supplier_id = ? AND sku = ?", (s["id"], sku)).fetchone()
+
+    product = None
+    if existing and existing["product_id"]:
+        product = c.execute("SELECT * FROM products WHERE id = ?", (existing["product_id"],)).fetchone()
+    if product is None:
+        external_id = s["prefix"] + sku
+        other = c.execute("SELECT * FROM products WHERE external_id = ?", (external_id,)).fetchone()
+        if other is not None:
+            if other["supplier_id"] not in (None, s["id"]):
+                stats["errors"] += 1
+                _sample(stats, f"{sku}: артикул {external_id} уже занят товаром другого поставщика")
+                return
+            product = other  # товар уже был (создан руками или импортом) — привязываем его к поставщику
+
+    if product is None:
+        cols = ["external_id", "supplier_id", "status", "created_at", "updated_at"] + list(fields)
+        cur = c.execute(
+            f"INSERT INTO products ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+            [s["prefix"] + sku, s["id"], s["new_status"], ts, ts] + list(fields.values()),
+        )
+        product_id = cur.lastrowid
+        if urls or files:
+            _replace_images(c, product_id, urls, files, trash)
+        stats["created"] += 1
+        changed.append(product_id)
+    else:
+        product_id = product["id"]
+        locked = set(json.loads(product["locked_fields"] or "[]"))
+        returned = bool(existing and existing["missing"])
+        updates = {k: v for k, v in fields.items() if k not in locked and product[k] != v}
+        if returned:
+            # вернулся в прайс: наличие берём от поставщика, даже если его правили руками
+            updates["presence"] = fields.get("presence", "available")
+            if "quantity" in fields:
+                updates["quantity"] = fields["quantity"]
+            updates = {k: v for k, v in updates.items() if product[k] != v}
+            stats["returned"] += 1
+        if product["supplier_id"] != s["id"]:
+            updates["supplier_id"] = s["id"]
+        images_changed = (
+            "images" not in locked and (urls or files)
+            and (existing is None or existing["images_hash"] != img_hash)
+        )
+        if images_changed:
+            _replace_images(c, product_id, urls, files, trash)
+        if updates or images_changed:
+            products._touch(c, product_id, updates, product["status"])
+            stats["updated"] += 1
+            if "price" in updates:
+                stats["price_changed"] += 1
+            changed.append(product_id)
+        else:
+            stats["unchanged"] += 1
+
+    payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": urls}, ensure_ascii=False)
+    c.execute(
+        """INSERT INTO supplier_items (supplier_id, sku, product_id, data, images_hash, missing, seen_at, seen_run)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+           ON CONFLICT(supplier_id, sku) DO UPDATE SET product_id = excluded.product_id, data = excluded.data,
+               images_hash = excluded.images_hash, missing = 0, seen_at = excluded.seen_at, seen_run = excluded.seen_run""",
+        (s["id"], sku, product_id, payload, img_hash, ts, run_id),
+    )
+
+
+def _sample(stats: dict, message: str) -> None:
+    if len(stats["error_samples"]) < 30:
+        stats["error_samples"].append(message)
+
+
+def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: bool = False) -> tuple[dict, list[int]]:
+    stats = {"total": len(items), "valid": 0, "created": 0, "updated": 0, "unchanged": 0, "price_changed": 0,
+             "missing": 0, "returned": 0, "errors": 0, "error_samples": []}
+    valid, seen = [], set()
+    for item in items:
+        sku = item["data"].get("external_id")
+        if not sku:
+            stats["errors"] += 1
+            _sample(stats, f"строка {item['row']}: нет артикула поставщика")
+            continue
+        if sku in seen:
+            stats["errors"] += 1
+            _sample(stats, f"строка {item['row']}: артикул {sku} повторяется")
+            continue
+        if item["errors"]:
+            stats["errors"] += 1
+            _sample(stats, f"строка {item['row']} ({sku}): {'; '.join(item['errors'])}")
+            continue
+        seen.add(sku)
+        valid.append(item)
+    stats["valid"] = len(valid)
+
+    before = db.query_one("SELECT COUNT(*) AS n FROM supplier_items WHERE supplier_id = ? AND missing = 0", (s["id"],))["n"]
+    if not force and before >= BROKEN_FEED_MIN and len(valid) < before * BROKEN_FEED_RATIO:
+        raise SupplierError(
+            f"В прайсе {len(valid)} годных товаров, а в прошлый раз было {before}. Похоже, прайс поставщика сломан — "
+            "обновление остановлено, ничего не изменено. Если товары действительно убрали, нажмите «Обновить принудительно»."
+        )
+
+    ts = db.now()
+    changed: list[int] = []
+    for start in range(0, len(valid), CHUNK):
+        trash: list[str] = []
+        with db.tx() as c:
+            for item in valid[start:start + CHUNK]:
+                _apply_one(c, s, item, embedded.get(item["row"], []), ts, run_id, stats, changed, trash)
+        for name in trash:
+            (db.uploads_dir() / name).unlink(missing_ok=True)
+
+    with db.tx() as c:
+        gone = c.execute(
+            "SELECT id, product_id FROM supplier_items WHERE supplier_id = ? AND missing = 0 AND seen_run != ?",
+            (s["id"], run_id)).fetchall()
+        for item in gone:
+            c.execute("UPDATE supplier_items SET missing = 1 WHERE id = ?", (item["id"],))
+            stats["missing"] += 1
+            if s["missing_action"] != "not_available" or not item["product_id"]:
+                continue
+            p = c.execute("SELECT status, presence, quantity FROM products WHERE id = ?", (item["product_id"],)).fetchone()
+            if p and (p["presence"] != "not_available" or p["quantity"] not in (None, 0)):
+                qty = 0 if p["quantity"] is not None else None
+                products._touch(c, item["product_id"], {"presence": "not_available", "quantity": qty}, p["status"])
+                changed.append(item["product_id"])
+    return stats, changed
+
+
+def _queue_changed(changed: list[int]) -> int:
+    from . import sync
+
+    if not changed:
+        return 0
+    ready = {r["id"] for r in db.query("SELECT id FROM products WHERE status = 'ready'")}
+    ids = sorted(set(changed) & ready)
+    queued = 0
+    for start in range(0, len(ids), SYNC_CHUNK):
+        queued += sync.enqueue(ids[start:start + SYNC_CHUNK])["accepted"]
+    return queued
+
+
+def run(supplier_id: int, trigger: str = "manual", force: bool = False, transport=None) -> dict:
+    """Полное обновление поставщика. Возвращает запись о запуске."""
+    with _running_lock:
+        if supplier_id in _running:
+            raise SupplierError("Этот поставщик уже обновляется")
+        _running.add(supplier_id)
+    try:
+        s = _parse(_row(supplier_id))
+        with db.tx() as c:
+            run_id = c.execute(
+                "INSERT INTO supplier_runs (supplier_id, status, trigger, started_at) VALUES (?, 'running', ?, ?)",
+                (supplier_id, trigger, db.now())).lastrowid
+        status, stats, message = "ok", {}, ""
+        try:
+            if not any(t == "external_id" for t in s["mapping"].values()):
+                raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
+            path = source_path(supplier_id, refetch=True, transport=transport)
+            sheets = excel.sheet_names(path)
+            sheet = s["sheet"] if s["sheet"] in sheets else sheets[0]
+            rows, embedded = excel.read_sheet(path, sheet)
+            spec = s["rows"] or f"{s['header_row'] + 1}-"
+            numbers = excel.parse_row_spec(spec, len(rows))
+            items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
+                                         pricing.Pricer(), supplier_id)
+            stats, changed = apply_items(s, items, embedded, run_id, force)
+            if s["auto_sync"]:
+                stats["queued"] = _queue_changed(changed)
+        except (SupplierError, excel.ImportError_) as exc:
+            status, message = "failed", str(exc)
+        except Exception as exc:
+            log.exception("Поставщик %s: сбой обновления", supplier_id)
+            status, message = "failed", f"Внутренняя ошибка: {exc}"
+        with db.tx() as c:
+            c.execute("UPDATE supplier_runs SET status = ?, stats = ?, message = ?, finished_at = ? WHERE id = ?",
+                      (status, json.dumps(stats, ensure_ascii=False), message, db.now(), run_id))
+            c.execute("UPDATE suppliers SET next_run_at = ? WHERE id = ?", (_next_run(s["interval_hours"]), supplier_id))
+        return _run_dict(db.query_one("SELECT * FROM supplier_runs WHERE id = ?", (run_id,)))
+    finally:
+        with _running_lock:
+            _running.discard(supplier_id)
+
+
+def due() -> list[int]:
+    rows = db.query(
+        "SELECT id FROM suppliers WHERE interval_hours > 0 AND (next_run_at IS NULL OR next_run_at <= ?) ORDER BY next_run_at",
+        (db.now(),))
+    return [r["id"] for r in rows if r["id"] not in _running]
+
+
+def recover() -> None:
+    """После перезапуска сервера незавершённые запуски помечаются как прерванные."""
+    with db.tx() as c:
+        c.execute("UPDATE supplier_runs SET status = 'failed', message = 'Прервано перезапуском сервера', finished_at = ? "
+                  "WHERE status = 'running'", (db.now(),))
+
+
+# ---------- правки и цены ----------
+
+def reapply(product_id: int) -> None:
+    """После снятия закрепления возвращает данные поставщика в незакреплённые поля."""
+    item = db.query_one("SELECT si.*, p.supplier_id AS psid FROM supplier_items si JOIN products p ON p.id = si.product_id "
+                        "WHERE si.product_id = ?", (product_id,))
+    if item is None:
+        return
+    stored = json.loads(item["data"])
+    data = dict(stored["data"])
+    pricing.Pricer().apply(data, item["supplier_id"])
+    fields = _item_fields({"data": data, "params": stored["params"]})
+    trash: list[str] = []
+    with db.tx() as c:
+        p = c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+        locked = set(json.loads(p["locked_fields"] or "[]"))
+        updates = {k: v for k, v in fields.items() if k not in locked and p[k] != v}
+        if item["missing"]:
+            updates.pop("presence", None)
+            updates.pop("quantity", None)
+        images = "images" not in locked and stored["image_urls"]
+        if images:
+            _replace_images(c, product_id, stored["image_urls"], [], trash)
+        elif "images" not in locked:
+            c.execute("UPDATE supplier_items SET images_hash = '' WHERE id = ?", (item["id"],))
+        if updates or images:
+            products._touch(c, product_id, updates, p["status"])
+    for name in trash:
+        (db.uploads_dir() / name).unlink(missing_ok=True)
+
+
+def recalc_prices() -> dict:
+    """Пересчёт цен всех товаров с закупкой/РРЦ по текущим правилам (кроме цен, закреплённых вручную)."""
+    pricer = pricing.Pricer()
+    rows = db.query("SELECT id, supplier_id, cost_price, rrp, price, group_name, status, locked_fields FROM products "
+                    "WHERE cost_price IS NOT NULL OR rrp IS NOT NULL")
+    changed = []
+    for start in range(0, len(rows), CHUNK):
+        with db.tx() as c:
+            for p in rows[start:start + CHUNK]:
+                if "price" in json.loads(p["locked_fields"] or "[]"):
+                    continue
+                data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"]}
+                pricer.apply(data, p["supplier_id"])
+                if data.get("price") is not None and data["price"] != p["price"]:
+                    products._touch(c, p["id"], {"price": data["price"]}, p["status"])
+                    changed.append(p["id"])
+    auto = {r["id"] for r in db.query("SELECT id FROM suppliers WHERE auto_sync = 1")}
+    by_id = {p["id"]: p["supplier_id"] for p in rows}
+    to_queue = [pid for pid in changed if by_id[pid] in auto]
+    return {"changed": len(changed), "queued": _queue_changed(to_queue)}

@@ -60,7 +60,77 @@ CREATE TABLE IF NOT EXISTS settings (
     key    TEXT PRIMARY KEY,
     value  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS suppliers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    url             TEXT NOT NULL DEFAULT '',
+    source_file     TEXT NOT NULL DEFAULT '',
+    source_name     TEXT NOT NULL DEFAULT '',
+    sheet           TEXT NOT NULL DEFAULT '',
+    header_row      INTEGER NOT NULL DEFAULT 1,
+    rows            TEXT NOT NULL DEFAULT '',
+    mapping         TEXT NOT NULL DEFAULT '{}',
+    defaults        TEXT NOT NULL DEFAULT '{}',
+    prefix          TEXT NOT NULL DEFAULT '',
+    new_status      TEXT NOT NULL DEFAULT 'draft',
+    missing_action  TEXT NOT NULL DEFAULT 'not_available',
+    auto_sync       INTEGER NOT NULL DEFAULT 0,
+    interval_hours  REAL NOT NULL DEFAULT 0,
+    next_run_at     TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS supplier_items (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    sku          TEXT NOT NULL,
+    product_id   INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    data         TEXT NOT NULL,
+    images_hash  TEXT NOT NULL DEFAULT '',
+    missing      INTEGER NOT NULL DEFAULT 0,
+    seen_at      TEXT NOT NULL,
+    seen_run     INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (supplier_id, sku)
+);
+CREATE INDEX IF NOT EXISTS supplier_items_product ON supplier_items(product_id);
+
+CREATE TABLE IF NOT EXISTS supplier_runs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    status       TEXT NOT NULL,
+    trigger      TEXT NOT NULL DEFAULT 'manual',
+    stats        TEXT NOT NULL DEFAULT '{}',
+    message      TEXT NOT NULL DEFAULT '',
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS supplier_runs_supplier ON supplier_runs(supplier_id, id);
+
+CREATE TABLE IF NOT EXISTS price_rules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    position        INTEGER NOT NULL DEFAULT 0,
+    supplier_id     INTEGER REFERENCES suppliers(id) ON DELETE CASCADE,
+    category        TEXT NOT NULL DEFAULT '',
+    cost_from       REAL,
+    cost_to         REAL,
+    markup_percent  REAL NOT NULL DEFAULT 0,
+    markup_fixed    REAL NOT NULL DEFAULT 0,
+    rounding        TEXT NOT NULL DEFAULT 'none',
+    use_rrp         INTEGER NOT NULL DEFAULT 0
+);
 """
+
+# Колонки, добавленные после первой версии: для уже существующих баз добавляются через ALTER TABLE.
+MIGRATIONS = {
+    "products": {
+        "cost_price": "REAL",
+        "rrp": "REAL",
+        "supplier_id": "INTEGER REFERENCES suppliers(id) ON DELETE SET NULL",
+        "locked_fields": "TEXT NOT NULL DEFAULT '[]'",
+    },
+}
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
@@ -99,8 +169,25 @@ def init(path: str | os.PathLike | None = None) -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
+        _migrate(conn)
         _conn = conn
         _data_dir = base
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in MIGRATIONS.items():
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    conn.execute("CREATE INDEX IF NOT EXISTS products_supplier ON products(supplier_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS products_status ON products(status)")
+
+
+def suppliers_dir() -> Path:
+    path = data_dir() / "suppliers"
+    path.mkdir(exist_ok=True)
+    return path
 
 
 @contextmanager

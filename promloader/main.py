@@ -15,12 +15,18 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, excel, feed, products, sync
+from . import config, db, excel, feed, pricing, products, suppliers, sync
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 25 * 1024 * 1024
-PAGES = {"/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html"}
+PAGES = {
+    "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
+    "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html",
+}
+SUPPLIER_CHECK_SECONDS = 30
+log = logging.getLogger("promloader")
+_background: set[asyncio.Task] = set()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -28,14 +34,33 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    suppliers.recover()
     stop = asyncio.Event()
-    task = None
+    tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
-        task = asyncio.create_task(sync.worker(stop))
+        tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop))]
     yield
     stop.set()
-    if task:
+    for task in tasks:
         await task
+
+
+async def supplier_worker(stop: asyncio.Event) -> None:
+    """Обновляет поставщиков по расписанию. Разбор прайса идёт в отдельном потоке, чтобы не тормозить интерфейс."""
+    while not stop.is_set():
+        for supplier_id in suppliers.due():
+            if stop.is_set():
+                break
+            try:
+                await asyncio.to_thread(suppliers.run, supplier_id, "schedule")
+            except suppliers.SupplierError:
+                pass
+            except Exception:
+                log.exception("Сбой обновления поставщика %s", supplier_id)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=SUPPLIER_CHECK_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 app = FastAPI(title="Prom Loader", lifespan=lifespan)
@@ -66,6 +91,7 @@ async def basic_auth(request: Request, call_next):
 
 @app.exception_handler(products.ProductError)
 @app.exception_handler(excel.ImportError_)
+@app.exception_handler(suppliers.SupplierError)
 async def user_error(request: Request, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -113,14 +139,18 @@ async def meta():
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
+        "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
+            "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
         "groups": [r["group_name"] for r in db.query(
             "SELECT DISTINCT group_name FROM products WHERE group_name != '' ORDER BY group_name")],
     }
 
 
 @app.get("/api/products")
-async def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0):
-    return products.list_products(status, q, min(limit, 1000), offset)
+async def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier: str = ""):
+    """supplier: '' — все, 'none' — без поставщика, число — товары поставщика."""
+    supplier_id = 0 if supplier == "none" else (int(supplier) if supplier.isdigit() else None)
+    return products.list_products(status, q, min(limit, 1000), offset, supplier_id)
 
 
 @app.post("/api/products")
@@ -136,6 +166,26 @@ async def get_product(product_id: int):
 @app.patch("/api/products/{product_id}")
 async def update_product(product_id: int, data: dict = Body(...)):
     return products.update(product_id, data)
+
+
+@app.post("/api/products/{product_id}/unlock")
+async def unlock_fields(product_id: int, fields: list[str] = Body(..., embed=True)):
+    """Снять закрепление: поля снова берутся у поставщика / из правил наценки."""
+    products.unlock(product_id, fields)
+    suppliers.reapply(product_id)
+    if "price" in fields:
+        await asyncio.to_thread(_recalc_one, product_id)
+    return products.get(product_id)
+
+
+def _recalc_one(product_id: int) -> None:
+    p = products.get(product_id)
+    if p["supplier_id"] or (p["cost_price"] is None and p["rrp"] is None):
+        return
+    data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"]}
+    pricing.Pricer().apply(data)
+    if data.get("price") is not None and data["price"] != p["price"]:
+        products.update(product_id, {"price": data["price"]}, lock=False)
 
 
 @app.post("/api/products/{product_id}/duplicate")
@@ -293,12 +343,25 @@ def _sheet(token: str, sheet: str):
 
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...)):
+    content = await _read_price_upload(file)
+    return _new_import_token(content, file.filename or "")
+
+
+async def _read_price_upload(file: UploadFile) -> bytes:
     suffix = Path(file.filename or "").suffix.lower()
-    if suffix not in (".xlsx", ".xlsm", ".csv"):
-        raise HTTPException(400, "Поддерживаются .xlsx и .csv. Старый .xls откройте в Excel и сохраните как .xlsx")
-    content = await file.read(MAX_UPLOAD * 2 + 1)
-    if len(content) > MAX_UPLOAD * 2:
-        raise HTTPException(400, "Файл больше 50 МБ")
+    if suffix == ".xls":
+        raise HTTPException(400, "Старый формат .xls не поддерживается: откройте файл в Excel и сохраните как .xlsx")
+    if suffix not in (".xlsx", ".xlsm", ".csv", ".xml", ".yml", ".txt", ""):
+        raise HTTPException(400, "Поддерживаются .xlsx, .csv и XML/YML")
+    content = await file.read(MAX_UPLOAD * 8 + 1)
+    if len(content) > MAX_UPLOAD * 8:
+        raise HTTPException(400, "Файл больше 200 МБ")
+    return content
+
+
+def _new_import_token(content: bytes, filename: str) -> dict:
+    """Кладёт файл во временную папку импорта: дальше работают общие шаги «строки и колонки»."""
+    suffix = excel.detect_suffix(content, filename)
     token = uuid.uuid4().hex
     path = db.imports_dir() / f"{token}{suffix}"
     path.write_bytes(content)
@@ -307,7 +370,7 @@ async def import_upload(file: UploadFile = File(...)):
     except excel.ImportError_:
         path.unlink(missing_ok=True)
         raise
-    return {"token": token, "filename": file.filename, "sheets": sheets}
+    return {"token": token, "filename": filename, "sheets": sheets}
 
 
 @app.get("/api/import/{token}/sheet")
@@ -344,7 +407,10 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
     if not numbers:
         raise excel.ImportError_("Не выбрано ни одной строки")
     embedded = images if body.get("use_embedded_images", True) else {}
-    return excel.build_products(rows, header_row, numbers, body.get("mapping") or {}, body.get("defaults"), embedded), images
+    supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
+    items = excel.build_products(rows, header_row, numbers, body.get("mapping") or {}, body.get("defaults"), embedded,
+                                 pricing.Pricer(), supplier_id)
+    return items, images
 
 
 @app.post("/api/import/{token}/preview")
@@ -378,7 +444,7 @@ async def import_commit(token: str, body: dict = Body(...)):
                 skipped += 1
                 continue
             if existing:
-                products.update(existing, data)
+                products.update(existing, data, lock=False)
                 pid = existing
                 updated += 1
             else:
@@ -391,3 +457,98 @@ async def import_commit(token: str, body: dict = Body(...)):
         except products.ProductError as exc:
             failed.append({"row": item["row"], "error": str(exc)})
     return {"created": created, "updated": updated, "skipped": skipped, "failed": failed}
+
+
+# ---------- поставщики ----------
+
+@app.get("/api/suppliers")
+async def list_suppliers():
+    return suppliers.list_suppliers()
+
+
+@app.post("/api/suppliers")
+async def create_supplier(name: str = Body("", embed=True)):
+    return suppliers.get(suppliers.create(name))
+
+
+@app.get("/api/suppliers/{supplier_id}")
+async def get_supplier(supplier_id: int):
+    return suppliers.get(supplier_id)
+
+
+@app.patch("/api/suppliers/{supplier_id}")
+async def update_supplier(supplier_id: int, data: dict = Body(...)):
+    return suppliers.update(supplier_id, data)
+
+
+@app.delete("/api/suppliers/{supplier_id}")
+async def delete_supplier(supplier_id: int):
+    suppliers.delete(supplier_id)
+    return {"ok": True}
+
+
+@app.post("/api/suppliers/{supplier_id}/source")
+async def upload_supplier_source(supplier_id: int, file: UploadFile = File(...)):
+    """Загрузить прайс файлом: он станет текущим прайсом поставщика."""
+    content = await _read_price_upload(file)
+    suppliers.store_source(supplier_id, content, file.filename or "price")
+    return _new_import_token(content, file.filename or "price")
+
+
+@app.post("/api/suppliers/{supplier_id}/open")
+async def open_supplier_source(supplier_id: int, refetch: bool = Body(False, embed=True)):
+    """Открыть прайс поставщика для настройки колонок (refetch — скачать свежий по ссылке)."""
+    path = await asyncio.to_thread(suppliers.source_path, supplier_id, refetch)
+    row = suppliers.get(supplier_id)
+    return _new_import_token(path.read_bytes(), row["source_name"] or path.name)
+
+
+@app.post("/api/suppliers/{supplier_id}/run")
+async def run_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
+    """Запуск обновления в фоне; ход виден в истории запусков поставщика."""
+    s = suppliers.get(supplier_id)
+    if s["running"]:
+        raise HTTPException(409, "Этот поставщик уже обновляется")
+    task = asyncio.create_task(_run_supplier_bg(supplier_id, force))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    await asyncio.sleep(0.05)  # дать запуску появиться в истории
+    return {"started": True}
+
+
+async def _run_supplier_bg(supplier_id: int, force: bool) -> None:
+    try:
+        await asyncio.to_thread(suppliers.run, supplier_id, "manual", force)
+    except suppliers.SupplierError:
+        pass
+    except Exception:
+        log.exception("Сбой обновления поставщика %s", supplier_id)
+
+
+# ---------- наценка ----------
+
+@app.get("/api/pricing")
+async def get_pricing():
+    return {"rules": pricing.list_rules(), "rounding": pricing.ROUNDING}
+
+
+@app.put("/api/pricing")
+async def save_pricing(rules: list[dict] = Body(..., embed=True)):
+    try:
+        return {"rules": pricing.save_rules(rules), "rounding": pricing.ROUNDING}
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"Ошибка в правилах: {exc}")
+
+
+@app.post("/api/pricing/test")
+async def test_pricing(body: dict = Body(...)):
+    cost = products.parse_number(body.get("cost"))
+    rrp = products.parse_number(body.get("rrp"))
+    supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
+    price, rule = pricing.Pricer().price(cost, rrp, supplier_id, body.get("category") or "")
+    return {"price": price, "rule": rule}
+
+
+@app.post("/api/pricing/apply")
+async def apply_pricing():
+    return await asyncio.to_thread(suppliers.recalc_prices)

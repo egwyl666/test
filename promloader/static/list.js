@@ -1,11 +1,21 @@
 // Список товаров, массовые действия и очередь отправки.
 
-const list = { status: "", q: "", items: [], selected: new Set() };
+const PAGE = 200;
+const list = {
+  status: "", q: "", supplier: new URLSearchParams(location.search).get("supplier") || "",
+  items: [], total: 0, selected: new Set(),
+};
 
-async function loadProducts() {
-  const params = new URLSearchParams({ status: list.status, q: list.q, limit: 500 });
+async function loadProducts(append = false) {
+  const offset = append ? list.items.length : 0;
+  // при автообновлении перечитываем столько, сколько уже показано
+  const limit = append ? PAGE : Math.max(PAGE, list.items.length);
+  const params = new URLSearchParams({ status: list.status, q: list.q, supplier: list.supplier, limit, offset });
   const data = await api(`/api/products?${params}`);
-  list.items = data.items;
+  list.items = append ? list.items.concat(data.items) : data.items;
+  list.total = data.total;
+  $("#shown").textContent = list.total ? `показано ${list.items.length} из ${list.total}` : "";
+  $("#more").classList.toggle("hidden", list.items.length >= list.total);
   const ids = new Set(data.items.map((p) => p.id));
   list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
   renderChips(data.counts);
@@ -21,13 +31,14 @@ function renderChips(counts) {
     .join("");
   $$("#chips .chip").forEach((c) => c.addEventListener("click", () => {
     list.status = c.dataset.status;
+    list.items = [];
     loadProducts();
   }));
 }
 
 function renderRows() {
   const tbody = $("#rows");
-  $("#empty").classList.toggle("hidden", list.items.length > 0 || list.status !== "" || list.q !== "");
+  $("#empty").classList.toggle("hidden", list.items.length > 0 || list.status !== "" || list.q !== "" || list.supplier !== "");
   tbody.innerHTML = list.items.map((p) => {
     const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.join(" · "))}</div>` : "";
     const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
@@ -37,11 +48,11 @@ function renderRows() {
       <td>${p.thumb ? `<img class="thumb" src="${esc(p.thumb)}" alt="" loading="lazy">` : `<div class="thumb empty">▢</div>`}</td>
       <td>
         <div class="name">${esc(p.name) || '<span class="muted">Без названия</span>'}</div>
-        <div class="small muted">${esc(p.external_id)} · фото: ${p.image_count}</div>
+        <div class="small muted">${esc(p.external_id)} · фото: ${p.image_count}${p.supplier_name ? ` · ${esc(p.supplier_name)}` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
         ${problems}${promError}
       </td>
       <td class="hide-sm">${esc(p.group_name)}</td>
-      <td class="price">${esc(formatPrice(p.price, p.currency))}</td>
+      <td class="price">${esc(formatPrice(p.price, p.currency))}${p.cost_price !== null ? `<div class="small muted" style="font-weight:400">закупка ${esc(formatPrice(p.cost_price, p.currency))}</div>` : ""}</td>
       <td class="hide-sm small">${esc(META.presence[p.presence] || "")}${p.quantity !== null ? ` · ${p.quantity}` : ""}</td>
       <td>${statusBadge(p.status)}</td>
       <td class="hide-sm small muted">${esc(formatDate(p.updated_at))}</td>
@@ -77,7 +88,17 @@ $("#check-all").addEventListener("change", (e) => {
 let searchTimer;
 $("#search").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); loadProducts(); }, 250);
+  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); list.items = []; loadProducts(); }, 250);
+});
+
+$("#more").addEventListener("click", () => loadProducts(true));
+$("#supplier-filter").addEventListener("change", (e) => {
+  list.supplier = e.target.value;
+  list.items = [];
+  const url = new URL(location.href);
+  if (list.supplier) url.searchParams.set("supplier", list.supplier); else url.searchParams.delete("supplier");
+  history.replaceState(null, "", url);
+  loadProducts();
 });
 
 $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () => {
@@ -187,6 +208,10 @@ function summarizeResult(r) {
 
 (async () => {
   await loadMeta();
+  $("#supplier-filter").innerHTML = `<option value="">Все поставщики</option><option value="none">Без поставщика</option>` +
+    META.suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+  $("#supplier-filter").value = list.supplier;
+  $("#supplier-filter").classList.toggle("hidden", !META.suppliers.length);
   await loadProducts();
   loadJobs();
 })();

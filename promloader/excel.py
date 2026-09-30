@@ -1,10 +1,16 @@
-"""Массовый импорт из Excel/CSV: пользователь выбирает лист, строки и что лежит в каждой колонке."""
+"""Массовый импорт из Excel/CSV/XML: пользователь выбирает лист, строки и что лежит в каждой колонке.
+
+Любой источник (Excel, CSV, XML/YML поставщика) сначала превращается в таблицу строк —
+дальше сопоставление колонок и разбор одинаковые.
+"""
 
 import csv
 import io
 import re
+from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -17,7 +23,9 @@ TARGETS = {
     "external_id": "Артикул / код",
     "name": "Название",
     "name_ua": "Название (укр.)",
-    "price": "Цена",
+    "price": "Цена (розничная)",
+    "cost_price": "Цена закупки (к ней применяется наценка)",
+    "rrp": "РРЦ (рекомендованная цена)",
     "old_price": "Старая цена (до скидки)",
     "currency": "Валюта",
     "quantity": "Количество",
@@ -35,17 +43,19 @@ TARGETS = {
 
 # Подсказки для автоматического сопоставления по заголовкам колонок.
 HINTS = [
-    ("name_ua", r"назв\w*.*(укр|ua)|найменування"),
-    ("description_ua", r"опис\w*.*(укр|ua)|^опис$"),
+    ("name_ua", r"назв\w*.*(укр|ua)|найменування|name_(ua|uk)"),
+    ("description_ua", r"опис\w*.*(укр|ua)|^опис$|description_(ua|uk)"),
     ("old_price", r"стар\w* цен|цена до|стара ціна|old.?price"),
-    ("external_id", r"артикул|код|sku|external|ідентиф|идентиф"),
+    ("cost_price", r"закуп|вход|опт|дроп|drop|cost|purchase|собіварт|себестоим"),
+    ("rrp", r"ррц|rrp|рекоменд|роздр|розн"),
+    ("external_id", r"^@id$|артикул|vendor.?code|код|sku|external|ідентиф|идентиф|^id$"),
     ("name", r"назв|наимен|товар|name"),
     ("price", r"цен|ціна|price|стоим|вартість"),
     ("currency", r"валют|currency"),
     ("quantity", r"кол-?во|колич|кільк|остат|залиш|qty|quantity|stock"),
     ("presence", r"налич|наявн|presence|available"),
-    ("group_name", r"групп|груп|катег|розділ|раздел|category|group"),
-    ("vendor", r"произв|виробн|бренд|brand|vendor|марка"),
+    ("group_name", r"групп|груп|катег|розділ|раздел|^category$|category.?name|^group$"),
+    ("vendor", r"произв|виробн|бренд|brand|^vendor$|марка"),
     ("country", r"стран|країн|country"),
     ("description", r"опис|описан|description"),
     ("keywords", r"ключ|keyword|теги|tags"),
@@ -91,6 +101,85 @@ def _read_csv(path: Path) -> list[list[str]]:
     return [[c.strip() for c in row] for row in csv.reader(io.StringIO(text), dialect)]
 
 
+XML_ITEM_TAGS = ("offer", "item", "product", "good", "goods", "tovar", "товар")
+XML_PARAM_TAGS = ("param", "attribute", "characteristic", "feature", "property")
+XML_SUFFIXES = (".xml", ".yml", ".yaml_xml")
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if isinstance(tag, str) else ""
+
+
+def _read_xml(path: Path) -> list[list[str]]:
+    """XML/YML поставщика -> таблица: строка на каждый товар, колонка на каждый тег.
+
+    Атрибуты становятся колонками «@имя», повторяющиеся теги (picture) склеиваются через перевод строки,
+    <param name="Цвет"> превращается в колонку «param:Цвет». Для YML подставляется название категории.
+    """
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        raise ImportError_(f"XML повреждён или это не XML: {exc}")
+
+    categories = {}
+    for el in root.iter():
+        if _local(el.tag) == "category" and el.get("id"):
+            categories[el.get("id")] = (el.text or "").strip()
+
+    counts = Counter(_local(el.tag) for el in root.iter() if len(el))
+    if not counts:
+        raise ImportError_("В XML не нашлось товаров")
+    known = [t for t in XML_ITEM_TAGS if counts.get(t)]
+    item_tag = known[0] if known else counts.most_common(1)[0][0]
+
+    columns: list[str] = []
+    records = []
+    for el in root.iter():
+        if _local(el.tag) != item_tag or not len(el):
+            continue
+        rec: dict[str, str] = {}
+
+        def add(key: str, value: str):
+            value = (value or "").strip()
+            if key not in columns:
+                columns.append(key)
+            rec[key] = f"{rec[key]}\n{value}" if rec.get(key) and value else (value or rec.get(key, ""))
+
+        for key, value in el.attrib.items():
+            add("@" + _local(key), value)
+        for child in el:
+            name = _local(child.tag)
+            if name in XML_PARAM_TAGS and child.get("name"):
+                add(f"param:{child.get('name').strip()}", "".join(child.itertext()))
+            elif len(child):
+                add(name, "\n".join(t.strip() for t in child.itertext() if t.strip()))
+            else:
+                add(name, child.text or "")
+        category_id = rec.get("categoryId") or rec.get("category_id")
+        if categories and category_id in categories:
+            add("category", categories[category_id])
+        records.append(rec)
+
+    if not records:
+        raise ImportError_("В XML не нашлось товаров")
+    return [columns] + [[rec.get(c, "") for c in columns] for rec in records]
+
+
+def detect_suffix(content: bytes, filename: str = "") -> str:
+    """Определяет формат по содержимому: ссылки поставщиков часто без расширения или с неверным."""
+    head = content[:512].lstrip(b"\xef\xbb\xbf \t\r\n")
+    if head.startswith(b"PK"):
+        return ".xlsx"
+    if head.startswith(b"<"):
+        if b"<html" in head.lower() or b"<!doctype html" in head.lower():
+            raise ImportError_("По ссылке открылась веб-страница, а не прайс. Нужна прямая ссылка на файл")
+        return ".xml"
+    suffix = Path(filename).suffix.lower()
+    if suffix in (".xlsx", ".xlsm"):
+        raise ImportError_("Файл повреждён: это не Excel")
+    return ".csv"
+
+
 def _load(path: Path):
     try:
         return openpyxl.load_workbook(path, data_only=True)
@@ -101,6 +190,9 @@ def _load(path: Path):
 def sheet_names(path: Path) -> list[str]:
     if path.suffix.lower() == ".csv":
         return ["CSV"]
+    if path.suffix.lower() in XML_SUFFIXES:
+        _read_xml(path)  # проверить, что читается
+        return ["XML"]
     return _load(path).sheetnames
 
 
@@ -108,6 +200,8 @@ def read_sheet(path: Path, sheet: str) -> tuple[list[list[str]], dict[int, list[
     """Все строки листа как текст + картинки, вставленные в ячейки: {номер строки: [байты]}."""
     if path.suffix.lower() == ".csv":
         return _read_csv(path), {}
+    if path.suffix.lower() in XML_SUFFIXES:
+        return _read_xml(path), {}
     wb = _load(path)
     if sheet not in wb.sheetnames:
         raise ImportError_(f"В файле нет листа «{sheet}»")
@@ -159,6 +253,9 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
         text = (header or "").strip().lower()
         if not text:
             continue
+        if text.startswith("param:"):
+            mapping[get_column_letter(idx + 1)] = "param"
+            continue
         for target, pattern in HINTS:
             if target not in used and re.search(pattern, text):
                 mapping[get_column_letter(idx + 1)] = target
@@ -178,6 +275,8 @@ def build_products(
     mapping: dict[str, str],
     defaults: dict | None = None,
     embedded_images: dict[int, list[bytes]] | None = None,
+    pricer=None,
+    supplier_id: int | None = None,
 ) -> list[dict]:
     """Строки -> товары. Для каждой строки: данные, фото, ошибки и предупреждения."""
     defaults = {k: v for k, v in (defaults or {}).items() if v not in (None, "")}
@@ -191,6 +290,8 @@ def build_products(
         idx = openpyxl.utils.column_index_from_string(letter) - 1
         if target == "param":
             header = headers[idx] if idx < len(headers) else ""
+            if header.lower().startswith("param:"):
+                header = header[6:].strip()
             target = "param:" + (header or f"Колонка {letter}")
         columns.append((idx, target))
 
@@ -213,14 +314,17 @@ def build_products(
                 raw[target] = value
         if params:
             raw["params"] = params
-        try:
-            data = products.normalize(raw)
-        except products.ProductError as exc:
-            errors.append(str(exc))
-            data = {}
+        data = {}
+        for key, value in raw.items():
+            # по одному полю: кривое значение в одной колонке не выбрасывает всю строку
+            try:
+                data.update(products.normalize({key: value}))
+            except products.ProductError as exc:
+                errors.append(f"{TARGETS.get(key, key)}: {exc}")
         # наличие по количеству, если колонки «наличие» нет
         if "presence" not in raw and data.get("quantity") is not None:
             data["presence"] = "available" if data["quantity"] > 0 else "not_available"
+        price_warnings = pricer.apply(data, supplier_id) if pricer else []
         files = (embedded_images or {}).get(number, [])
         check = products.validate({**data, "params": params}, image_count=len(urls) + len(files))
         result.append({
@@ -230,7 +334,7 @@ def build_products(
             "image_urls": urls[: products.MAX_IMAGES],
             "embedded_images": len(files),
             "errors": errors + check["errors"],
-            "warnings": check["warnings"],
+            "warnings": price_warnings + check["warnings"],
         })
     return result
 

@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Поставщик — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+  </header>
+
+  <main>
+    <div class="editor-head">
+      <a href="/suppliers" class="btn small">← Поставщики</a>
+      <input id="name" style="max-width:360px;font-size:20px;font-weight:700" placeholder="Название поставщика">
+      <span id="run-state"></span>
+      <span style="flex:1"></span>
+      <a class="btn" id="products-link" href="/">Товары поставщика</a>
+      <button class="btn danger" id="delete">Удалить</button>
+      <button class="btn primary" id="run">Обновить сейчас</button>
+    </div>
+
+    <div class="panel">
+      <h2>1. Откуда брать прайс</h2>
+      <div class="row" style="align-items:flex-end">
+        <label class="field" style="margin:0"><span>Ссылка на прайс (XML/YML, Excel, CSV, Google Таблица)</span>
+          <input id="url" placeholder="https://supplier.example.com/export/prices.xml"></label>
+        <button class="btn" id="fetch" style="flex:0 0 auto">Скачать и открыть</button>
+      </div>
+      <p class="small muted">Если ссылки нет — перетащите файл прайса в окно или <a href="#" id="pick">выберите файл</a>.
+        Файл станет текущим прайсом поставщика; при обновлении без ссылки будет использоваться он.</p>
+      <div class="small" id="source-info"></div>
+    </div>
+
+    <div class="panel hidden" id="mapping-panel">
+      <h2>2. Что лежит в колонках</h2>
+      <p class="small muted" style="margin-top:-6px">
+        Обязательно отметьте <b>Артикул / код</b> — по нему товар узнаётся при следующих обновлениях.
+        Для закупочной цены выберите «Цена закупки» — розничная посчитается по <a href="/pricing">правилам наценки</a>.
+      </p>
+      <div id="mapping"></div>
+    </div>
+
+    <div class="panel">
+      <h2>3. Как обновлять</h2>
+      <div class="row">
+        <label class="field"><span>Обновлять автоматически</span>
+          <select id="interval">
+            <option value="0">вручную</option><option value="1">каждый час</option><option value="3">каждые 3 часа</option>
+            <option value="6">каждые 6 часов</option><option value="12">каждые 12 часов</option><option value="24">раз в сутки</option>
+          </select></label>
+        <label class="field"><span>Если товар пропал из прайса</span>
+          <select id="missing"><option value="not_available">ставить «нет в наличии»</option><option value="keep">ничего не менять</option></select></label>
+        <label class="field"><span>Префикс артикула (если артикулы поставщиков пересекаются)</span><input id="prefix" placeholder="например: PO-"></label>
+      </div>
+      <div class="row">
+        <label class="field"><span>Группа по умолчанию</span><input id="def-group" list="groups"></label>
+        <label class="field"><span>Валюта прайса</span><select id="def-currency"><option>UAH</option><option>USD</option><option>EUR</option></select></label>
+        <label class="field"><span>Новые товары</span>
+          <select id="new-status"><option value="draft">черновиками — сначала проверю сам</option><option value="ready">сразу «готов к отправке»</option></select></label>
+      </div>
+      <datalist id="groups"></datalist>
+      <label class="small"><input type="checkbox" id="auto-sync"> Сразу отправлять изменения на Prom
+        <span class="muted">(цены и наличие товаров, которые уже на Prom или готовы к отправке)</span></label>
+      <div class="toolbar" style="margin:16px 0 0">
+        <button class="btn" id="preview-btn" disabled>Проверить карточки</button>
+        <span class="spacer"></span>
+        <button class="btn" id="save">Сохранить</button>
+        <button class="btn primary" id="save-run">Сохранить и обновить</button>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="preview-panel">
+      <div class="toolbar"><h2 style="margin:0">Проверка</h2><span class="spacer"></span>
+        <label class="small"><input type="checkbox" id="only-bad"> только с ошибками</label></div>
+      <div class="summary" id="summary"></div>
+      <div class="preview-grid" id="preview"></div>
+    </div>
+
+    <div class="panel">
+      <h2>История обновлений</h2>
+      <table class="runs" id="runs"></table>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/preview.js"></script>
+  <script src="/static/mapping.js"></script>
+  <script src="/static/suppliers-common.js"></script>
+  <script src="/static/supplier.js"></script>
+</body>
+</html>

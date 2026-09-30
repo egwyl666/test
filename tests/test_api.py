@@ -7,7 +7,7 @@ from .conftest import make_image
 
 
 def test_pages_served(client):
-    for path in ("/", "/product", "/import", "/settings"):
+    for path in ("/", "/product", "/import", "/settings", "/suppliers", "/supplier", "/pricing"):
         r = client.get(path)
         assert r.status_code == 200 and "<html" in r.text
 
@@ -125,3 +125,59 @@ def test_import_embedded_image_preview(client, tmp_path):
     assert client.post(f"/api/import/{up['token']}/commit", json=body).json()["created"] == 1
     product = client.get("/api/products").json()["items"][0]
     assert product["image_count"] == 1
+
+
+def test_supplier_api_flow(client):
+    from .test_suppliers import BASE, MAPPING_YML, make_yml
+
+    s = client.post("/api/suppliers", json={"name": "Опт"}).json()
+    sid = s["id"]
+    up = client.post(f"/api/suppliers/{sid}/source", files={"file": ("feed.xml", make_yml(BASE))}).json()
+    assert up["sheets"] == ["XML"]
+    sheet = client.get(f"/api/import/{up['token']}/sheet", params={"sheet": "XML", "header_row": 1}).json()
+    assert sheet["mapping"]["A"] == "external_id"
+
+    client.put("/api/pricing", json={"rules": [{"markup_percent": 50, "rounding": "int"}]})
+    mapping = {**MAPPING_YML}
+    preview = client.post(f"/api/import/{up['token']}/preview", json={
+        "sheet": "XML", "header_row": 1, "rows": "2-", "mapping": mapping, "supplier_id": sid}).json()["items"]
+    assert preview[0]["data"]["price"] == 150 and preview[0]["data"]["cost_price"] == 100
+
+    r = client.patch(f"/api/suppliers/{sid}", json={"mapping": mapping, "header_row": 1, "interval_hours": 12})
+    assert r.status_code == 200 and r.json()["next_run_at"]
+    assert client.patch(f"/api/suppliers/{sid}", json={"new_status": "bogus"}).status_code == 400
+
+    assert client.post(f"/api/suppliers/{sid}/run", json={}).json() == {"started": True}
+    import time
+    for _ in range(50):
+        s = client.get(f"/api/suppliers/{sid}").json()
+        if not s["running"] and s["runs"] and s["runs"][0]["status"] != "running":
+            break
+        time.sleep(0.05)
+    assert s["runs"][0]["status"] == "ok", s["runs"][0]
+    assert s["items_active"] == 3
+
+    listing = client.get("/api/products", params={"supplier": sid}).json()
+    assert listing["total"] == 3 and listing["items"][0]["supplier_name"] == "Опт"
+    assert client.get("/api/products", params={"supplier": "none"}).json()["total"] == 0
+
+    pid = listing["items"][0]["id"]
+    p = client.patch(f"/api/products/{pid}", json={"price": 1}).json()
+    assert p["locked_fields"] == ["price"] and p["price"] == 1
+    p = client.post(f"/api/products/{pid}/unlock", json={"fields": ["price"]}).json()
+    assert p["locked_fields"] == [] and p["price"] == p["cost_price"] * 1.5
+
+    test = client.post("/api/pricing/test", json={"cost": "200"}).json()
+    assert test["price"] == 300
+    assert client.put("/api/pricing", json={"rules": [{"rounding": "weird"}]}).status_code == 400
+
+    assert client.delete(f"/api/suppliers/{sid}").json() == {"ok": True}
+    assert client.get("/api/products").json()["total"] == 3
+
+
+def test_import_accepts_xml(client):
+    from .test_suppliers import BASE, make_yml
+
+    up = client.post("/api/import/upload", files={"file": ("feed.yml", make_yml(BASE))}).json()
+    assert up["sheets"] == ["XML"]
+    assert client.post("/api/import/upload", files={"file": ("page.xml", b"<!DOCTYPE html><html></html>")}).status_code == 400

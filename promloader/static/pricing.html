@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Наценка — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+  </header>
+
+  <main>
+    <h1>Правила наценки</h1>
+    <p class="muted" style="margin-top:-8px">
+      Розничная цена считается от закупочной: <b>закупка × (1 + %) + грн</b>, затем округление.
+      Правила проверяются сверху вниз — срабатывает первое подходящее, поэтому частные правила ставьте выше общих.
+      Цена, которую вы поменяли в карточке руками, не пересчитывается.
+    </p>
+
+    <div class="panel">
+      <div style="overflow-x:auto">
+        <table class="rules">
+          <thead><tr>
+            <th></th><th>Поставщик</th><th>Группа содержит</th><th>Закупка от</th><th>до</th>
+            <th>Наценка %</th><th>+ грн</th><th>Округление</th><th title="Если у товара есть РРЦ — продавать по ней">По РРЦ</th><th></th>
+          </tr></thead>
+          <tbody id="rules"></tbody>
+        </table>
+      </div>
+      <div class="toolbar" style="margin:12px 0 0">
+        <button class="btn" id="add">+ Добавить правило</button>
+        <span class="spacer"></span>
+        <button class="btn" id="save">Сохранить</button>
+        <button class="btn primary" id="save-apply">Сохранить и пересчитать цены</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Проверить расчёт</h2>
+      <div class="row" style="align-items:flex-end">
+        <label class="field" style="margin:0"><span>Закупка</span><input id="t-cost" inputmode="decimal" value="100"></label>
+        <label class="field" style="margin:0"><span>РРЦ (если есть)</span><input id="t-rrp" inputmode="decimal"></label>
+        <label class="field" style="margin:0"><span>Поставщик</span><select id="t-supplier"></select></label>
+        <label class="field" style="margin:0"><span>Группа</span><input id="t-category"></label>
+      </div>
+      <p id="t-result" style="font-size:18px;margin:14px 0 0"></p>
+      <p class="small muted">Расчёт по сохранённым правилам.</p>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script>
+    let rounding = {};
+    let rules = [];
+
+    function supplierOptions(selected) {
+      return `<option value="">все</option>` + META.suppliers.map((s) =>
+        `<option value="${s.id}" ${String(s.id) === String(selected ?? "") ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+    }
+
+    function render() {
+      const num = (v) => (v === null || v === undefined ? "" : v);
+      $("#rules").innerHTML = rules.map((r, i) => `
+        <tr data-i="${i}">
+          <td class="handle">
+            <button class="btn small link" data-up title="Выше">▲</button><br><button class="btn small link" data-down title="Ниже">▼</button>
+          </td>
+          <td><select data-k="supplier_id">${supplierOptions(r.supplier_id)}</select></td>
+          <td><input data-k="category" value="${esc(r.category)}" placeholder="любая"></td>
+          <td><input class="num" data-k="cost_from" value="${num(r.cost_from)}" inputmode="decimal"></td>
+          <td><input class="num" data-k="cost_to" value="${num(r.cost_to)}" inputmode="decimal"></td>
+          <td><input class="num" data-k="markup_percent" value="${num(r.markup_percent)}" inputmode="decimal"></td>
+          <td><input class="num" data-k="markup_fixed" value="${num(r.markup_fixed)}" inputmode="decimal"></td>
+          <td><select data-k="rounding">${Object.entries(rounding).map(([k, v]) =>
+            `<option value="${k}" ${k === r.rounding ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></td>
+          <td style="text-align:center"><input type="checkbox" data-k="use_rrp" ${r.use_rrp ? "checked" : ""}></td>
+          <td><button class="btn small danger" data-del title="Удалить">✕</button></td>
+        </tr>`).join("") || `<tr><td colspan="10" class="muted" style="padding:16px">Правил нет — цена будет равна закупочной (или РРЦ).</td></tr>`;
+    }
+
+    function readRules() {
+      return $$("#rules tr[data-i]").map((tr) => {
+        const r = {};
+        tr.querySelectorAll("[data-k]").forEach((el) => {
+          r[el.dataset.k] = el.type === "checkbox" ? el.checked : el.value.trim().replace(",", ".");
+        });
+        return r;
+      });
+    }
+
+    $("#rules").addEventListener("click", (e) => {
+      const tr = e.target.closest("tr[data-i]");
+      if (!tr) return;
+      rules = readRules();
+      const i = Number(tr.dataset.i);
+      if (e.target.closest("[data-del]")) rules.splice(i, 1);
+      else if (e.target.closest("[data-up]") && i > 0) [rules[i - 1], rules[i]] = [rules[i], rules[i - 1]];
+      else if (e.target.closest("[data-down]") && i < rules.length - 1) [rules[i + 1], rules[i]] = [rules[i], rules[i + 1]];
+      else return;
+      render();
+    });
+
+    $("#add").onclick = () => {
+      rules = readRules();
+      rules.push({ supplier_id: "", category: "", cost_from: "", cost_to: "", markup_percent: 30, markup_fixed: 0, rounding: "end9", use_rrp: false });
+      render();
+    };
+
+    async function save() {
+      const res = await api("/api/pricing", { method: "PUT", json: { rules: readRules() } });
+      rules = res.rules;
+      render();
+      test();
+    }
+
+    $("#save").onclick = async () => {
+      try { await save(); toast("Правила сохранены", "ok"); } catch (err) { toast(err.message, "error"); }
+    };
+    $("#save-apply").onclick = async () => {
+      try {
+        await save();
+        const res = await api("/api/pricing/apply", { method: "POST" });
+        toast(`Цен изменено: ${res.changed}` + (res.queued ? `, отправлено на Prom: ${res.queued}` : ""), "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    };
+
+    let testTimer;
+    async function test() {
+      const res = await api("/api/pricing/test", { method: "POST", json: {
+        cost: $("#t-cost").value, rrp: $("#t-rrp").value, supplier_id: $("#t-supplier").value, category: $("#t-category").value,
+      } }).catch((err) => ({ error: err.message }));
+      if (res.error) { $("#t-result").textContent = res.error; return; }
+      $("#t-result").innerHTML = res.price === null
+        ? `<span class="muted">Ни одно правило не подошло — цена будет равна закупочной (или РРЦ)</span>`
+        : `Розничная цена: <b>${esc(formatPrice(res.price))}</b> <span class="small muted">— правило №${rules.findIndex((r) => r.id === res.rule.id) + 1}</span>`;
+    }
+    ["#t-cost", "#t-rrp", "#t-supplier", "#t-category"].forEach((s) =>
+      $(s).addEventListener("input", () => { clearTimeout(testTimer); testTimer = setTimeout(test, 250); }));
+
+    (async () => {
+      await loadMeta();
+      const data = await api("/api/pricing");
+      rounding = data.rounding;
+      rules = data.rules;
+      $("#t-supplier").innerHTML = supplierOptions("");
+      render();
+      test();
+    })();
+  </script>
+</body>
+</html>

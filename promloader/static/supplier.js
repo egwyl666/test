@@ -1,0 +1,201 @@
+// Настройка поставщика: источник, колонки, правила обновления, история.
+
+const sid = Number(new URLSearchParams(location.search).get("id"));
+let supplier = null;
+let gridOpened = false;
+let items = [];
+let pollTimer;
+const grid = createMappingGrid($("#mapping"), {
+  openEnded: true,
+  required: ["external_id", "name", ["cost_price", "price", "rrp"]],
+});
+
+function settingsBody() {
+  const body = {
+    name: $("#name").value,
+    url: $("#url").value.trim(),
+    interval_hours: Number($("#interval").value),
+    missing_action: $("#missing").value,
+    prefix: $("#prefix").value,
+    new_status: $("#new-status").value,
+    auto_sync: $("#auto-sync").checked,
+    defaults: { group_name: $("#def-group").value, currency: $("#def-currency").value },
+  };
+  if (gridOpened) Object.assign(body, grid.body());
+  return body;
+}
+
+function fill(s) {
+  supplier = s;
+  document.title = `${s.name} — Prom Loader`;
+  $("#name").value = s.name;
+  $("#url").value = s.url;
+  $("#interval").value = String(s.interval_hours);
+  if ($("#interval").value !== String(s.interval_hours)) {
+    $("#interval").insertAdjacentHTML("beforeend", `<option value="${s.interval_hours}">каждые ${s.interval_hours} ч</option>`);
+    $("#interval").value = String(s.interval_hours);
+  }
+  $("#missing").value = s.missing_action;
+  $("#prefix").value = s.prefix;
+  $("#new-status").value = s.new_status;
+  $("#auto-sync").checked = s.auto_sync;
+  $("#def-group").value = s.defaults.group_name || "";
+  $("#def-currency").value = s.defaults.currency || "UAH";
+  $("#products-link").href = `/?supplier=${s.id}`;
+  $("#source-info").innerHTML = s.source_name
+    ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
+      (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`)
+    : "";
+  const open = $("#open-current");
+  if (open) open.onclick = (e) => { e.preventDefault(); openSource(false); };
+  renderRuns(s);
+}
+
+function renderRuns(s) {
+  const running = s.running;
+  $("#run").disabled = running;
+  $("#run").textContent = running ? "Обновляется…" : "Обновить сейчас";
+  $("#run-state").innerHTML = running ? statusPill("running") : "";
+  const broken = s.runs[0] && s.runs[0].status === "failed" && /сломан/.test(s.runs[0].message);
+  $("#runs").innerHTML = s.runs.length ? s.runs.map((r, i) => `
+    <tr>
+      <td style="white-space:nowrap">${statusPill(r.status)}</td>
+      <td class="muted" style="white-space:nowrap">${esc(formatDate(r.started_at))}<br>${r.trigger === "schedule" ? "по расписанию" : "вручную"}</td>
+      <td>${r.status === "ok" ? esc(runSummary(r.stats)) : `<span class="run-msg">${esc(r.message)}</span>`}
+        ${i === 0 && broken ? `<div style="margin-top:6px"><button class="btn small danger" id="force">Обновить принудительно</button></div>` : ""}
+        ${r.stats && r.stats.error_samples && r.stats.error_samples.length ? `<details><summary>строки с ошибками (${r.stats.errors})</summary>
+          <ul class="check-list">${r.stats.error_samples.map((e) => `<li class="err">${esc(e)}</li>`).join("")}</ul></details>` : ""}
+      </td>
+    </tr>`).join("") : `<tr><td class="muted">Ещё не обновлялся</td></tr>`;
+  const force = $("#force");
+  if (force) force.onclick = () => {
+    if (confirm("Товары, которых нет в новом прайсе, будут сняты с продажи. Продолжить?")) runNow(true);
+  };
+  clearTimeout(pollTimer);
+  if (running) pollTimer = setTimeout(reload, 2000);
+}
+
+async function reload() {
+  const s = await api(`/api/suppliers/${sid}`);
+  const wasRunning = supplier && supplier.running;
+  fill(s);
+  if (wasRunning && !s.running && s.runs[0]) {
+    const r = s.runs[0];
+    toast(r.status === "ok" ? `Обновлено: ${runSummary(r.stats)}` : r.message, r.status === "ok" ? "ok" : "error");
+  }
+}
+
+async function showGrid(res) {
+  const preset = gridOpened ? grid.body() : {
+    sheet: supplier.sheet, header_row: supplier.header_row, rows: supplier.rows, mapping: supplier.mapping,
+  };
+  await grid.open(res.token, res.sheets, preset);
+  gridOpened = true;
+  $("#mapping-panel").classList.remove("hidden");
+  $("#preview-btn").disabled = false;
+  fill(supplier);
+}
+
+async function openSource(refetch) {
+  const btn = $("#fetch");
+  btn.disabled = true;
+  btn.textContent = "Скачиваю…";
+  try {
+    if (refetch) await api(`/api/suppliers/${sid}`, { method: "PATCH", json: { url: $("#url").value.trim() } });
+    const res = await api(`/api/suppliers/${sid}/open`, { method: "POST", json: { refetch } });
+    await reload();
+    await showGrid(res);
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Скачать и открыть";
+  }
+}
+
+async function uploadSource(files) {
+  const file = files[0];
+  if (!file) return;
+  const body = new FormData();
+  body.append("file", file);
+  try {
+    const res = await api(`/api/suppliers/${sid}/source`, { method: "POST", body });
+    await reload();
+    await showGrid(res);
+    toast("Прайс загружен", "ok");
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function save() {
+  const s = await api(`/api/suppliers/${sid}`, { method: "PATCH", json: settingsBody() });
+  fill(s);
+  return s;
+}
+
+async function runNow(force = false) {
+  try {
+    await api(`/api/suppliers/${sid}/run`, { method: "POST", json: { force } });
+    toast("Обновление запущено", "ok");
+    await reload();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+$("#fetch").onclick = () => {
+  if (!$("#url").value.trim()) return toast("Вставьте ссылку на прайс", "error");
+  openSource(true);
+};
+$("#pick").onclick = async (e) => { e.preventDefault(); uploadSource(await pickFiles({ accept: ".xlsx,.xlsm,.csv,.xml,.yml", multiple: false })); };
+onPageFileDrop(uploadSource, { accept: (f) => /\.(xlsx|xlsm|csv|xml|yml)$/i.test(f.name), text: "Отпустите — это станет прайсом поставщика" });
+
+$("#save").onclick = async () => {
+  try { await save(); toast("Сохранено", "ok"); } catch (err) { toast(err.message, "error"); }
+};
+$("#save-run").onclick = async () => {
+  try { await save(); await runNow(); } catch (err) { toast(err.message, "error"); }
+};
+$("#run").onclick = () => runNow(false);
+$("#delete").onclick = async () => {
+  if (!confirm("Удалить поставщика? Его товары останутся в списке как обычные товары, но перестанут обновляться.")) return;
+  await api(`/api/suppliers/${sid}`, { method: "DELETE" });
+  location.href = "/suppliers";
+};
+
+async function preview() {
+  try {
+    const body = { ...grid.body(), defaults: settingsBody().defaults, supplier_id: sid };
+    const res = await api(`/api/import/${grid.token}/preview`, { method: "POST", json: body });
+    items = res.items;
+    renderPreview();
+    $("#preview-panel").classList.remove("hidden");
+    $("#preview-panel").scrollIntoView({ behavior: "smooth" });
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+function renderPreview() {
+  const bad = items.filter((i) => i.errors.length || !i.data.external_id);
+  $("#summary").innerHTML = `
+    <div>Строк: <b>${items.length}</b></div>
+    <div style="color:var(--ok)">Годных: <b>${items.length - bad.length}</b></div>
+    <div style="color:var(--err)">С ошибками (пропустятся): <b>${bad.length}</b></div>`;
+  const shown = items.slice(0, 60).map((i) => (i.data.external_id ? i : { ...i, errors: ["Нет артикула", ...i.errors] }));
+  renderItemsPreview($("#preview"), shown, { token: grid.token, sheet: grid.sheet, onlyBad: $("#only-bad").checked });
+  if (items.length > 60) $("#preview").insertAdjacentHTML("beforeend", `<p class="muted">…и ещё ${items.length - 60}</p>`);
+}
+$("#preview-btn").onclick = preview;
+$("#only-bad").onchange = renderPreview;
+
+(async () => {
+  await loadMeta();
+  $("#groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");
+  try {
+    await reload();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+})();
