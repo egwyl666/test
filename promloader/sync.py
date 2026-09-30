@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import config, db, feed, products
+from . import config, db, feed, phototunnel, products
 from .prom_api import PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
@@ -43,8 +43,9 @@ def enqueue(product_ids: list[int]) -> dict:
         reasons = list(p["check"]["errors"])
         if p["status"] == "sending":
             reasons.append("Уже отправляется")
-        if not base_url and any(not img["external"] for img in p["images"]):
-            reasons.append("Фото загружены сюда, но не указан публичный адрес сайта (Настройки) — Prom не сможет их скачать")
+        if not base_url and not phototunnel.enabled() and any(not img["external"] for img in p["images"]):
+            reasons.append("Фото загружены с компьютера, а временный доступ к фото выключен и публичный адрес не указан "
+                           "(Настройки) — Prom не сможет их скачать")
         if reasons:
             rejected.append({"id": pid, "name": p["name"], "reasons": reasons})
         else:
@@ -146,9 +147,30 @@ def _fail_or_retry(job: dict, err: PromError) -> None:
     _finish_products(json.loads(job["products"]), ok=False, message=str(err))
 
 
+def _has_local_photos(product_ids: list[int]) -> bool:
+    marks = ",".join("?" * len(product_ids))
+    row = db.query_one(f"SELECT 1 FROM images WHERE file IS NOT NULL AND product_id IN ({marks}) LIMIT 1", product_ids)
+    return row is not None
+
+
+async def _photo_base_url(product_ids: list[int]) -> str:
+    """Адрес, по которому Prom скачает фото: постоянный из настроек или временный туннель."""
+    base = config.public_base_url()
+    if base or not phototunnel.enabled():
+        return base
+    has_local = any(_has_local_photos(product_ids[i:i + 500]) for i in range(0, len(product_ids), 500))
+    if not has_local:
+        return ""
+    try:
+        return await asyncio.to_thread(phototunnel.tunnel.ensure_url)
+    except phototunnel.TunnelError as exc:
+        raise PromError(str(exc), retryable=True)
+
+
 async def _start(job: dict, client: PromClient) -> None:
     job_products = json.loads(job["products"])
-    content = feed.build([int(pid) for pid in job_products], config.public_base_url())
+    ids = [int(pid) for pid in job_products]
+    content = feed.build(ids, await _photo_base_url(ids))
     import_id = await client.import_file(content, import_settings())
     _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", next_run_at=_at(POLL_SECONDS))
 
@@ -208,6 +230,11 @@ async def worker(stop: asyncio.Event, interval: float = 2.0) -> None:
             await run_once()
         except Exception:
             log.exception("Сбой очереди отправки")
+        try:
+            busy = db.query_one("SELECT 1 FROM sync_jobs WHERE status IN ('pending', 'waiting') LIMIT 1") is not None
+            await asyncio.to_thread(phototunnel.tunnel.maybe_close, busy)
+        except Exception:
+            log.exception("Сбой временного доступа к фото")
         try:
             await asyncio.wait_for(stop.wait(), timeout=interval)
         except asyncio.TimeoutError:

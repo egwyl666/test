@@ -49,9 +49,12 @@
         <span>Публичный адрес этого сайта</span>
         <input name="public_base_url" placeholder="https://loader.example.com">
       </label>
-      <p class="small muted" style="margin-top:-6px">
-        Prom сам скачивает фото по ссылкам, поэтому загруженные сюда фото должны быть доступны из интернета.
-        Если программа запущена на домашнем компьютере — используйте VPS или туннель (например, Cloudflare Tunnel).
+      <label class="small" style="display:block;margin:-4px 0 8px"><input type="checkbox" id="photo-tunnel">
+        <b>Фото с компьютера:</b> на время отправки открывать Prom временный доступ только к фото (через бесплатный Cloudflare)</label>
+      <p class="small muted" style="margin-top:0">
+        Prom сам скачивает фото по ссылкам, а программа на домашнем компьютере из интернета не видна. С этой галочкой при отправке
+        программа ненадолго открывает временный адрес, через который доступны <b>только фото</b> (не товары и не настройки), и закрывает его
+        через 30 минут после отправки. Поле «Публичный адрес» заполняйте, только если программа стоит на сервере с постоянным адресом.
       </p>
       <label class="field"><span>Название магазина (для превью)</span><input name="shop_name"></label>
       <div class="toolbar">
@@ -190,7 +193,8 @@
 
     $("#save").onclick = () => {
       const f = $("#form");
-      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value });
+      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value,
+             photo_tunnel: $("#photo-tunnel").checked });
     };
     $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value });
     $("#new-key").onclick = () => {
@@ -249,6 +253,7 @@
     // ---------- обновления ----------
     function fillUpdates(s) {
       $("#version").textContent = s.version;
+      $("#photo-tunnel").checked = s.photo_tunnel;
       $("#auto-update").checked = s.auto_update;
       $("#github-token").value = "";
       $("#github-state").textContent = s.github_token ? `(сейчас: ${s.github_token})` : "(не задан)";

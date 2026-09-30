@@ -15,7 +15,7 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, backup, config, db, excel, feed, pricing, products, runtime, suppliers, sync, updater
+from . import ai, backup, config, db, excel, feed, phototunnel, pricing, products, runtime, suppliers, sync, updater
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -46,6 +46,7 @@ async def lifespan(app: FastAPI):
     stop.set()
     for task in tasks:
         await task
+    phototunnel.tunnel.close()
 
 
 async def maintenance_worker(stop: asyncio.Event) -> None:
@@ -306,6 +307,11 @@ async def jobs():
     return sync.list_jobs()
 
 
+@app.get("/api/sync/photos")
+async def photo_access():
+    return {"enabled": phototunnel.enabled(), **phototunnel.tunnel.status()}
+
+
 @app.post("/api/sync/jobs/{job_id}/retry")
 async def retry(job_id: int):
     try:
@@ -334,6 +340,7 @@ def _settings_view() -> dict:
         "gemini_model": config.get("gemini_model") or ai.DEFAULT_MODELS["gemini"],
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
         "auto_update": config.get("auto_update") != "0",
+        "photo_tunnel": config.get("photo_tunnel") != "0",
         "github_token": config.mask(config.get("github_token")),
         "update_repo": config.get("update_repo") or updater.DEFAULT_REPO,
         "version": updater.current_version(),
@@ -351,6 +358,8 @@ async def get_settings():
 async def save_settings(data: dict = Body(...)):
     if data.get("prom_token"):
         db.set_setting("prom_token", data["prom_token"].strip())
+    if "photo_tunnel" in data:
+        db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
     if "auto_update" in data:
         db.set_setting("auto_update", "1" if data["auto_update"] else "0")
     if data.get("github_token"):

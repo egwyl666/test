@@ -167,7 +167,13 @@ async function loadJobs() {
   let jobs = [];
   try { jobs = await api("/api/sync/jobs"); } catch { /* повторим позже */ }
   const active = jobs.some((j) => j.status === "pending" || j.status === "waiting");
-  $("#jobs-hint").textContent = active ? "обновляется автоматически" : "";
+  let photos = null;
+  try { photos = await api("/api/sync/photos"); } catch { /* не критично */ }
+  $("#jobs-hint").textContent = [
+    photos && photos.active ? "📷 фото с компьютера сейчас доступны Prom через временный адрес" : "",
+    photos && photos.error ? `📷 ${photos.error}` : "",
+    active ? "обновляется автоматически" : "",
+  ].filter(Boolean).join(" · ");
   if (jobs.length) {
     $("#jobs").innerHTML = jobs.slice(0, 6).map((j) => {
       const [cls, label] = JOB_STATUS[j.status] || ["draft", j.status];
