@@ -154,6 +154,28 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_date ON orders(date_created);
 
+CREATE TABLE IF NOT EXISTS tg_recipients (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     TEXT NOT NULL UNIQUE,
+    name        TEXT NOT NULL DEFAULT '',
+    events      TEXT NOT NULL DEFAULT '[]',
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    description  TEXT NOT NULL,
+    contact      TEXT NOT NULL DEFAULT '',
+    page         TEXT NOT NULL DEFAULT '',
+    files        TEXT NOT NULL DEFAULT '[]',
+    diagnostics  TEXT NOT NULL DEFAULT '{}',
+    status       TEXT NOT NULL DEFAULT 'saved',
+    error        TEXT NOT NULL DEFAULT '',
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    sent_at      TEXT
+);
+
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        INTEGER NOT NULL DEFAULT 0,

@@ -233,4 +233,37 @@ function pickFiles({ accept = "", multiple = true } = {}) {
 
 const isImage = (f) => f.type.startsWith("image/") || /\.(jpe?g|png|gif|webp|bmp|heic)$/i.test(f.name);
 
-document.addEventListener("DOMContentLoaded", initNav);
+// ---------- «Сообщить о проблеме» ----------
+// Ошибки страницы запоминаем — они уйдут вместе с обращением и помогут найти причину.
+const JS_ERRORS_KEY = "promloader-js-errors";
+function rememberJsError(text) {
+  try {
+    const list = JSON.parse(sessionStorage.getItem(JS_ERRORS_KEY) || "[]");
+    list.push(`${new Date().toLocaleTimeString()} ${location.pathname}: ${String(text).slice(0, 500)}`);
+    sessionStorage.setItem(JS_ERRORS_KEY, JSON.stringify(list.slice(-20)));
+  } catch { /* хранилище недоступно — не страшно */ }
+  const fab = document.querySelector(".help-fab");
+  if (fab) fab.classList.add("has-errors");
+}
+window.addEventListener("error", (e) => rememberJsError(e.message + (e.filename ? ` (${e.filename.split("/").pop()}:${e.lineno})` : "")));
+window.addEventListener("unhandledrejection", (e) => {
+  const reason = e.reason;
+  if (reason && (reason.network || reason.status)) return;  // ошибки сервера пользователь уже видел в сообщении
+  rememberJsError("Promise: " + (reason && reason.message ? reason.message : reason));
+});
+
+function jsErrors() {
+  try { return JSON.parse(sessionStorage.getItem(JS_ERRORS_KEY) || "[]"); } catch { return []; }
+}
+
+function addHelpButton() {
+  if (location.pathname === "/support" || document.querySelector(".help-fab")) return;
+  const a = document.createElement("a");
+  a.className = "help-fab" + (jsErrors().length ? " has-errors" : "");
+  a.href = "/support?from=" + encodeURIComponent(location.pathname + location.search);
+  a.textContent = "🆘 Не получается?";
+  a.title = "Сообщить о проблеме: описание и скриншот — разработчик разберётся";
+  document.body.appendChild(a);
+}
+
+document.addEventListener("DOMContentLoaded", () => { initNav(); addHelpButton(); });

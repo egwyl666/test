@@ -17,6 +17,7 @@
       <a href="/pricing">Наценка</a>
       <a href="/import">Импорт файла</a>
       <a href="/settings">Настройки</a>
+      <a href="/support">Поддержка</a>
     </nav>
   </header>
 
@@ -81,18 +82,30 @@
       <ol class="small" style="margin-top:-4px;line-height:1.7">
         <li>В Telegram откройте <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, отправьте ему <code>/newbot</code>,
           придумайте имя боту. BotFather пришлёт <b>токен</b> — длинную строку вида <code>123456:ABC-…</code>. Вставьте её ниже и нажмите «Сохранить».</li>
-        <li>Откройте своего нового бота (ссылка есть в сообщении BotFather) и нажмите <b>«Старт»</b> или напишите ему что-нибудь.</li>
-        <li>Нажмите <b>«Найти чат»</b>, затем «Отправить тест».</li>
+        <li>Каждый, кто должен получать уведомления (вы, менеджер, группа), открывает бота и нажимает <b>«Старт»</b>.</li>
+        <li>Нажмите <b>«Кто написал боту»</b> и добавьте нужных людей. Остальные ничего получать не будут —
+          даже если найдут бота. У каждого получателя — свои галочки: кому заказы, кому отчёты о выгрузке.</li>
       </ol>
       <label class="field"><span>Токен бота <span class="muted" id="tg-state"></span></span>
         <input id="tg-token" type="password" placeholder="123456789:AA…" autocomplete="new-password"></label>
-      <div class="small" style="margin-bottom:10px">Присылать: <span id="tg-events"></span></div>
       <div class="toolbar">
-        <button class="btn primary" id="tg-save">Сохранить</button>
-        <button class="btn" id="tg-find">Найти чат</button>
-        <button class="btn" id="tg-test">Отправить тест</button>
+        <button class="btn primary" id="tg-save">Сохранить токен</button>
         <span class="small" id="tg-result"></span>
       </div>
+      <h3 style="margin:14px 0 6px">Получатели</h3>
+      <div id="tg-recipients"></div>
+      <div id="tg-candidates"></div>
+      <div class="toolbar" style="margin-top:8px">
+        <button class="btn primary" id="tg-find">Кто написал боту</button>
+      </div>
+      <details class="small" style="margin-top:6px">
+        <summary class="muted" style="cursor:pointer">Добавить по ID чата вручную</summary>
+        <div class="toolbar" style="margin:8px 0 0">
+          <input id="tg-manual-id" placeholder="ID чата, например 123456789" style="max-width:240px">
+          <input id="tg-manual-name" placeholder="Имя (для себя)" style="max-width:180px">
+          <button class="btn" id="tg-add-manual">Добавить</button>
+        </div>
+      </details>
     </div>
 
     <div class="panel" id="ai">
@@ -173,6 +186,25 @@
         <button class="btn" id="new-key" style="flex:0 0 auto">Новый ключ</button>
       </div>
     </div>
+
+    <details class="panel" id="support-channel">
+      <summary><b>🆘 Куда уходят обращения в «Поддержку»</b> <span class="muted small">(для разработчика / того, кто обслуживает программу)</span></summary>
+      <p class="small muted">Отдельный бот, не связанный с уведомлениями магазина: обращения из раздела «Поддержка»
+        (описание, скриншоты, техническая информация) приходят в указанный здесь чат. Если не настроено — обращения
+        просто сохраняются на компьютере, их можно скачать архивом и переслать вручную.
+        Разработчик может заранее положить файл <code>support.json</code> в папку программы — тогда здесь ничего заполнять не нужно.</p>
+      <label class="field"><span>Токен бота поддержки <span class="muted" id="sup-state"></span></span>
+        <input id="sup-token" type="password" placeholder="123456789:AA…" autocomplete="new-password"></label>
+      <label class="field"><span>ID чата, куда присылать обращения</span>
+        <input id="sup-chat" placeholder="например 123456789"></label>
+      <div class="toolbar">
+        <button class="btn primary" id="sup-save">Сохранить</button>
+        <button class="btn" id="sup-find">Найти чат</button>
+        <button class="btn" id="sup-clear">Отключить</button>
+        <span class="small" id="sup-result"></span>
+      </div>
+      <div id="sup-chats" class="small"></div>
+    </details>
 
     <div class="panel">
       <h2>Дополнительно</h2>
@@ -430,38 +462,135 @@
     };
 
     // ---------- Telegram ----------
+    let tgEvents = {};
+    const tgOut = (text, ok) => { $("#tg-result").textContent = text; $("#tg-result").style.color = ok ? "var(--ok)" : "var(--err)"; };
     function fillTelegram(s) {
       $("#tg-token").value = "";
-      $("#tg-state").textContent = s.telegram_token
-        ? `(сейчас: ${s.telegram_token}${s.telegram_chat ? `, чат: ${s.telegram_chat}` : ", чат не найден"})` : "(не задан)";
-      $("#tg-events").innerHTML = Object.entries(s.telegram_event_labels).map(([k, v]) =>
-        `<label style="margin-right:12px;white-space:nowrap"><input type="checkbox" value="${k}" ${s.telegram_events.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("");
+      $("#tg-state").textContent = s.telegram_token ? `(сейчас: ${s.telegram_token})` : "(не задан)";
     }
-    const tgOut = (text, ok) => { $("#tg-result").textContent = text; $("#tg-result").style.color = ok ? "var(--ok)" : "var(--err)"; };
-    $("#tg-save").onclick = async () => {
+    async function loadRecipients() {
+      const r = await api("/api/telegram/recipients");
+      tgEvents = r.events;
+      renderRecipients(r.items);
+    }
+    function renderRecipients(items) {
+      $("#tg-recipients").innerHTML = items.length ? items.map((r) => `
+        <div class="recipient" data-id="${r.id}">
+          <div><b>${esc(r.name)}</b> <span class="muted small">ID ${esc(r.chat_id)}</span></div>
+          <div class="small">${Object.entries(tgEvents).map(([k, v]) =>
+            `<label style="margin-right:12px;white-space:nowrap"><input type="checkbox" value="${k}" ${r.events.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("")}</div>
+          <div class="toolbar" style="margin:6px 0 0"><button class="btn small" data-act="test">Тест</button>
+            <button class="btn small" data-act="remove">Убрать</button><span class="small saved-mark"></span></div>
+        </div>`).join("")
+        : `<p class="small muted">Пока никто не получает уведомления.</p>`;
+    }
+    $("#tg-recipients").addEventListener("change", async (e) => {
+      const row = e.target.closest(".recipient");
+      if (!row) return;
       try {
-        const s = await api("/api/settings", { method: "POST", json: {
-          telegram_token: $("#tg-token").value, telegram_events: $$("#tg-events input:checked").map((i) => i.value) } });
-        fillTelegram(s);
-        tgOut("Сохранено", true);
+        await api(`/api/telegram/recipients/${row.dataset.id}`, { method: "PATCH",
+          json: { events: $$("input:checked", row).map((i) => i.value) } });
+        const mark = $(".saved-mark", row);
+        mark.textContent = "✓ сохранено";
+        mark.style.color = "var(--ok)";
+        clearTimeout(mark._t);
+        mark._t = setTimeout(() => { mark.textContent = ""; }, 1500);
+      } catch (err) { toast(err.message, "error"); }
+    });
+    $("#tg-recipients").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const row = btn.closest(".recipient");
+      try {
+        if (btn.dataset.act === "test") {
+          await api(`/api/telegram/recipients/${row.dataset.id}/test`, { method: "POST" });
+          toast("Сообщение отправлено — проверьте Telegram", "ok");
+        } else if (confirm("Больше не присылать уведомления этому получателю?")) {
+          renderRecipients((await api(`/api/telegram/recipients/${row.dataset.id}`, { method: "DELETE" })).items);
+        }
+      } catch (err) { toast(err.message, "error"); }
+    });
+    $("#tg-save").onclick = async () => {
+      if (!$("#tg-token").value.trim()) { tgOut("Вставьте токен от BotFather", false); return; }
+      try {
+        fillTelegram(await api("/api/settings", { method: "POST", json: { telegram_token: $("#tg-token").value } }));
+        tgOut("Сохранено. Теперь добавьте получателей", true);
       } catch (err) { tgOut(err.message, false); }
     };
     $("#tg-find").onclick = async () => {
       try {
-        const r = await api("/api/telegram/find", { method: "POST" });
-        tgOut(`Чат найден: ${r.name}`, true);
-        fillTelegram(await api("/api/settings"));
+        const r = await api("/api/telegram/candidates", { method: "POST" });
+        $("#tg-candidates").innerHTML = r.items.length
+          ? `<p class="small" style="margin:8px 0 4px">Недавно писали боту:</p>` + r.items.map((c) =>
+            `<div class="toolbar" style="margin:0 0 4px"><span>${esc(c.name)} <span class="muted small">ID ${esc(c.chat_id)}</span></span>
+             <button class="btn small primary" data-chat="${esc(c.chat_id)}" data-name="${esc(c.name)}">Добавить</button></div>`).join("")
+          : `<p class="small muted">Новых чатов нет. Пусть человек откроет бота, нажмёт «Старт» — и нажмите кнопку ещё раз.</p>`;
       } catch (err) { tgOut(err.message, false); }
     };
-    $("#tg-test").onclick = async () => {
-      try { await api("/api/telegram/test", { method: "POST" }); tgOut("Сообщение отправлено — проверьте Telegram", true); }
-      catch (err) { tgOut(err.message, false); }
+    async function addRecipient(chat_id, name) {
+      await api("/api/telegram/recipients", { method: "POST", json: { chat_id, name } });
+      await loadRecipients();
+      toast(`${name || chat_id} будет получать уведомления`, "ok");
+    }
+    $("#tg-candidates").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-chat]");
+      if (!btn) return;
+      try {
+        await addRecipient(btn.dataset.chat, btn.dataset.name);
+        btn.closest(".toolbar").remove();
+        if (!$("#tg-candidates button")) $("#tg-candidates").innerHTML = "";
+      }
+      catch (err) { toast(err.message, "error"); }
+    });
+    $("#tg-add-manual").onclick = async () => {
+      try {
+        await addRecipient($("#tg-manual-id").value.trim(), $("#tg-manual-name").value.trim());
+        $("#tg-manual-id").value = $("#tg-manual-name").value = "";
+      } catch (err) { toast(err.message, "error"); }
     };
+
+    // ---------- канал поддержки ----------
+    const supOut = (text, ok) => { $("#sup-result").textContent = text; $("#sup-result").style.color = ok ? "var(--ok)" : "var(--err)"; };
+    function fillSupport(s) {
+      $("#sup-token").value = "";
+      $("#sup-state").textContent = s.support_token ? `(сейчас: ${s.support_token})` : "(не задан)";
+      $("#sup-chat").value = s.support_chat_id || "";
+    }
+    $("#sup-save").onclick = async () => {
+      try {
+        fillSupport(await api("/api/settings", { method: "POST",
+          json: { support_token: $("#sup-token").value, support_chat_id: $("#sup-chat").value } }));
+        supOut("Сохранено", true);
+      } catch (err) { supOut(err.message, false); }
+    };
+    $("#sup-clear").onclick = async () => {
+      if (!confirm("Не отправлять обращения в Telegram? Они будут только сохраняться на компьютере.")) return;
+      try {
+        fillSupport(await api("/api/settings", { method: "POST", json: { support_token_clear: true, support_chat_id: "" } }));
+        supOut("Отключено", true);
+      } catch (err) { supOut(err.message, false); }
+    };
+    $("#sup-find").onclick = async () => {
+      try {
+        const r = await api("/api/support/channel/chats", { method: "POST", json: { token: $("#sup-token").value } });
+        $("#sup-chats").innerHTML = r.items.length ? "Писали боту: " + r.items.map((c) =>
+          `<a href="#" data-chat="${esc(c.chat_id)}">${esc(c.name)} (${esc(c.chat_id)})</a>`).join(", ")
+          : "Никто не писал боту поддержки. Напишите ему что-нибудь и нажмите ещё раз.";
+      } catch (err) { supOut(err.message, false); }
+    };
+    $("#sup-chats").addEventListener("click", (e) => {
+      const a = e.target.closest("a[data-chat]");
+      if (!a) return;
+      e.preventDefault();
+      $("#sup-chat").value = a.dataset.chat;
+      supOut("Нажмите «Сохранить»", true);
+    });
 
     loadMeta().catch(() => {});
     loadSchedules().catch(() => {});
-    api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); }).catch((err) => toast(err.message, "error"));
+    api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); }).catch((err) => toast(err.message, "error"));
     loadBackups().catch(() => {});
+    loadRecipients().catch(() => {});
   </script>
 </body>
 </html>

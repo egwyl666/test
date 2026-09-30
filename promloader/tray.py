@@ -176,6 +176,11 @@ class App:
             if self.child:
                 self.child.terminate()  # не ответила — перезапустим принудительно
 
+    def open_support(self, *_):
+        port = self.port()
+        if port:
+            webbrowser.open(f"http://localhost:{port}/support")
+
     def open_folder(self, *_):
         if os.name == "nt":
             os.startfile(self.data)  # noqa: S606
@@ -213,6 +218,7 @@ class App:
             pystray.MenuItem("Открыть Prom Loader", self.open_app, default=True),
             pystray.MenuItem("Перезапустить", self.restart),
             pystray.MenuItem("Папка с данными", self.open_folder),
+            pystray.MenuItem("Сообщить о проблеме", self.open_support),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Выключить", self.quit),
         )

@@ -12,12 +12,12 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (ai, aibulk, autostart, backup, config, db, excel, feed, notify, orders, phototunnel, pricing, products,
-               promcatalog, runtime, schedule, suppliers, sync, updater)
+               promcatalog, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -25,6 +25,7 @@ MAX_UPLOAD = 25 * 1024 * 1024
 PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
+    "/support": "support.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -44,12 +45,26 @@ async def lifespan(app: FastAPI):
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
-                 asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop))]
+                 asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
+                 asyncio.create_task(support_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
     phototunnel.tunnel.close()
+
+
+async def support_worker(stop: asyncio.Event) -> None:
+    """Досылает обращения в поддержку, которые не ушли из-за отсутствия связи."""
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(support.send_pending)
+        except Exception:
+            log.exception("Сбой досылки обращений в поддержку")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=support.RETRY_MINUTES * 60)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def orders_worker(stop: asyncio.Event) -> None:
@@ -190,6 +205,7 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(schedule.ScheduleError)
 @app.exception_handler(aibulk.BulkError)
 @app.exception_handler(notify.NotifyError)
+@app.exception_handler(support.SupportError)
 @app.exception_handler(autostart.AutostartError)
 async def user_error(request: Request, exc: Exception):
     body = {"detail": str(exc)}
@@ -416,9 +432,9 @@ def _settings_view() -> dict:
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
         "ai_rate": db.get_setting("ai_rate"),
         "telegram_token": config.mask(notify.token()),
-        "telegram_chat": db.get_setting("telegram_chat_name") if notify.chat_id() else "",
-        "telegram_events": sorted(notify.enabled_events()),
         "telegram_event_labels": notify.EVENTS,
+        "support_token": config.mask(support.channel()["token"]),
+        "support_chat_id": support.channel()["chat_id"],
         "auto_update": config.get("auto_update") != "0",
         "photo_tunnel": config.get("photo_tunnel") != "0",
         "quick_updates": db.get_setting("quick_updates") != "0",
@@ -442,10 +458,15 @@ async def save_settings(data: dict = Body(...)):
         db.set_setting("prom_token", data["prom_token"].strip())
     if data.get("telegram_token"):
         db.set_setting("telegram_token", data["telegram_token"].strip())
-        db.set_setting("telegram_chat_id", "")
-    if "telegram_events" in data:
-        events = [e for e in data["telegram_events"] if e in notify.EVENTS]
-        db.set_setting("telegram_events", ",".join(events) or "none")
+    if data.get("support_token"):
+        db.set_setting("support_token", data["support_token"].strip())
+    if data.get("support_token_clear"):
+        db.set_setting("support_token", "")
+    if "support_chat_id" in data:
+        chat = str(data["support_chat_id"] or "").strip()
+        if chat and not chat.lstrip("-").isdigit():
+            raise HTTPException(400, "ID чата поддержки — это число")
+        db.set_setting("support_chat_id", chat)
     if "quick_updates" in data:
         db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
         if data["quick_updates"]:
@@ -930,12 +951,102 @@ async def order_status(order_id: int, status: str = Body(...), reason: str = Bod
         raise HTTPException(400 if exc.status in (None, 400, 422) else 502, str(exc))
 
 
-@app.post("/api/telegram/find")
-async def telegram_find():
-    return await asyncio.to_thread(notify.find_chat)
+@app.get("/api/telegram/recipients")
+async def telegram_recipients():
+    return {"items": notify.recipients(), "events": notify.EVENTS, "token_set": bool(notify.token())}
 
 
-@app.post("/api/telegram/test")
-async def telegram_test():
-    await asyncio.to_thread(notify.send_now, "✅ Prom Loader подключён. Сюда будут приходить новые заказы и важные сообщения.")
+@app.post("/api/telegram/candidates")
+async def telegram_candidates():
+    """Кто недавно писал боту — чтобы добавить в получатели одним нажатием."""
+    known = {r["chat_id"] for r in notify.recipients()}
+    chats = await asyncio.to_thread(notify.recent_chats, notify.token())
+    return {"items": [c for c in chats if c["chat_id"] not in known]}
+
+
+@app.post("/api/telegram/recipients")
+async def telegram_add(chat_id: str = Body(...), name: str = Body(""), events: list[str] | None = Body(None)):
+    return notify.add_recipient(chat_id, name, events)
+
+
+@app.patch("/api/telegram/recipients/{rid}")
+async def telegram_update(rid: int, events: list[str] | None = Body(None), name: str | None = Body(None)):
+    notify.update_recipient(rid, events, name)
+    return {"items": notify.recipients()}
+
+
+@app.delete("/api/telegram/recipients/{rid}")
+async def telegram_remove(rid: int):
+    notify.remove_recipient(rid)
+    return {"items": notify.recipients()}
+
+
+@app.post("/api/telegram/recipients/{rid}/test")
+async def telegram_test(rid: int):
+    r = next((x for x in notify.recipients() if x["id"] == rid), None)
+    if r is None:
+        raise HTTPException(404)
+    await asyncio.to_thread(notify.send_to, r["chat_id"], "✅ Prom Loader: уведомления подключены. "
+                            "Подписки: " + ", ".join(notify.EVENTS[e] for e in r["events"]))
     return {"ok": True}
+
+
+# ---------- поддержка ----------
+
+@app.get("/api/support")
+async def support_list():
+    return {"items": support.list_tickets(), "configured": support.configured()}
+
+
+@app.get("/api/support/diagnostics")
+async def support_diagnostics():
+    """Что именно уйдёт вместе с обращением (показываем пользователю)."""
+    d = await asyncio.to_thread(support.diagnostics)
+    d["log_tail"] = d["log_tail"][-20:]
+    return d
+
+
+@app.post("/api/support")
+async def support_create(description: str = Form(""), contact: str = Form(""), page: str = Form(""),
+                         include_diagnostics: bool = Form(True), client: str = Form("{}"),
+                         files: list[UploadFile] = File(default=[])):
+    try:
+        client_info = json.loads(client)
+    except ValueError:
+        client_info = {}
+    payload = [(f.filename or "file", await f.read(support.MAX_FILE + 1)) for f in files]
+    ticket = await asyncio.to_thread(support.create, description, contact, page, payload, include_diagnostics, client_info)
+    message = "Обращение сохранено."
+    if support.configured():
+        try:
+            ticket = await asyncio.to_thread(support.send, ticket["id"])
+            message = "Обращение отправлено разработчику."
+        except support.SupportError as exc:
+            message = str(exc)
+    else:
+        message += " Отправка разработчику пока не настроена — скачайте архив обращения и перешлите его."
+    return {"ticket": ticket, "message": message}
+
+
+@app.post("/api/support/{ticket_id}/send")
+async def support_send(ticket_id: int):
+    return await asyncio.to_thread(support.send, ticket_id)
+
+
+@app.get("/api/support/{ticket_id}/archive")
+async def support_archive(ticket_id: int):
+    content = await asyncio.to_thread(support.archive, ticket_id)
+    return Response(content, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="promloader-obrashchenie-{ticket_id}.zip"'})
+
+
+@app.delete("/api/support/{ticket_id}")
+async def support_delete(ticket_id: int):
+    support.delete(ticket_id)
+    return {"ok": True}
+
+
+@app.post("/api/support/channel/chats")
+async def support_chats(token: str = Body("", embed=True)):
+    """Для разработчика: найти свой чат, написав боту поддержки (можно до сохранения токена)."""
+    return {"items": await asyncio.to_thread(notify.recent_chats, token.strip() or support.channel()["token"])}

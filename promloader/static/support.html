@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Поддержка — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/orders">Заказы</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
+      <a href="/settings">Настройки</a>
+      <a href="/support">Поддержка</a>
+    </nav>
+  </header>
+
+  <main style="max-width:860px">
+    <h1>🆘 Что-то не получилось?</h1>
+    <p class="muted" style="margin-top:-6px">Опишите своими словами, что делали и что пошло не так, приложите скриншот —
+      этого достаточно. Обращение сразу сохраняется на этом компьютере, так что ничего не потеряется.</p>
+
+    <div class="panel" id="form">
+      <label class="field"><span>Что случилось?</span>
+        <textarea id="description" rows="5" placeholder="Например: загрузил Excel от поставщика, нажал «Создать товары» — появилась красная ошибка, товары не создались"></textarea></label>
+
+      <div class="field"><span>Скриншоты и файлы <span class="muted small">(до 10 штук: картинки, PDF, Excel, текст)</span></span>
+        <div class="drop-zone" id="drop">
+          Перетащите сюда файлы, вставьте скриншот через <b>Ctrl+V</b>
+          или <a href="#" id="pick">выберите на компьютере</a>
+          <div class="small" style="margin-top:6px">Как сделать скриншот: <b>Win + Shift + S</b> → выделите область →
+            вернитесь сюда и нажмите <b>Ctrl+V</b>.</div>
+        </div>
+        <div class="shots" id="shots"></div>
+      </div>
+
+      <label class="field"><span>Как с вами связаться <span class="muted small">(необязательно: телефон, Telegram, почта)</span></span>
+        <input id="contact" placeholder="@username или +380…"></label>
+      <label class="field"><span>Где это было</span>
+        <input id="page" placeholder="страница программы"></label>
+
+      <label class="small" style="display:block;margin:6px 0 4px"><input type="checkbox" id="include-diag" checked>
+        Приложить техническую информацию <span class="muted">(версия программы, количество товаров, последние ошибки, журнал работы —
+        без токенов, ключей и паролей)</span> <a href="#" id="diag-toggle">посмотреть</a></label>
+      <pre class="diag-preview hidden" id="diag"></pre>
+
+      <div class="toolbar" style="margin:14px 0 0">
+        <button class="btn primary" id="send">Отправить</button>
+        <span class="small" id="result"></span>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <h2 style="margin-top:0">Мои обращения</h2>
+      <p class="small muted" id="channel-info"></p>
+      <div id="tickets"></div>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script>
+    const MAX_FILES = 10;
+    const MAX_SIZE = 15 * 1024 * 1024;
+    const ALLOWED = /\.(png|jpe?g|gif|webp|bmp|pdf|txt|log|xlsx|csv|xml|mp4)$/i;
+    const STATUS = {
+      saved: ["draft", "сохранено на компьютере"],
+      sent: ["synced", "отправлено разработчику"],
+      send_failed: ["error", "не отправлено — повторю позже"],
+    };
+    let files = [];
+    let sending = false;
+
+    const params = new URLSearchParams(location.search);
+    $("#page").value = params.get("from") || "";
+
+    // ---------- черновик: не теряем текст, если человек ушёл со страницы ----------
+    const DRAFT_KEY = "promloader-support-draft";
+    try {
+      const draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || "{}");
+      if (draft.description) $("#description").value = draft.description;
+      if (draft.contact) $("#contact").value = draft.contact;
+    } catch { /* нет хранилища */ }
+    const saveDraft = () => {
+      try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ description: $("#description").value, contact: $("#contact").value })); }
+      catch { /* нет хранилища */ }
+    };
+    $("#description").addEventListener("input", saveDraft);
+    $("#contact").addEventListener("input", saveDraft);
+
+    // ---------- файлы ----------
+    function addFiles(list) {
+      for (const f of list) {
+        const name = f.name && f.name !== "image.png" ? f.name : `скриншот-${files.length + 1}.png`;
+        if (!ALLOWED.test(name)) { toast(`«${name}»: такие файлы приложить нельзя`, "error"); continue; }
+        if (f.size > MAX_SIZE) { toast(`«${name}» больше 15 МБ`, "error"); continue; }
+        if (files.length >= MAX_FILES) { toast(`Не больше ${MAX_FILES} файлов`, "error"); break; }
+        files.push({ file: f, name, url: isImage(f) || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name) ? URL.createObjectURL(f) : null });
+      }
+      renderFiles();
+    }
+    function renderFiles() {
+      $("#shots").innerHTML = files.map((f, i) => `
+        <div class="shot">
+          ${f.url ? `<img src="${f.url}" alt="">` : `<div class="file-icon">📄</div>`}
+          <div class="name" title="${esc(f.name)}">${esc(f.name)}</div>
+          <button data-i="${i}" title="Убрать">✕</button>
+        </div>`).join("");
+    }
+    $("#shots").addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-i]");
+      if (!btn) return;
+      const [removed] = files.splice(Number(btn.dataset.i), 1);
+      if (removed.url) URL.revokeObjectURL(removed.url);
+      renderFiles();
+    });
+    $("#pick").onclick = async (e) => { e.preventDefault(); addFiles(await pickFiles()); };
+    onPageFileDrop(addFiles, { accept: (f) => ALLOWED.test(f.name), text: "Отпустите, чтобы приложить",
+      rejectText: "такие файлы приложить нельзя (подходят скриншоты, PDF, Excel, текст)" });
+    document.addEventListener("paste", (e) => {
+      const pasted = Array.from(e.clipboardData?.files || []);
+      if (!pasted.length) return;
+      e.preventDefault();
+      addFiles(pasted.map((f, i) => new File([f], f.name && f.name !== "image.png" ? f.name
+        : `скриншот-${new Date().toTimeString().slice(0, 8).replace(/:/g, "-")}${i ? "-" + i : ""}.png`, { type: f.type })));
+      toast("Скриншот добавлен", "ok");
+    });
+
+    // ---------- техническая информация ----------
+    function clientInfo() {
+      return { page: $("#page").value, ua: navigator.userAgent, screen: `${screen.width}x${screen.height}`,
+               window: `${innerWidth}x${innerHeight}`, js_errors: jsErrors() };
+    }
+    $("#diag-toggle").onclick = async (e) => {
+      e.preventDefault();
+      const box = $("#diag");
+      if (!box.classList.contains("hidden")) { box.classList.add("hidden"); return; }
+      box.textContent = "Загружаю…";
+      box.classList.remove("hidden");
+      try {
+        const d = await api("/api/support/diagnostics");
+        d.client = clientInfo();
+        box.textContent = JSON.stringify(d, null, 2) + "\n\n(в обращение попадут последние 300 строк журнала, здесь показаны 20)";
+      } catch (err) { box.textContent = err.message; }
+    };
+
+    // ---------- отправка ----------
+    $("#send").onclick = async () => {
+      if (sending) return;
+      const description = $("#description").value.trim();
+      if (!description && !files.length) { $("#result").textContent = "Опишите проблему или приложите скриншот"; $("#result").style.color = "var(--err)"; return; }
+      const form = new FormData();
+      form.append("description", description);
+      form.append("contact", $("#contact").value.trim());
+      form.append("page", $("#page").value.trim());
+      form.append("include_diagnostics", $("#include-diag").checked ? "true" : "false");
+      form.append("client", JSON.stringify(clientInfo()));
+      files.forEach((f) => form.append("files", f.file, f.name));
+      sending = true;
+      $("#send").disabled = true;
+      $("#result").style.color = "";
+      $("#result").textContent = "Отправляю…";
+      try {
+        const r = await api("/api/support", { method: "POST", body: form });
+        $("#result").textContent = "";
+        toast(r.message, r.ticket.status === "sent" ? "ok" : "");
+        $("#description").value = "";
+        files.forEach((f) => f.url && URL.revokeObjectURL(f.url));
+        files = [];
+        renderFiles();
+        try { localStorage.removeItem(DRAFT_KEY); sessionStorage.removeItem(JS_ERRORS_KEY); } catch { /* ок */ }
+        await loadTickets();
+      } catch (err) {
+        $("#result").textContent = err.network
+          ? "Программа не отвечает. Текст сохранён в черновике — перезапустите Prom Loader и нажмите «Отправить» ещё раз"
+          : err.message;
+        $("#result").style.color = "var(--err)";
+      } finally {
+        sending = false;
+        $("#send").disabled = false;
+      }
+    };
+
+    // ---------- история ----------
+    async function loadTickets() {
+      const r = await api("/api/support");
+      $("#channel-info").textContent = r.configured
+        ? "Обращения автоматически уходят разработчику. Если не было интернета — программа дошлёт сама."
+        : "Отправка разработчику не настроена — обращения хранятся на этом компьютере. Нажмите «Скачать архив» и перешлите файл разработчику (в Telegram, Viber или почтой).";
+      $("#tickets").innerHTML = r.items.length ? r.items.map((t) => {
+        const [cls, label] = STATUS[t.status] || ["draft", t.status];
+        return `<div class="ticket" data-id="${t.id}">
+          <div><b>№${t.id}</b> <span class="muted small">${formatDate(t.created_at)}${t.page ? " · " + esc(t.page) : ""}</span>
+            <span class="badge ${cls}">${label}</span></div>
+          <div style="margin:6px 0;white-space:pre-wrap">${esc(t.description.length > 400 ? t.description.slice(0, 400) + "…" : t.description)}</div>
+          ${t.files.length ? `<div class="small muted">Файлы: ${t.files.map((f) => esc(f.name)).join(", ")}</div>` : ""}
+          ${t.error && t.status !== "sent" ? `<div class="small err-text">${esc(t.error)}</div>` : ""}
+          <div class="toolbar" style="margin:6px 0 0">
+            <a class="btn small" href="/api/support/${t.id}/archive">Скачать архив</a>
+            ${r.configured && t.status !== "sent" ? `<button class="btn small" data-act="send">Отправить снова</button>` : ""}
+            <button class="btn small danger" data-act="delete">Удалить</button>
+          </div>
+        </div>`;
+      }).join("") : `<p class="small muted">Обращений пока нет.</p>`;
+    }
+    $("#tickets").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-act]");
+      if (!btn) return;
+      const id = btn.closest(".ticket").dataset.id;
+      try {
+        if (btn.dataset.act === "send") {
+          btn.disabled = true;
+          await api(`/api/support/${id}/send`, { method: "POST" });
+          toast("Отправлено разработчику", "ok");
+        } else {
+          if (!confirm(`Удалить обращение №${id} вместе со скриншотами?`)) return;
+          await api(`/api/support/${id}`, { method: "DELETE" });
+        }
+      } catch (err) { toast(err.message, "error"); }
+      loadTickets().catch(() => {});
+    });
+
+    loadMeta().catch(() => {});
+    loadTickets().catch((err) => toast(err.message, "error"));
+    $("#description").focus();
+  </script>
+</body>
+</html>

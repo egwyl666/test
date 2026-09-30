@@ -25,9 +25,12 @@ class Telegram:
         method = request.url.path.rsplit("/", 1)[-1]
         if method == "getUpdates":
             return httpx.Response(200, json={"ok": True, "result": [
-                {"update_id": 1, "message": {"chat": {"id": 777, "first_name": "Магазин"}, "text": "/start"}}]})
-        if method == "sendMessage":
-            self.sent.append(json.loads(request.content))
+                {"update_id": 1, "message": {"chat": {"id": 777, "first_name": "Магазин"}, "text": "/start"}},
+                {"update_id": 2, "message": {"chat": {"id": 888, "username": "manager"}, "text": "привет"}}]})
+        if method in ("sendMessage", "sendPhoto", "sendDocument"):
+            body = json.loads(request.content) if request.headers.get("content-type", "").startswith("application/json") \
+                else {"multipart": True, "size": len(request.content)}
+            self.sent.append({"method": method, "bot": request.url.path.split("/")[1], **body})
             return httpx.Response(200, json={"ok": True, "result": {}})
         return httpx.Response(404, json={"ok": False, "description": "nope"})
 
@@ -35,10 +38,10 @@ class Telegram:
 @pytest.fixture
 def tg(monkeypatch):
     t = Telegram()
-    real = notify._client
-    monkeypatch.setattr(notify, "_client", lambda transport=None: real(httpx.MockTransport(t.handler)))
+    real = notify.call
+    monkeypatch.setattr(notify, "call", lambda token, method, transport=None, files=None, **kw:
+                        real(token, method, httpx.MockTransport(t.handler), files, **kw))
     db.set_setting("telegram_token", "123:ABC")
-    notify.find_chat()
     return t
 
 
@@ -54,26 +57,36 @@ def prom(orders_list, status_calls=None):
     return PromClient("t", "https://my.prom.ua/api/v1", transport=httpx.MockTransport(handler))
 
 
-def test_find_chat_and_send(tg):
-    assert db.get_setting("telegram_chat_id") == "777" and db.get_setting("telegram_chat_name") == "Магазин"
-    notify.send_now("привет")
-    assert tg.sent[0] == {"chat_id": "777", "text": "привет", "parse_mode": "HTML", "disable_web_page_preview": True}
+def test_recipients_and_events(tg):
+    chats = notify.recent_chats(notify.token())
+    assert {c["chat_id"]: c["name"] for c in chats} == {"777": "Магазин", "888": "@manager"}
+    owner = notify.add_recipient("777", "Магазин")
+    manager = notify.add_recipient("888", "Менеджер", ["sync_done"])
+    assert owner["events"] == notify.DEFAULT_EVENTS
+    notify.send("order", "заказ", background=False)
+    notify.send("sync_done", "выгрузка", background=False)
+    got = [(m["chat_id"], m["text"]) for m in tg.sent]
+    assert got == [("777", "заказ"), ("888", "выгрузка")]
+    notify.update_recipient(manager["id"], events=["sync_done", "order"])
+    notify.remove_recipient(owner["id"])
+    assert [r["chat_id"] for r in notify.recipients()] == ["888"]
+    with pytest.raises(notify.NotifyError):
+        notify.add_recipient("не число")
 
 
-def test_events_filter(tg):
-    db.set_setting("telegram_events", "sync_failed")
-    notify.send("order", "x", background=False)
-    notify.send("sync_failed", "y", background=False)
-    assert [m["text"] for m in tg.sent] == ["y"]
+def test_old_single_chat_is_migrated():
+    db.set_setting("telegram_chat_id", "555")
+    db.set_setting("telegram_chat_name", "Старый")
+    db.set_setting("telegram_events", "order")
+    assert [(r["chat_id"], r["name"], r["events"]) for r in notify.recipients()] == [("555", "Старый", ["order"])]
 
 
 def test_bad_token_message(monkeypatch):
-    real = notify._client
-    monkeypatch.setattr(notify, "_client", lambda transport=None: real(
-        httpx.MockTransport(lambda r: httpx.Response(401, json={"ok": False, "description": "Unauthorized"}))))
-    db.set_setting("telegram_token", "bad")
+    real = notify.call
+    monkeypatch.setattr(notify, "call", lambda token, method, transport=None, files=None, **kw: real(
+        token, method, httpx.MockTransport(lambda r: httpx.Response(401, json={"ok": False, "description": "x"})), files, **kw))
     with pytest.raises(notify.NotifyError, match="токен"):
-        notify.find_chat()
+        notify.recent_chats("bad")
 
 
 def test_orders_first_run_not_new_then_notify(tg, monkeypatch):
@@ -136,6 +149,10 @@ def test_api(client):
     r = client.get("/api/orders").json()
     assert r["enabled"] is False and r["items"] == []
     assert client.post("/api/orders/refresh").status_code == 400
-    s = client.post("/api/settings", json={"telegram_token": "123456:ABCDEFGHIJ", "telegram_events": ["order"]}).json()
-    assert s["telegram_token"].startswith("1234") and s["telegram_events"] == ["order"]
+    s = client.post("/api/settings", json={"telegram_token": "123456:ABCDEFGHIJ"}).json()
+    assert s["telegram_token"].startswith("1234")
+    r = client.post("/api/telegram/recipients", json={"chat_id": "42", "name": "Я", "events": ["order", "hack"]}).json()
+    assert r["events"] == ["order"]
+    assert client.patch(f"/api/telegram/recipients/{r['id']}", json={"events": ["sync_done"]}).json()["items"][0]["events"] == ["sync_done"]
+    assert client.delete(f"/api/telegram/recipients/{r['id']}").json()["items"] == []
     assert client.get("/orders").status_code == 200

@@ -269,6 +269,9 @@ async def _start_quick(job: dict, client: PromClient) -> None:
     _update_job(job["id"], status="done", result=json.dumps(result, ensure_ascii=False))
     _finish_products(finished, ok=True, per_product=errors)
     _requeue_as_import(fallback_products)
+    if finished:
+        notify.send("sync_done", f"✅ <b>Цены и наличие обновлены на Prom</b>: товаров {len(finished) - len(errors)}"
+                    + (f", с ошибками {len(errors)}" if errors else ""))
 
 
 async def _start(job: dict, client: PromClient) -> None:
@@ -293,9 +296,14 @@ async def _poll(job: dict, client: PromClient) -> None:
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
     _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False), last_error=message)
+    per_product = _per_product_errors(result)
+    if ok:
+        count = len(json.loads(job["products"]))
+        notify.send("sync_done", f"✅ <b>Выгрузка на Prom выполнена</b>: товаров {max(0, count - len(per_product))}"
+                    + (f", с ошибками {len(per_product)} (подробности — в программе)" if per_product else ""))
     if not ok:
         notify.send("sync_failed", f"❗ <b>Prom не принял импорт</b>\n{notify.esc(message[:300])}")
-    _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=_per_product_errors(result))
+    _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=per_product)
 
 
 def make_client() -> PromClient:
