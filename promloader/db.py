@@ -108,6 +108,20 @@ CREATE TABLE IF NOT EXISTS supplier_runs (
 );
 CREATE INDEX IF NOT EXISTS supplier_runs_supplier ON supplier_runs(supplier_id, id);
 
+CREATE TABLE IF NOT EXISTS schedules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    days            TEXT NOT NULL DEFAULT '[0,1,2,3,4,5,6]',
+    time            TEXT NOT NULL DEFAULT '09:00',
+    missed_action   TEXT NOT NULL DEFAULT 'ask',
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    last_slot       TEXT,
+    pending_slot    TEXT,
+    snooze_until    TEXT,
+    last_run_at     TEXT,
+    last_result     TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        INTEGER NOT NULL DEFAULT 0,

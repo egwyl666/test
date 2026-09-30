@@ -64,6 +64,17 @@
       </div>
     </form>
 
+    <div class="panel" id="schedule">
+      <h2>⏰ Выгрузка на Prom по расписанию</h2>
+      <p class="small muted" style="margin-top:-6px">В назначенное время программа сама отправляет на Prom все товары со статусом «готов к отправке».
+        Работает, пока программа запущена. Если в это время компьютер был выключен (например, не было света) —
+        при следующем запуске программа поступит так, как выбрано ниже.</p>
+      <div id="schedule-list"></div>
+      <button class="btn" id="schedule-add">+ Добавить время выгрузки</button>
+      <label class="small" id="autostart-wrap" style="display:block;margin-top:14px"><input type="checkbox" id="autostart">
+        <b>Запускать Prom Loader вместе с Windows</b> <span class="muted">— чтобы расписание работало, даже если вы забыли открыть программу</span></label>
+    </div>
+
     <div class="panel" id="ai">
       <h2>✨ ИИ-помощник</h2>
       <p class="small muted" style="margin-top:-6px">
@@ -335,6 +346,60 @@
       } catch (err) { toast(err.message, "error"); }
     };
 
+    // ---------- расписание ----------
+    let scheduleMeta = {};
+    async function loadSchedules() {
+      scheduleMeta = await api("/api/schedules");
+      $("#autostart-wrap").classList.toggle("hidden", !scheduleMeta.autostart.supported);
+      $("#autostart").checked = scheduleMeta.autostart.enabled;
+      $("#schedule-list").innerHTML = scheduleMeta.items.map((s) => `
+        <div class="schedule-row" data-id="${s.id}">
+          <div class="days">${scheduleMeta.days.map((d, i) =>
+            `<label class="day ${s.days.includes(i) ? "on" : ""}"><input type="checkbox" value="${i}" ${s.days.includes(i) ? "checked" : ""}>${d}</label>`).join("")}</div>
+          <input type="time" class="time" value="${esc(s.time)}">
+          <label class="small">если пропущено:
+            <select class="missed">${Object.entries(scheduleMeta.missed_actions).map(([k, v]) =>
+              `<option value="${k}" ${k === s.missed_action ? "selected" : ""}>${esc(v)}</option>`).join("")}</select></label>
+          <label class="small"><input type="checkbox" class="enabled" ${s.enabled ? "checked" : ""}> включено</label>
+          <button class="btn small danger del" title="Удалить">✕</button>
+          <div class="small muted info">
+            ${s.enabled && s.next_run ? `Следующая выгрузка: ${esc(formatDate(s.next_run))}` : "Выключено"}
+            ${s.last_result ? ` · Последний раз: ${esc(s.last_result)}` : ""}
+          </div>
+        </div>`).join("") || `<p class="small muted">Расписаний пока нет.</p>`;
+      $$(".schedule-row").forEach((row) => {
+        const id = row.dataset.id;
+        const save = async () => {
+          const days = $$(".days input:checked", row).map((i) => Number(i.value));
+          try {
+            await api(`/api/schedules/${id}`, { method: "PATCH", json: {
+              days, time: $(".time", row).value, missed_action: $(".missed", row).value, enabled: $(".enabled", row).checked,
+            } });
+            toast("Расписание сохранено", "ok");
+          } catch (err) { toast(err.message, "error"); }
+          loadSchedules();
+        };
+        row.querySelectorAll("input, select").forEach((el) => el.addEventListener("change", save));
+        $(".del", row).onclick = async () => {
+          if (!confirm("Удалить это время выгрузки?")) return;
+          await api(`/api/schedules/${id}`, { method: "DELETE" });
+          loadSchedules();
+        };
+      });
+    }
+    $("#schedule-add").onclick = async () => {
+      try { await api("/api/schedules", { method: "POST", json: { time: "09:00" } }); loadSchedules(); }
+      catch (err) { toast(err.message, "error"); }
+    };
+    $("#autostart").onchange = async (e) => {
+      try {
+        await api("/api/autostart", { method: "POST", json: { enabled: e.target.checked } });
+        toast(e.target.checked ? "Программа будет запускаться вместе с Windows" : "Автозапуск выключен", "ok");
+      } catch (err) { toast(err.message, "error"); e.target.checked = !e.target.checked; }
+    };
+
+    loadMeta().catch(() => {});
+    loadSchedules().catch(() => {});
     api("/api/settings").then((s) => { fill(s); fillUpdates(s); }).catch((err) => toast(err.message, "error"));
     loadBackups().catch(() => {});
   </script>

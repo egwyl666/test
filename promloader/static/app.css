@@ -344,3 +344,16 @@ div.field { margin-bottom: 14px; }
 .update-notes li { margin-left: 18px; }
 .restart-overlay { position: fixed; inset: 0; background: rgba(255,255,255,.92); z-index: 200; display: flex; align-items: center; justify-content: center; text-align: center; }
 .restart-overlay .ai-loading { justify-content: center; font-size: 18px; }
+
+/* ---------- расписание ---------- */
+.missed-banner { background: var(--warn-soft); border-bottom: 1px solid #f0d9a8; padding: 10px 24px; font-size: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.missed-banner .actions { display: inline-flex; gap: 6px; }
+.schedule-row { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); }
+.schedule-row:first-child { border-top: none; }
+.schedule-row .days { display: inline-flex; gap: 3px; }
+.schedule-row .day { border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; font-size: 12px; cursor: pointer; user-select: none; }
+.schedule-row .day input { display: none; }
+.schedule-row .day.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.schedule-row .time { width: 110px; }
+.schedule-row select { width: auto; padding: 5px 8px; }
+.schedule-row .info { flex-basis: 100%; }

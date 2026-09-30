@@ -150,6 +150,9 @@ promloader/
   tray.py       значок у часов и присмотр: перезапуск, доустановка компонентов, откат версии
   updater.py    проверка и установка обновлений с GitHub
   backup.py     резервные копии и восстановление
+  schedule.py   выгрузка по расписанию и пропущенные запуски
+  autostart.py  запуск вместе с Windows
+  phototunnel.py временный доступ Prom к фото с компьютера
   excel.py      разбор Excel/CSV/XML, выбор строк, сопоставление колонок
   feed.py       генерация YML для Prom
   prom_api.py   клиент API Prom.ua

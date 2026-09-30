@@ -33,7 +33,32 @@ async function api(path, options = {}) {
 async function loadMeta() {
   Object.assign(META, await api("/api/meta"));
   showUpdateBanner();
+  showMissedSchedules();
   return META;
+}
+
+// Пропущенная выгрузка (компьютер был выключен): спрашиваем, что делать.
+function showMissedSchedules() {
+  $$(".missed-banner").forEach((el) => el.remove());
+  for (const m of META.missed_schedules || []) {
+    const bar = document.createElement("div");
+    bar.className = "missed-banner";
+    bar.innerHTML = `⏰ Выгрузка на Prom <b>${esc(formatDate(m.slot))}</b> (${esc(m.label)}) не выполнена —
+      программа в это время не работала. Что сделать?
+      <span class="actions">
+        <button class="btn small primary" data-d="run">Выгрузить сейчас</button>
+        <button class="btn small" data-d="snooze">Отложить на час</button>
+        <button class="btn small" data-d="skip">Пропустить</button>
+      </span>`;
+    bar.querySelectorAll("[data-d]").forEach((b) => b.addEventListener("click", async () => {
+      try {
+        await api(`/api/schedules/${m.id}/resolve`, { method: "POST", json: { decision: b.dataset.d } });
+        toast({ run: "Товары поставлены в отправку", snooze: "Отложено на час", skip: "Эта выгрузка пропущена" }[b.dataset.d], "ok");
+        bar.remove();
+      } catch (err) { toast(err.message, "error"); }
+    }));
+    document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
+  }
 }
 
 function showUpdateBanner() {

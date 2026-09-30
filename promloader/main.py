@@ -15,7 +15,8 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, backup, config, db, excel, feed, phototunnel, pricing, products, runtime, suppliers, sync, updater
+from . import (ai, autostart, backup, config, db, excel, feed, phototunnel, pricing, products, runtime, schedule,
+               suppliers, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -41,12 +42,26 @@ async def lifespan(app: FastAPI):
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
-                 asyncio.create_task(maintenance_worker(stop))]
+                 asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
     phototunnel.tunnel.close()
+
+
+async def schedule_worker(stop: asyncio.Event) -> None:
+    """Выгрузка по расписанию; после отключения света пропущенные запуски обрабатываются по настройке."""
+    while not stop.is_set():
+        try:
+            for event in await asyncio.to_thread(schedule.tick):
+                log.info("Расписание: %s", event)
+        except Exception:
+            log.exception("Сбой расписания выгрузки")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=20)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def maintenance_worker(stop: asyncio.Event) -> None:
@@ -121,6 +136,8 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(ai.AIError)
 @app.exception_handler(updater.UpdateError)
 @app.exception_handler(backup.BackupError)
+@app.exception_handler(schedule.ScheduleError)
+@app.exception_handler(autostart.AutostartError)
 async def user_error(request: Request, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -170,6 +187,7 @@ async def meta():
         "shop_name": db.get_setting("shop_name"),
         "version": updater.current_version(),
         "update_available": db.get_setting("update_latest"),
+        "missed_schedules": schedule.missed(),
         "ai": {"enabled": ai.enabled(), "provider": ai.settings()["provider"],
                "actions": {k: v[0] for k, v in ai.ACTIONS.items()}},
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
@@ -694,3 +712,37 @@ async def restart():
     if not runtime.request_restart():
         raise HTTPException(400, "Программа запущена не через START.bat — перезапустите её вручную")
     return {"restarting": True}
+
+
+# ---------- расписание и автозапуск ----------
+
+@app.get("/api/schedules")
+async def list_schedules():
+    return {"items": schedule.list_schedules(), "missed_actions": schedule.MISSED_ACTIONS, "days": schedule.DAY_NAMES,
+            "autostart": {"supported": autostart.supported(), "enabled": autostart.enabled()}}
+
+
+@app.post("/api/schedules")
+async def create_schedule(data: dict = Body(default={})):
+    return schedule.create(data)
+
+
+@app.patch("/api/schedules/{schedule_id}")
+async def update_schedule(schedule_id: int, data: dict = Body(...)):
+    return schedule.update(schedule_id, data)
+
+
+@app.delete("/api/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: int):
+    schedule.delete(schedule_id)
+    return {"ok": True}
+
+
+@app.post("/api/schedules/{schedule_id}/resolve")
+async def resolve_schedule(schedule_id: int, decision: str = Body(..., embed=True)):
+    return await asyncio.to_thread(schedule.resolve, schedule_id, decision)
+
+
+@app.post("/api/autostart")
+async def set_autostart(enabled: bool = Body(..., embed=True)):
+    return {"enabled": await asyncio.to_thread(autostart.set_enabled, enabled)}
