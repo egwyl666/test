@@ -18,6 +18,8 @@ ENV = {
     "gemini_model": "GEMINI_MODEL",
     "anthropic_key": "ANTHROPIC_API_KEY",
     "claude_model": "CLAUDE_MODEL",
+    "github_token": "PROMLOADER_GITHUB_TOKEN",
+    "update_repo": "PROMLOADER_UPDATE_REPO",
 }
 
 

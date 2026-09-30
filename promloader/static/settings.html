@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Настройки — Prom Loader</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
 </head>
 <body>
   <header class="topbar">
@@ -21,8 +22,9 @@
   <main style="max-width:820px">
     <div class="panel hidden" id="welcome" style="border:2px solid var(--accent)">
       <h2>👋 Добро пожаловать в Prom Loader!</h2>
-      <p>Программа работает у вас на компьютере. Пока открыто чёрное окно — она работает; закроете окно — выключится.
-        В следующий раз запускайте её ярлыком <b>«Prom Loader»</b> на рабочем столе.</p>
+      <p>Программа работает у вас на компьютере. Её значок <img src="/static/icon.png" alt="" style="width:18px;vertical-align:-3px">
+        — справа внизу, у часов (если не видно — нажмите на стрелочку <b>^</b> рядом с часами). Щелчок по значку — открыть программу,
+        правая кнопка — меню с пунктом «Выключить». В следующий раз запускайте её ярлыком <b>«Prom Loader»</b> на рабочем столе.</p>
       <p style="margin-bottom:6px"><b>С чего начать:</b></p>
       <ol style="margin-top:0;line-height:1.7">
         <li>Ниже впишите <b>название магазина</b> — оно видно в превью карточек.</li>
@@ -86,6 +88,41 @@
         <button class="btn" id="ai-check">Проверить</button>
         <span id="ai-check-result" class="small"></span>
       </div>
+    </div>
+
+    <div class="panel" id="updates">
+      <h2>🔄 Обновления программы</h2>
+      <p style="margin-top:-4px">Установлена версия <b id="version"></b> <span id="update-state" class="small"></span></p>
+      <div id="update-notes" class="hidden update-notes"></div>
+      <div class="toolbar">
+        <button class="btn" id="update-check">Проверить обновления</button>
+        <button class="btn primary hidden" id="update-install">Обновить сейчас</button>
+      </div>
+      <label class="small" style="display:block;margin:6px 0 12px"><input type="checkbox" id="auto-update">
+        Устанавливать обновления автоматически при запуске программы <span class="muted">(перед обновлением всегда делается резервная копия)</span></label>
+      <details>
+        <summary class="small muted" style="cursor:pointer">Доступ к обновлениям (если репозиторий закрытый)</summary>
+        <p class="small muted">Программа скачивает обновления с GitHub. Пока репозиторий закрытый, нужен токен только для чтения:
+          GitHub → Settings → Developer settings → Personal access tokens → <b>Fine-grained tokens</b> → Generate new token →
+          Repository access: <b>Only select repositories</b> (выбрать репозиторий программы) → Permissions: <b>Contents: Read-only</b> → Generate.
+          Скопируйте токен сюда.</p>
+        <label class="field"><span>Токен GitHub <span class="muted" id="github-state"></span></span>
+          <input id="github-token" type="password" placeholder="github_pat_…" autocomplete="new-password"></label>
+        <label class="field"><span>Репозиторий</span><input id="update-repo"></label>
+      </details>
+      <button class="btn" id="update-save" style="margin-top:8px">Сохранить</button>
+    </div>
+
+    <div class="panel" id="backups">
+      <h2>💾 Резервные копии</h2>
+      <p class="small muted" style="margin-top:-4px">Копия базы товаров и всех фото делается автоматически раз в сутки (хранятся последние 7)
+        и перед каждым обновлением. Для надёжности иногда скачивайте копию на флешку или в облако.</p>
+      <div class="toolbar">
+        <button class="btn primary" id="backup-now">Сделать копию сейчас</button>
+        <button class="btn" id="backup-upload">Восстановить из файла…</button>
+        <span class="small muted" id="backup-last"></span>
+      </div>
+      <table class="runs" id="backup-list"></table>
     </div>
 
     <div class="panel">
@@ -209,7 +246,92 @@
     };
 
     if (new URLSearchParams(location.search).has("welcome")) $("#welcome").classList.remove("hidden");
-    api("/api/settings").then(fill).catch((err) => toast(err.message, "error"));
+    // ---------- обновления ----------
+    function fillUpdates(s) {
+      $("#version").textContent = s.version;
+      $("#auto-update").checked = s.auto_update;
+      $("#github-token").value = "";
+      $("#github-state").textContent = s.github_token ? `(сейчас: ${s.github_token})` : "(не задан)";
+      $("#update-repo").value = s.update_repo;
+      if (s.dev_checkout) {
+        $("#update-state").textContent = "· копия разработчика: обновление через git";
+        $("#update-check").disabled = true;
+      }
+    }
+    $("#update-save").onclick = () => save({
+      auto_update: $("#auto-update").checked, github_token: $("#github-token").value, update_repo: $("#update-repo").value,
+    });
+    $("#update-check").onclick = async () => {
+      const state = $("#update-state");
+      state.textContent = "· проверяю…";
+      state.style.color = "";
+      try {
+        const r = await api("/api/update/check");
+        state.textContent = "· " + r.message;
+        state.style.color = r.available ? "var(--accent)" : "var(--ok)";
+        $("#update-install").classList.toggle("hidden", !r.available);
+        $("#update-notes").classList.toggle("hidden", !r.notes);
+        $("#update-notes").innerHTML = r.notes ? markdownLite(r.notes) : "";
+      } catch (err) {
+        state.textContent = "· " + err.message;
+        state.style.color = "var(--err)";
+      }
+    };
+    $("#update-install").onclick = async () => {
+      if (!confirm("Установить обновление? Программа сделает резервную копию и перезапустится (около минуты).")) return;
+      const btn = $("#update-install");
+      btn.disabled = true;
+      btn.textContent = "Обновляю…";
+      try {
+        const r = await api("/api/update/install", { method: "POST" });
+        waitForRestart(`Устанавливаю версию ${r.version}…`, r.restarting);
+      } catch (err) {
+        toast(err.message, "error");
+        btn.disabled = false;
+        btn.textContent = "Обновить сейчас";
+      }
+    };
+
+    // ---------- резервные копии ----------
+    const fmtSize = (n) => n > 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`;
+    async function loadBackups() {
+      const r = await api("/api/backups");
+      $("#backup-last").textContent = r.last ? `последняя: ${formatDate(r.last)}` : "копий ещё не было";
+      $("#backup-list").innerHTML = r.items.map((b) => `
+        <tr>
+          <td>${esc(formatDate(b.created))}</td>
+          <td class="muted">${esc(b.reason_label)}</td>
+          <td class="muted">${fmtSize(b.size)}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn small" href="/api/backups/${encodeURIComponent(b.name)}">Скачать</a>
+            <button class="btn small" data-restore="${esc(b.name)}">Восстановить</button>
+          </td>
+        </tr>`).join("") || `<tr><td class="muted">Пока нет копий</td></tr>`;
+      $$("[data-restore]").forEach((btn) => btn.onclick = async () => {
+        if (!confirm("Вернуть товары и фото к состоянию этой копии? Текущие данные перед этим тоже сохранятся в копию.")) return;
+        try {
+          const res = await api(`/api/backups/${encodeURIComponent(btn.dataset.restore)}/restore`, { method: "POST" });
+          waitForRestart("Восстанавливаю данные…", res.restarting);
+        } catch (err) { toast(err.message, "error"); }
+      });
+    }
+    $("#backup-now").onclick = async () => {
+      try { await api("/api/backups", { method: "POST" }); toast("Копия создана", "ok"); loadBackups(); }
+      catch (err) { toast(err.message, "error"); }
+    };
+    $("#backup-upload").onclick = async () => {
+      const [file] = await pickFiles({ accept: ".zip", multiple: false });
+      if (!file || !confirm(`Восстановить данные из «${file.name}»? Текущие данные перед этим сохранятся в копию.`)) return;
+      const body = new FormData();
+      body.append("file", file);
+      try {
+        const res = await api("/api/backups/upload", { method: "POST", body });
+        waitForRestart("Восстанавливаю данные…", res.restarting);
+      } catch (err) { toast(err.message, "error"); }
+    };
+
+    api("/api/settings").then((s) => { fill(s); fillUpdates(s); }).catch((err) => toast(err.message, "error"));
+    loadBackups().catch(() => {});
   </script>
 </body>
 </html>

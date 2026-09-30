@@ -1,13 +1,16 @@
 @echo off
 chcp 65001 >nul
+rem START.bat работает из временной копии: так автообновление может спокойно заменить этот файл.
+if /i not "%~1"=="--run" copy /y "%~f0" "%TEMP%\promloader-start.bat" >nul 2>nul && "%TEMP%\promloader-start.bat" --run "%~dp0"
+if /i "%~1"=="--run" (set "APP=%~2") else (set "APP=%~dp0")
 title Prom Loader
-cd /d "%~dp0"
+cd /d "%APP%"
 
 echo.
 echo  Prom Loader: запуск...
 echo.
 
-set "VENV_PY=%~dp0.venv\Scripts\python.exe"
+set "VENV_PY=%APP%.venv\Scripts\python.exe"
 if exist "%VENV_PY%" goto deps
 
 rem ---------- 1. Ищем Python 3.10 или новее ----------
@@ -52,26 +55,31 @@ echo  Первый запуск: готовлю программу. Это за�
 %PY% -m venv .venv
 if errorlevel 1 goto venvfail
 
-rem ---------- 3. Компоненты программы (только при первом запуске и после обновления) ----------
+rem ---------- 3. Компоненты программы: при первом запуске и после обновлений ----------
 :deps
 fc /b requirements.txt ".venv\installed-requirements.txt" >nul 2>nul
-if not errorlevel 1 goto run
+if not errorlevel 1 goto launch
 echo  Устанавливаю компоненты программы...
 "%VENV_PY%" -m pip install --disable-pip-version-check -q --upgrade pip
 "%VENV_PY%" -m pip install --disable-pip-version-check -q -r requirements.txt
 if errorlevel 1 goto pipfail
 copy /y requirements.txt ".venv\installed-requirements.txt" >nul
 
-rem Ярлык "Prom Loader" на рабочем столе, чтобы в следующий раз не искать папку
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=[Environment]::GetFolderPath('Desktop'); $p=Join-Path $d 'Prom Loader.lnk'; if(-not (Test-Path $p)){ $s=(New-Object -ComObject WScript.Shell).CreateShortcut($p); $s.TargetPath='%~dp0START.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%SystemRoot%\System32\shell32.dll,13'; $s.Save() }" >nul 2>nul
-echo  Готово! На рабочем столе появился ярлык "Prom Loader".
+rem Ярлык "Prom Loader" на рабочем столе: запускает программу сразу, без чёрного окна
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $d 'Prom Loader.lnk')); $s.TargetPath='%APP%.venv\Scripts\pythonw.exe'; $s.Arguments='-m promloader.tray'; $s.WorkingDirectory='%APP%'; $s.IconLocation='%APP%promloader\static\icon.ico'; $s.Description='Prom Loader'; $s.Save()" >nul 2>nul
 echo.
+echo  ============================================================
+echo   Готово! Программа установлена.
+echo   Дальше она работает без этого окна: её значок - справа
+echo   внизу, у часов. В следующий раз запускайте её ярлыком
+echo   "Prom Loader" на рабочем столе.
+echo  ============================================================
+timeout /t 6 >nul
 
-rem ---------- 4. Запуск ----------
-:run
-"%VENV_PY%" -m promloader.launcher
-if errorlevel 1 pause
-exit /b
+rem ---------- 4. Запуск без окна: значок у часов ----------
+:launch
+start "" "%APP%.venv\Scripts\pythonw.exe" -m promloader.tray
+exit /b 0
 
 :venvfail
 echo.

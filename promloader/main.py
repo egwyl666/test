@@ -15,7 +15,7 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import ai, config, db, excel, feed, pricing, products, suppliers, sync
+from . import ai, backup, config, db, excel, feed, pricing, products, runtime, suppliers, sync, updater
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -25,6 +25,8 @@ PAGES = {
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
+MAINTENANCE_SECONDS = 3600
+UPDATE_CHECK_HOURS = 12
 log = logging.getLogger("promloader")
 _background: set[asyncio.Task] = set()
 
@@ -38,11 +40,34 @@ async def lifespan(app: FastAPI):
     stop = asyncio.Event()
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
-        tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop))]
+        tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
+                 asyncio.create_task(maintenance_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
+
+
+async def maintenance_worker(stop: asyncio.Event) -> None:
+    """Раз в час: суточная резервная копия и (раз в 12 часов) проверка обновлений."""
+    last_update_check = 0.0
+    while not stop.is_set():
+        try:
+            if backup.due():
+                await asyncio.to_thread(backup.create, "daily")
+        except Exception:
+            log.exception("Не удалось сделать резервную копию")
+        now = asyncio.get_running_loop().time()
+        if not updater.is_dev_checkout() and now - last_update_check > UPDATE_CHECK_HOURS * 3600:
+            last_update_check = now
+            try:
+                await asyncio.to_thread(updater.check)
+            except Exception:
+                pass  # нет интернета — проверим в следующий раз
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=MAINTENANCE_SECONDS)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def supplier_worker(stop: asyncio.Event) -> None:
@@ -93,6 +118,8 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(excel.ImportError_)
 @app.exception_handler(suppliers.SupplierError)
 @app.exception_handler(ai.AIError)
+@app.exception_handler(updater.UpdateError)
+@app.exception_handler(backup.BackupError)
 async def user_error(request: Request, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -140,6 +167,8 @@ async def meta():
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
+        "version": updater.current_version(),
+        "update_available": db.get_setting("update_latest"),
         "ai": {"enabled": ai.enabled(), "provider": ai.settings()["provider"],
                "actions": {k: v[0] for k, v in ai.ACTIONS.items()}},
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
@@ -304,6 +333,12 @@ def _settings_view() -> dict:
         "anthropic_key": config.mask(config.get("anthropic_key")),
         "gemini_model": config.get("gemini_model") or ai.DEFAULT_MODELS["gemini"],
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
+        "auto_update": config.get("auto_update") != "0",
+        "github_token": config.mask(config.get("github_token")),
+        "update_repo": config.get("update_repo") or updater.DEFAULT_REPO,
+        "version": updater.current_version(),
+        "dev_checkout": updater.is_dev_checkout(),
+        "can_restart": runtime.can_restart(),
     }
 
 
@@ -316,6 +351,12 @@ async def get_settings():
 async def save_settings(data: dict = Body(...)):
     if data.get("prom_token"):
         db.set_setting("prom_token", data["prom_token"].strip())
+    if "auto_update" in data:
+        db.set_setting("auto_update", "1" if data["auto_update"] else "0")
+    if data.get("github_token"):
+        db.set_setting("github_token", data["github_token"].strip())
+    if "update_repo" in data:
+        db.set_setting("update_repo", str(data["update_repo"] or "").strip())
     for key in ("gemini_key", "anthropic_key"):
         if data.get(key):
             db.set_setting(key, data[key].strip())
@@ -587,3 +628,60 @@ async def test_pricing(body: dict = Body(...)):
 @app.post("/api/pricing/apply")
 async def apply_pricing():
     return await asyncio.to_thread(suppliers.recalc_prices)
+
+
+# ---------- обновления и резервные копии ----------
+
+@app.get("/api/update/check")
+async def update_check():
+    return await asyncio.to_thread(updater.check)
+
+
+@app.post("/api/update/install")
+async def update_install():
+    version = await asyncio.to_thread(updater.update)
+    restarting = runtime.request_restart()
+    return {"version": version, "restarting": restarting}
+
+
+@app.get("/api/backups")
+async def list_backups():
+    return {"items": backup.list_backups(), "last": db.get_setting("last_backup_at"), "can_restart": runtime.can_restart()}
+
+
+@app.post("/api/backups")
+async def create_backup():
+    return await asyncio.to_thread(backup.create, "manual")
+
+
+@app.get("/api/backups/{name}")
+async def download_backup(name: str):
+    path = backup.path_of(name)
+    return FileResponse(path, filename=name, media_type="application/zip")
+
+
+@app.post("/api/backups/{name}/restore")
+async def restore_backup(name: str):
+    backup.stage_restore(name)
+    return {"restarting": runtime.request_restart()}
+
+
+@app.post("/api/backups/upload")
+async def restore_uploaded_backup(file: UploadFile = File(...)):
+    backup.stage_restore_upload(await file.read())
+    return {"restarting": runtime.request_restart()}
+
+
+@app.post("/api/shutdown")
+async def shutdown(request: Request):
+    """Выключение из меню значка у часов. Только с этого компьютера."""
+    if request.client and request.client.host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(403)
+    return {"stopping": runtime.request_stop()}
+
+
+@app.post("/api/restart")
+async def restart():
+    if not runtime.request_restart():
+        raise HTTPException(400, "Программа запущена не через START.bat — перезапустите её вручную")
+    return {"restarting": True}

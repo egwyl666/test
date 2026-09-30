@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Поставщики — Prom Loader</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
 </head>
 <body>
   <header class="topbar">
@@ -82,6 +83,7 @@
     }
     $("#add").onclick = add;
     $("#add2").onclick = add;
+    loadMeta().catch(() => {});
     load().catch((err) => toast(err.message, "error"));
   </script>
 </body>

@@ -32,7 +32,47 @@ async function api(path, options = {}) {
 
 async function loadMeta() {
   Object.assign(META, await api("/api/meta"));
+  showUpdateBanner();
   return META;
+}
+
+function showUpdateBanner() {
+  if (!META.update_available || $("#update-banner") || location.pathname === "/settings") return;
+  const bar = document.createElement("div");
+  bar.id = "update-banner";
+  bar.className = "update-banner";
+  bar.innerHTML = `Доступна новая версия программы <b>${esc(META.update_available)}</b>.
+    <a href="/settings#updates">Посмотреть, что нового, и обновить</a>`;
+  document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
+}
+
+// Ждём, пока программа перезапустится (после обновления/восстановления), и перезагружаем страницу.
+function waitForRestart(message, restarting) {
+  const overlay = document.createElement("div");
+  overlay.className = "restart-overlay";
+  overlay.innerHTML = `<div><div class="ai-loading">${esc(message)}</div>
+    <p class="small muted">${restarting ? "Программа перезапускается — страница обновится сама."
+      : "Закройте чёрное окно программы и запустите её снова (ярлык «Prom Loader»)."}</p></div>`;
+  document.body.appendChild(overlay);
+  if (!restarting) return;
+  let sawDown = false;
+  const tick = async () => {
+    try {
+      await fetch("/api/meta", { cache: "no-store" }).then((r) => { if (!r.ok) throw new Error(); });
+      if (sawDown) { location.reload(); return; }
+    } catch { sawDown = true; }
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 1500);
+}
+
+// Минимальный markdown для заметок «Что нового»: заголовки ## и пункты «- ».
+function markdownLite(text) {
+  return text.split("\n").map((line) => {
+    if (line.startsWith("## ")) return `<h4>Версия ${esc(line.slice(3))}</h4>`;
+    if (line.startsWith("- ")) return `<li>${esc(line.slice(2))}</li>`;
+    return line.trim() ? `<p>${esc(line)}</p>` : "";
+  }).join("");
 }
 
 function $(sel, root = document) { return root.querySelector(sel); }
