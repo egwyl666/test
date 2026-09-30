@@ -15,7 +15,7 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, excel, feed, pricing, products, suppliers, sync
+from . import ai, config, db, excel, feed, pricing, products, suppliers, sync
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -92,6 +92,7 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(products.ProductError)
 @app.exception_handler(excel.ImportError_)
 @app.exception_handler(suppliers.SupplierError)
+@app.exception_handler(ai.AIError)
 async def user_error(request: Request, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=400)
 
@@ -139,6 +140,8 @@ async def meta():
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
+        "ai": {"enabled": ai.enabled(), "provider": ai.settings()["provider"],
+               "actions": {k: v[0] for k, v in ai.ACTIONS.items()}},
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
             "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
         "groups": [r["group_name"] for r in db.query(
@@ -166,6 +169,22 @@ async def get_product(product_id: int):
 @app.patch("/api/products/{product_id}")
 async def update_product(product_id: int, data: dict = Body(...)):
     return products.update(product_id, data)
+
+
+@app.post("/api/products/{product_id}/ai")
+async def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
+    """Предложение ИИ по карточке. Ничего не сохраняет: пользователь сам решает, применять ли."""
+    product = products.get(product_id)
+    changes = await asyncio.to_thread(ai.run, product, action, instruction)
+    return {"changes": changes}
+
+
+@app.post("/api/ai/check")
+async def ai_check():
+    try:
+        return await asyncio.to_thread(ai.check)
+    except ai.AIError as exc:
+        return {"ok": False, "models": [], "message": str(exc)}
 
 
 @app.post("/api/products/{product_id}/unlock")
@@ -279,6 +298,12 @@ def _settings_view() -> dict:
         "import_settings": json.dumps(sync.import_settings() or DEFAULT_IMPORT_SETTINGS, ensure_ascii=False, indent=2),
         "feed_url": f"{base or ''}/feed/prom.yml?key={config.get('feed_key')}",
         "locked": {k: config.from_env(k) for k in config.ENV},
+        "ai_provider": config.get("ai_provider"),
+        "ai_providers": ai.PROVIDERS,
+        "gemini_key": config.mask(config.get("gemini_key")),
+        "anthropic_key": config.mask(config.get("anthropic_key")),
+        "gemini_model": config.get("gemini_model") or ai.DEFAULT_MODELS["gemini"],
+        "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
     }
 
 
@@ -291,6 +316,16 @@ async def get_settings():
 async def save_settings(data: dict = Body(...)):
     if data.get("prom_token"):
         db.set_setting("prom_token", data["prom_token"].strip())
+    for key in ("gemini_key", "anthropic_key"):
+        if data.get(key):
+            db.set_setting(key, data[key].strip())
+    if "ai_provider" in data:
+        if data["ai_provider"] not in ("", *ai.PROVIDERS):
+            raise HTTPException(400, "Неизвестный провайдер ИИ")
+        db.set_setting("ai_provider", data["ai_provider"])
+    for key in ("gemini_model", "claude_model"):
+        if key in data:
+            db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
     for key in ("public_base_url", "prom_api_base", "shop_name"):
         if key in data:
             db.set_setting(key, str(data[key] or "").strip())

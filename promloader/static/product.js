@@ -549,12 +549,82 @@ function pollStatus() {
   }, 3000);
 }
 
+// ---------- ИИ-помощник ----------
+
+const AI_FIELD_LABEL = {
+  name: "Название", description: "Описание", name_ua: "Название (укр.)", description_ua: "Описание (укр.)", keywords: "Ключевые слова",
+};
+
+function renderAiPanel() {
+  const on = META.ai && META.ai.enabled;
+  $("#ai-on").classList.toggle("hidden", !on);
+  $("#ai-off").classList.toggle("hidden", on);
+  if (!on) return;
+  $("#ai-actions").innerHTML = Object.entries(META.ai.actions).filter(([k]) => k !== "custom")
+    .map(([k, label]) => `<button type="button" class="btn small" data-ai="${k}">${esc(label)}</button>`).join("");
+  $$("#ai-actions [data-ai]").forEach((b) => b.addEventListener("click", () => askAi(b.dataset.ai)));
+}
+
+async function askAi(action, instruction = "") {
+  const box = $("#ai-result");
+  const buttons = $$("#ai-panel button");
+  box.classList.remove("hidden");
+  box.innerHTML = `<div class="ai-loading">ИИ думает… обычно это 5–20 секунд</div>`;
+  buttons.forEach((b) => (b.disabled = true));
+  try {
+    await ensureId();
+    await flush();
+    const res = await api(`/api/products/${state.id}/ai`, { method: "POST", json: { action, instruction } });
+    showAiResult(res.changes);
+  } catch (err) {
+    box.innerHTML = `<div class="err-text" style="font-size:14px">${esc(err.message)}</div>`;
+  } finally {
+    buttons.forEach((b) => (b.disabled = false));
+  }
+}
+
+function showAiResult(changes) {
+  const box = $("#ai-result");
+  const values = formValues();
+  const show = (field, value) => (field.startsWith("description") ? descriptionHtml(value) : esc(value)) || '<span class="muted">пусто</span>';
+  box.innerHTML = Object.entries(changes).map(([field, value]) => `
+    <div class="ai-field">
+      <h4>${esc(AI_FIELD_LABEL[field] || field)}</h4>
+      <div class="ai-cols">
+        <div class="old"><div class="label">Было</div>${show(field, values[field] || "")}</div>
+        <div class="new"><div class="label">Предлагает ИИ</div>${show(field, value)}</div>
+      </div>
+    </div>`).join("") + `
+    <div class="toolbar" style="margin:0">
+      <button type="button" class="btn primary" id="ai-apply">Применить</button>
+      <button type="button" class="btn" id="ai-cancel">Отменить</button>
+      <span class="small muted">После применения можно поправить текст руками.</span>
+    </div>`;
+  $("#ai-apply").onclick = () => {
+    for (const [field, value] of Object.entries(changes)) {
+      if (!form.elements[field]) continue;
+      form.elements[field].value = value;
+      changed(field);
+    }
+    if (changes.name_ua || changes.description_ua) $("#lang-tabs [data-lang=ua]").click();
+    box.classList.add("hidden");
+    toast("Применено — сохраняю", "ok");
+  };
+  $("#ai-cancel").onclick = () => box.classList.add("hidden");
+}
+
+$("#ai-custom").addEventListener("click", () => askAi("custom", $("#ai-instruction").value));
+$("#ai-instruction").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); askAi("custom", e.target.value); }
+});
+
 // ---------- старт ----------
 
 async function init() {
   await loadMeta();
   $("#presence").innerHTML = Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");
+  renderAiPanel();
 
   if (state.id) {
     try {

@@ -294,3 +294,17 @@ table.rules td { padding: 4px; border-top: 1px solid var(--line); }
 table.rules input, table.rules select { padding: 6px 8px; font-size: 13px; }
 table.rules .num { width: 90px; }
 table.rules .handle { cursor: grab; color: var(--muted); text-align: center; width: 24px; }
+
+/* ---------- ИИ-помощник ---------- */
+.ai-result { margin-top: 14px; border: 1px solid var(--accent); border-radius: 10px; padding: 14px; background: #fcfbff; }
+.ai-result .ai-field { margin-bottom: 14px; }
+.ai-result .ai-field h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.ai-result .ai-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ai-result .ai-cols > div { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 13px; line-height: 1.5; max-height: 260px; overflow: auto; }
+.ai-result .ai-cols .old { color: var(--muted); }
+.ai-result .ai-cols .label { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 4px; }
+.ai-result .ai-cols .new .label { color: var(--accent); }
+.ai-loading { display: flex; align-items: center; gap: 10px; color: var(--accent); font-size: 14px; }
+.ai-loading::before { content: ""; width: 16px; height: 16px; border: 2px solid var(--accent-soft); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 640px) { .ai-result .ai-cols { grid-template-columns: 1fr; } }

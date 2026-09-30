@@ -46,6 +46,35 @@
       </div>
     </form>
 
+    <div class="panel" id="ai">
+      <h2>✨ ИИ-помощник</h2>
+      <p class="small muted" style="margin-top:-6px">
+        Помогает в карточке товара: улучшить описание, перевести на украинский, придумать название и ключевые слова.
+        ИИ только предлагает текст — в карточку он попадает после нажатия «Применить».
+      </p>
+      <label class="field"><span>Какой ИИ использовать</span>
+        <select id="ai-provider"><option value="">не подключать</option></select></label>
+      <div id="ai-gemini" class="hidden">
+        <label class="field"><span>API-ключ Gemini <span class="muted" id="gemini-state"></span></span>
+          <input id="gemini-key" name="gemini_key" type="password" placeholder="вставьте новый ключ, чтобы заменить" autocomplete="new-password"></label>
+        <p class="small muted" style="margin-top:-6px">Ключ бесплатно создаётся в <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> → «Get API key».
+          На бесплатном тарифе есть лимит запросов в минуту и в день, и Google может использовать запросы для улучшения своих моделей.</p>
+        <label class="field"><span>Модель</span><input id="gemini-model" name="gemini_model" list="gemini-models"></label>
+        <datalist id="gemini-models"></datalist>
+      </div>
+      <div id="ai-claude" class="hidden">
+        <label class="field"><span>API-ключ Anthropic <span class="muted" id="anthropic-state"></span></span>
+          <input id="anthropic-key" name="anthropic_key" type="password" placeholder="sk-ant-…" autocomplete="new-password"></label>
+        <p class="small muted" style="margin-top:-6px">Ключ создаётся в <a href="https://platform.claude.com/" target="_blank" rel="noopener">консоли Anthropic</a>; оплата по использованию.</p>
+        <label class="field"><span>Модель</span><input id="claude-model" name="claude_model"></label>
+      </div>
+      <div class="toolbar">
+        <button class="btn primary" id="ai-save">Сохранить</button>
+        <button class="btn" id="ai-check">Проверить</button>
+        <span id="ai-check-result" class="small"></span>
+      </div>
+    </div>
+
     <div class="panel">
       <h2>Автоимпорт по ссылке</h2>
       <p class="small muted">
@@ -84,6 +113,16 @@
       $("#import-settings").value = s.import_settings;
       $("#api-base").value = s.prom_api_base;
       $("#feed-url").value = s.public_base_url ? s.feed_url : "Сначала укажите публичный адрес сайта";
+      $("#ai-provider").innerHTML = `<option value="">не подключать</option>` +
+        Object.entries(s.ai_providers).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+      $("#ai-provider").value = s.ai_provider;
+      $("#gemini-key").value = "";
+      $("#anthropic-key").value = "";
+      $("#gemini-state").textContent = s.gemini_key ? `(сейчас: ${s.gemini_key})` : "(не задан)";
+      $("#anthropic-state").textContent = s.anthropic_key ? `(сейчас: ${s.anthropic_key})` : "(не задан)";
+      $("#gemini-model").value = s.gemini_model;
+      $("#claude-model").value = s.claude_model;
+      showProvider();
       for (const [key, locked] of Object.entries(s.locked)) {
         const el = document.querySelector(`[name=${key}]`);
         if (el && locked) { el.disabled = true; el.title = "Задано переменной окружения"; }
@@ -121,6 +160,35 @@
         const res = await api("/api/settings/check", { method: "POST" });
         out.textContent = res.message;
         out.style.color = res.ok ? "var(--ok)" : "var(--err)";
+      } catch (err) {
+        out.textContent = err.message;
+        out.style.color = "var(--err)";
+      }
+    };
+
+    function showProvider() {
+      $("#ai-gemini").classList.toggle("hidden", $("#ai-provider").value !== "gemini");
+      $("#ai-claude").classList.toggle("hidden", $("#ai-provider").value !== "claude");
+    }
+    $("#ai-provider").onchange = showProvider;
+    function aiBody() {
+      return {
+        ai_provider: $("#ai-provider").value,
+        gemini_key: $("#gemini-key").value, gemini_model: $("#gemini-model").value,
+        anthropic_key: $("#anthropic-key").value, claude_model: $("#claude-model").value,
+      };
+    }
+    $("#ai-save").onclick = () => save(aiBody());
+    $("#ai-check").onclick = async () => {
+      const out = $("#ai-check-result");
+      out.textContent = "Проверяю…";
+      out.style.color = "";
+      try {
+        fill(await api("/api/settings", { method: "POST", json: aiBody() }));
+        const res = await api("/api/ai/check", { method: "POST" });
+        out.textContent = res.message;
+        out.style.color = res.ok ? "var(--ok)" : "var(--err)";
+        $("#gemini-models").innerHTML = (res.models || []).map((m) => `<option value="${esc(m)}">`).join("");
       } catch (err) {
         out.textContent = err.message;
         out.style.color = "var(--err)";

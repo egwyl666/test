@@ -13,6 +13,11 @@ ENV = {
     "public_base_url": "PUBLIC_BASE_URL",
     "prom_api_base": "PROM_API_BASE",
     "feed_key": "FEED_KEY",
+    "ai_provider": "AI_PROVIDER",
+    "gemini_key": "GEMINI_API_KEY",
+    "gemini_model": "GEMINI_MODEL",
+    "anthropic_key": "ANTHROPIC_API_KEY",
+    "claude_model": "CLAUDE_MODEL",
 }
 
 

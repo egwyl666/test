@@ -62,6 +62,23 @@
             </div>
           </div>
 
+          <div class="panel" id="ai-panel">
+            <h2>✨ ИИ-помощник</h2>
+            <div id="ai-off" class="small muted hidden">
+              Подключите ИИ в <a href="/settings#ai">Настройках</a> — он поможет улучшить описание, перевести на украинский,
+              придумать название и ключевые слова. У Google Gemini есть бесплатный тариф.
+            </div>
+            <div id="ai-on" class="hidden">
+              <div class="toolbar" id="ai-actions" style="margin-bottom:10px"></div>
+              <div class="row" style="align-items:flex-end">
+                <label class="field" style="margin:0"><span>Своя просьба</span>
+                  <input id="ai-instruction" placeholder="Например: добавь, что подходит в подарок, и сделай короче"></label>
+                <button type="button" class="btn" id="ai-custom" style="flex:0 0 auto">Попросить</button>
+              </div>
+              <div id="ai-result" class="ai-result hidden"></div>
+            </div>
+          </div>
+
           <div class="panel">
             <h2>Цена и наличие</h2>
             <div class="row">

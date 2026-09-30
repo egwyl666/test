@@ -5,7 +5,8 @@ import pytest
 from PIL import Image
 
 os.environ["PROMLOADER_WORKER"] = "0"
-for name in ("PROM_API_TOKEN", "PUBLIC_BASE_URL", "PROM_API_BASE", "FEED_KEY", "APP_PASSWORD"):
+for name in ("PROM_API_TOKEN", "PUBLIC_BASE_URL", "PROM_API_BASE", "FEED_KEY", "APP_PASSWORD", "AI_PROVIDER",
+             "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL"):
     os.environ.pop(name, None)
 
 from promloader import db  # noqa: E402
