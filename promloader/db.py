@@ -235,6 +235,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for name, ddl in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                if (table, name) == ("products", "pending_fields"):
+                    # что именно меняли до обновления программы, неизвестно — такие товары отправим полным импортом
+                    conn.execute("""UPDATE products SET pending_fields = '["*"]'
+                                    WHERE synced_at IS NOT NULL AND status IN ('ready', 'error', 'sending')""")
     conn.execute("CREATE INDEX IF NOT EXISTS products_supplier ON products(supplier_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS products_status ON products(status)")
     conn.execute("CREATE INDEX IF NOT EXISTS products_barcode ON products(barcode)")

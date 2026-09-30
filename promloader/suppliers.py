@@ -238,6 +238,7 @@ def _images_hash(urls: list[str], files: list[bytes]) -> str:
 
 
 def _replace_images(c, product_id: int, urls: list[str], files: list[bytes], trash: list[str]) -> None:
+    products.mark_pending(c, product_id, ["images"])  # фото изменились: быстрым обновлением цены не обойтись
     trash += [r["file"] for r in c.execute("SELECT file FROM images WHERE product_id = ? AND file IS NOT NULL", (product_id,))]
     c.execute("DELETE FROM images WHERE product_id = ?", (product_id,))
     pos = 0
@@ -262,6 +263,12 @@ def _item_fields(item: dict) -> dict:
     return fields
 
 
+def valid_barcode(code: str) -> bool:
+    """Штрихкод, по которому можно объединять: 8–14 цифр и не «заглушка» из одинаковых цифр."""
+    code = (code or "").strip()
+    return code.isdigit() and 8 <= len(code) <= 14 and len(set(code)) > 1
+
+
 def recompute_offer(c, product_id: int, pricer: pricing.Pricer) -> bool:
     """Цена и наличие товара с несколькими поставщиками — по лучшему предложению. True, если товар изменился."""
     rows = c.execute("SELECT supplier_id, sku, missing, data FROM supplier_items WHERE product_id = ?", (product_id,)).fetchall()
@@ -280,7 +287,10 @@ def recompute_offer(c, product_id: int, pricer: pricing.Pricer) -> bool:
         if not any(not i["missing"] and i["data"].get("presence", "available") != "not_available" for i in items):
             target["presence"] = "not_available"
     locked = set(json.loads(product["locked_fields"] or "[]"))
-    updates = {k: v for k, v in target.items() if (k not in locked or k in ("presence", "quantity")) and product[k] != v}
+    nothing_in_stock = target.get("presence") == "not_available"
+    # ручные правки уважаем; исключение — товара нет ни у одного поставщика (как и для одного поставщика)
+    updates = {k: v for k, v in target.items()
+               if (k not in locked or (nothing_in_stock and k in ("presence", "quantity"))) and product[k] != v}
     if updates:
         products._touch(c, product_id, updates, product["status"])
     return bool(updates)
@@ -306,9 +316,12 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
                 _sample(stats, f"{sku}: артикул {external_id} уже занят товаром другого поставщика")
                 return
             product = other  # товар уже был (создан руками или импортом) — привязываем его к поставщику
-    if product is None and s["merge_by_barcode"] and fields.get("barcode"):
-        # тот же товар у другого поставщика — добавляем как ещё одно предложение
-        product = c.execute("SELECT * FROM products WHERE barcode = ? ORDER BY id LIMIT 1", (fields["barcode"],)).fetchone()
+    if product is None and s["merge_by_barcode"] and valid_barcode(fields.get("barcode", "")):
+        # тот же товар у ДРУГОГО поставщика — добавляем как ещё одно предложение
+        product = c.execute(
+            """SELECT * FROM products WHERE barcode = ? AND id NOT IN
+                   (SELECT product_id FROM supplier_items WHERE supplier_id = ? AND product_id IS NOT NULL)
+               ORDER BY id LIMIT 1""", (fields["barcode"], s["id"])).fetchone()
         if product is not None:
             stats["joined"] = stats.get("joined", 0) + 1
 

@@ -72,3 +72,20 @@ def test_needs_deps_and_rollback(tmp_path):
 def test_shutdown_only_from_this_computer(client):
     # TestClient приходит с адреса «testclient» — как чужой компьютер в сети: выключать нельзя
     assert client.post("/api/shutdown").status_code == 403
+
+
+def test_tray_requests_use_app_password(monkeypatch, tmp_path):
+    import httpx
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(httpx, "post", lambda url, timeout, auth: calls.append((url, auth)) or Resp())
+    monkeypatch.setenv("APP_PASSWORD", "secret")
+    app = tray.App.__new__(tray.App)
+    app.data = tmp_path
+    (tmp_path / "port").write_text("8001")
+    app._post("/api/restart")
+    assert calls == [("http://127.0.0.1:8001/api/restart", ("admin", "secret"))]

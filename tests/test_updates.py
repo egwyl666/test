@@ -188,3 +188,14 @@ def test_failed_version_is_not_reinstalled(tmp_path):
     with pytest.raises(updater.UpdateError):
         updater.update(github(version="1.1.0")[0], app)
     assert updater.check(github(version="1.1.1")[0], app)["available"] is True  # следующая версия — снова можно
+
+
+def test_update_keeps_user_files_and_uses_manifest(tmp_path):
+    app = make_app(tmp_path)
+    (app / "прайс поставщика.xlsx").write_bytes(b"user file")
+    (app / "promloader" / "old_module.py").write_text("x = 1\n")
+    updater.update(github()[0], app)
+    assert (app / "прайс поставщика.xlsx").exists()          # файл пользователя на месте
+    assert not (app / "promloader" / "old_module.py").exists()  # устаревший код программы удалён
+    manifest = json.loads((db.data_dir() / "updates" / "manifest.json").read_text())
+    assert "promloader/added.py" in manifest and "START.bat" in manifest

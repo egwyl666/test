@@ -328,7 +328,8 @@ async function showCatalogState(state) {
       ? `<div class="err-text" style="color:var(--warn)">У ${state.no_external_id} товаров в кабинете Prom нет «внешнего ID». Перед массовой отправкой
          из программы проверьте на одном таком товаре, что Prom обновил его, а не создал копию.</div>` : "";
     box.innerHTML = `<span class="badge synced">Каталог загружен</span> ${esc(formatDate(state.finished_at))}:
-      новых ${state.created}, обновлено ${state.updated}${state.skipped ? `, пропущено (удалённые) ${state.skipped}` : ""}${warn}`;
+      новых ${state.created}, обновлено ${state.updated}${state.skipped ? `, пропущено (удалённые) ${state.skipped}` : ""}${
+        state.kept_local ? `, оставлены ваши неотправленные правки: ${state.kept_local}` : ""}${warn}`;
   }
 }
 

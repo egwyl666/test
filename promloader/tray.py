@@ -159,12 +159,19 @@ class App:
         else:
             self.notify("Программа ещё запускается — подождите несколько секунд")
 
-    def restart(self, *_):
+    def _post(self, path: str) -> None:
+        """Запрос к своему серверу; если включён пароль (APP_PASSWORD) — с ним. Ошибка — исключение."""
         import httpx
 
-        port = self.port()
+        auth = None
+        if os.environ.get("APP_PASSWORD"):
+            auth = (os.environ.get("APP_USER", "admin"), os.environ["APP_PASSWORD"])
+        r = httpx.post(f"http://127.0.0.1:{self.port()}{path}", timeout=5, auth=auth)
+        r.raise_for_status()
+
+    def restart(self, *_):
         try:
-            httpx.post(f"http://127.0.0.1:{port}/api/restart", timeout=5)
+            self._post("/api/restart")
         except Exception:
             if self.child:
                 self.child.terminate()  # не ответила — перезапустим принудительно
@@ -174,12 +181,9 @@ class App:
             os.startfile(self.data)  # noqa: S606
 
     def quit(self, *_):
-        import httpx
-
         self.supervisor.stopping = True
-        port = self.port()
         try:
-            httpx.post(f"http://127.0.0.1:{port}/api/shutdown", timeout=5)
+            self._post("/api/shutdown")
             self.child.wait(timeout=15)
         except Exception:
             if self.child and self.child.poll() is None:

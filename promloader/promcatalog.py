@@ -4,6 +4,7 @@
 «На Prom». Поля, которых нет в ответе Prom, не трогаются.
 """
 
+import asyncio
 import json
 import logging
 import threading
@@ -83,6 +84,13 @@ def _upsert(p: dict, counts: dict) -> None:
         row = db.query_one("SELECT id FROM products WHERE prom_id = ?", (prom_id,))
         existing = row["id"] if row else None
     if existing:
+        status = db.query_one("SELECT status FROM products WHERE id = ?", (existing,))["status"]
+        if status in ("ready", "error", "sending"):
+            # в программе есть неотправленные правки — не затираем их данными с Prom, только связываем
+            with db.tx() as c:
+                c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (prom_id, existing))
+            counts["kept_local"] += 1
+            return
         products.update(existing, data, lock=False)
         pid = existing
         counts["updated"] += 1
@@ -92,23 +100,27 @@ def _upsert(p: dict, counts: dict) -> None:
     if images and not products.image_rows(pid):
         products.replace_images(pid, images, [])
     with db.tx() as c:
-        c.execute("UPDATE products SET prom_id = ?, status = 'synced', synced_at = ?, last_error = '' WHERE id = ?",
-                  (prom_id, db.now(), pid))
+        c.execute("UPDATE products SET prom_id = ?, status = 'synced', synced_at = ?, last_error = '', "
+                  "pending_fields = '[]' WHERE id = ?", (prom_id, db.now(), pid))
+
+
+def _upsert_page(page: list[dict], counts: dict) -> None:
+    for p in page:
+        try:
+            _upsert(p, counts)
+        except products.ProductError as exc:
+            log.warning("Товар Prom %s пропущен: %s", p.get("id"), exc)
+            counts["skipped"] += 1
 
 
 async def load(client) -> dict:
     """Проходит весь каталог. client — PromClient."""
-    counts = {"seen": 0, "created": 0, "updated": 0, "skipped": 0, "no_external_id": 0}
+    counts = {"seen": 0, "created": 0, "updated": 0, "skipped": 0, "no_external_id": 0, "kept_local": 0}
     last_id = None
     while True:
         body = await client.list_products(limit=PAGE, last_id=last_id)
         page = body.get("products") or []
-        for p in page:
-            try:
-                _upsert(p, counts)
-            except products.ProductError as exc:
-                log.warning("Товар Prom %s пропущен: %s", p.get("id"), exc)
-                counts["skipped"] += 1
+        await asyncio.to_thread(_upsert_page, page, counts)  # база — в отдельном потоке, интерфейс не подвисает
         counts["seen"] += len(page)
         _set_state(running=True, **counts)
         if len(page) < PAGE:
@@ -124,7 +136,8 @@ async def run(client_factory) -> dict:
     if not _lock.acquire(blocking=False):
         raise PromError("Каталог уже загружается")
     try:
-        _set_state(running=True, error="", seen=0, created=0, updated=0, skipped=0, no_external_id=0, finished_at=None)
+        _set_state(running=True, error="", seen=0, created=0, updated=0, skipped=0, no_external_id=0, kept_local=0,
+                   finished_at=None)
         async with client_factory() as client:
             counts = await load(client)
         _set_state(running=False, finished_at=db.now(), **counts)

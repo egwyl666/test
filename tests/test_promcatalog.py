@@ -53,7 +53,7 @@ def test_paginated_load(monkeypatch):
     ]
     factory, seen = serve(pages)
     counts = asyncio.run(promcatalog.run(factory))
-    assert counts == {"seen": 4, "created": 3, "updated": 0, "skipped": 1, "no_external_id": 1}
+    assert counts == {"seen": 4, "created": 3, "updated": 0, "skipped": 1, "no_external_id": 1, "kept_local": 0}
     assert [s.get("last_id") for s in seen] == [None, "1002", "1004"]
 
     items = by_ext()
@@ -91,3 +91,18 @@ def test_api(client, monkeypatch):
             break
         time.sleep(0.05)
     assert client.get("/api/prom/catalog").json()["created"] == 1
+
+
+def test_unsent_local_edits_are_kept():
+    pid = products.create({"name": "Моё название", "price": 1, "external_id": "EXT-1"})
+    products.set_status([pid], "ready")
+    counts = asyncio.run(promcatalog.run(serve([[prom_product(1)]])[0]))
+    assert counts["kept_local"] == 1 and counts["updated"] == 0
+    p = products.get(pid)
+    assert p["name"] == "Моё название" and p["status"] == "ready" and p["prom_id"] == 1001
+
+
+def test_synced_after_load_has_no_pending():
+    counts = asyncio.run(promcatalog.run(serve([[prom_product(1)]])[0]))
+    p = products.get(by_ext()["EXT-1"]["id"])
+    assert counts["created"] == 1 and p["pending_fields"] == "[]"

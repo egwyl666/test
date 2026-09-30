@@ -222,28 +222,53 @@ def _quick_errors(body: dict) -> dict:
     return found
 
 
+FORMAT_ERRORS = {400, 404, 405, 422}  # Prom не понимает запрос — а не «нет доступа» или «сервер лежит»
+
+
+def _requeue_as_import(job_products: dict) -> None:
+    """Товары, которые быстрый запрос не обработал, — отдельной задачей полного импорта."""
+    if not job_products:
+        return
+    ts = db.now()
+    with db.tx() as c:
+        c.execute("INSERT INTO sync_jobs (status, kind, products, next_run_at, created_at, updated_at) "
+                  "VALUES ('pending', 'import', ?, ?, ?, ?)", (json.dumps(job_products), ts, ts, ts))
+
+
 async def _start_quick(job: dict, client: PromClient) -> None:
     """Быстрое обновление цены/наличия через /products/edit_by_external_id (пачками по 100)."""
     job_products = json.loads(job["products"])
     ids = [int(pid) for pid in job_products]
-    errors, processed = {}, 0
+    errors, processed, fallback = {}, 0, []
     try:
         for start in range(0, len(ids), QUICK_CHUNK):
-            body = await client.edit_by_external_id(_quick_items(ids[start:start + QUICK_CHUNK]))
-            errors.update(_quick_errors(body if isinstance(body, dict) else {}))
-            processed += len(body.get("processed_ids") or []) if isinstance(body, dict) else 0
+            chunk = ids[start:start + QUICK_CHUNK]
+            body = await client.edit_by_external_id(_quick_items(chunk))
+            body = body if isinstance(body, dict) else {}
+            chunk_errors = _quick_errors(body)
+            errors.update(chunk_errors)
+            if "processed_ids" in body:
+                done = len(body.get("processed_ids") or [])
+                processed += done
+                if done < len(chunk) - len(chunk_errors):
+                    # Prom обработал не всё и не сказал, что именно, — надёжнее отправить пачку полным импортом
+                    fallback += chunk
+            else:
+                processed += len(chunk) - len(chunk_errors)
     except PromError as err:
-        if err.retryable:
-            raise
-        # Prom не принял формат быстрого запроса — выключаем быстрый способ и отправляем обычным импортом
+        if err.retryable or err.status not in FORMAT_ERRORS:
+            raise  # нет связи, токен, лимит — обычные повторы/ошибка, быстрый режим не трогаем
         log.warning("Быстрое обновление отклонено Prom (%s) — переключаюсь на обычный импорт", err)
         db.set_setting("quick_updates", "0")
         db.set_setting("quick_updates_error", str(err))
         _update_job(job["id"], kind="import", attempts=0, last_error="", next_run_at=db.now())
         return
-    result = {"mode": "quick", "processed": processed, "errors": errors}
+    fallback_products = {str(pid): job_products[str(pid)] for pid in fallback}
+    finished = {k: v for k, v in job_products.items() if k not in fallback_products}
+    result = {"mode": "quick", "processed": processed, "errors": errors, "requeued": len(fallback_products)}
     _update_job(job["id"], status="done", result=json.dumps(result, ensure_ascii=False))
-    _finish_products(job_products, ok=True, per_product=errors)
+    _finish_products(finished, ok=True, per_product=errors)
+    _requeue_as_import(fallback_products)
 
 
 async def _start(job: dict, client: PromClient) -> None:

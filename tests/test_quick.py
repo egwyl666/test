@@ -105,3 +105,46 @@ def test_per_product_error():
     Prom(edit=(200, {"processed_ids": [], "errors": {ext: "Товар не найден"}})).run()
     p = products.get(pid)
     assert p["status"] == "error" and p["last_error"] == "Товар не найден"
+
+
+def test_photos_and_price_together_is_full_import():
+    from promloader import suppliers
+    pid = synced()
+    with db.tx() as c:
+        suppliers._replace_images(c, pid, ["https://new.example.com/1.jpg"], [], [])
+        products._touch(c, pid, {"price": 150.0}, "synced")
+    assert sorted(json.loads(products.get(pid)["pending_fields"])) == ["images", "price"]
+    sync.enqueue([pid])
+    assert kinds() == ["import"]
+
+
+def test_auth_error_does_not_disable_quick_mode():
+    pid = synced()
+    products.update(pid, {"price": 120}, lock=False)
+    sync.enqueue([pid])
+    Prom(edit=(401, {"error": "unauthorized"})).run()
+    assert db.get_setting("quick_updates") != "0"
+    assert sync.list_jobs()[0]["status"] == "failed"
+
+
+def test_unprocessed_products_requeued_as_import():
+    a, b = synced(), synced()
+    for pid in (a, b):
+        products.update(pid, {"price": 120}, lock=False)
+    sync.enqueue([a, b])
+    Prom(edit=(200, {"processed_ids": [1]})).run()  # Prom обработал только один из двух
+    jobs = sync.list_jobs()
+    assert jobs[0]["kind"] == "import" and jobs[0]["status"] == "pending" and jobs[0]["count"] == 2
+    assert jobs[1]["result"]["requeued"] == 2
+
+
+def test_migration_marks_unsent_products(tmp_path):
+    import sqlite3
+    pid = synced()
+    products.update(pid, {"name": "правка до обновления программы"}, lock=False)
+    conn = db._conn
+    conn.execute("ALTER TABLE products DROP COLUMN pending_fields")
+    db._migrate(conn)
+    assert products.get(pid)["pending_fields"] == '["*"]'
+    products.update(pid, {"price": 1}, lock=False)
+    assert sync._quick_ok(pid) is False

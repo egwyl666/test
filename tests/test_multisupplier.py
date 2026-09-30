@@ -64,21 +64,21 @@ def test_cheapest_in_stock_wins_and_content_stays():
 
 def test_no_merge_when_disabled_or_no_barcode():
     a = supplier("Альфа", [])
-    refresh(a, [["A1", "111", "Кружка", 100, "есть", ""]])
+    refresh(a, [["A1", "4820000000111", "Кружка", 100, "есть", ""]])
     b = supplier("Бета", [], merge_by_barcode=False)
-    refresh(b, [["B1", "111", "Кружка", 90, "есть", ""]])
+    refresh(b, [["B1", "4820000000111", "Кружка", 90, "есть", ""]])
     assert products.list_products()["total"] == 2
 
 
 def test_locked_price_respected_and_delete_primary():
     pricing.save_rules([{"markup_percent": 10}])
     a = supplier("Альфа", [])
-    refresh(a, [["A1", "222", "Кружка", 100, "есть", ""]])
+    refresh(a, [["A1", "4820000000222", "Кружка", 100, "есть", ""]])
     b = supplier("Бета", [])
-    refresh(b, [["B1", "222", "Кружка Б", 90, "есть", ""]])
+    refresh(b, [["B1", "4820000000222", "Кружка Б", 90, "есть", ""]])
     p = only_product()
     products.update(p["id"], {"price": 500})
-    refresh(b, [["B1", "222", "Кружка Б", 70, "есть", ""]])
+    refresh(b, [["B1", "4820000000222", "Кружка Б", 70, "есть", ""]])
     assert only_product()["price"] == 500
 
     suppliers.delete(a)
@@ -88,3 +88,26 @@ def test_locked_price_respected_and_delete_primary():
 
 def test_mapping_hint_for_barcode():
     assert excel.guess_mapping(["Штрихкод", "Код товара"]) == {"A": "barcode", "B": "external_id"}
+
+
+def test_same_supplier_and_fake_barcodes_are_not_merged():
+    a = supplier("Альфа", [])
+    stats = refresh(a, [["A1", "4820000000017", "Кружка белая", 100, "есть", ""],
+                        ["A2", "4820000000017", "Кружка чёрная", 100, "есть", ""],
+                        ["A3", "0000000000000", "Тарелка", 50, "есть", ""]])
+    assert stats["created"] == 3 and not stats.get("joined")
+    b = supplier("Бета", [])
+    stats = refresh(b, [["B1", "0000000000000", "Что-то", 10, "есть", ""]])
+    assert stats["created"] == 1 and not stats.get("joined")  # «заглушка» из нулей не объединяет
+    assert suppliers.valid_barcode("4820000000017") and not suppliers.valid_barcode("123")
+
+
+def test_locked_presence_respected_unless_nothing_in_stock():
+    a = supplier("Альфа", [])
+    refresh(a, [["A1", "4820000000333", "Кружка", 100, "есть", ""]])
+    b = supplier("Бета", [])
+    refresh(b, [["B1", "4820000000333", "Кружка Б", 90, "есть", ""]])
+    p = only_product()
+    products.update(p["id"], {"presence": "not_available"})  # решили не продавать
+    refresh(b, [["B1", "4820000000333", "Кружка Б", 80, "есть", ""]])
+    assert only_product()["presence"] == "not_available"

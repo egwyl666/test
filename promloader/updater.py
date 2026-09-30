@@ -11,6 +11,7 @@
 """
 
 import io
+import json
 import logging
 import os
 import py_compile
@@ -172,6 +173,16 @@ def _code_files(root: Path) -> set[Path]:
     return files
 
 
+OWNED_DIRS = {"promloader", "tests"}  # без списка файлов прошлой версии удаляем устаревшее только здесь
+
+
+def _previous_manifest(updates: Path) -> set[str] | None:
+    try:
+        return set(json.loads((updates / "manifest.json").read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return None
+
+
 def install(content: bytes, app_dir: Path = APP_DIR) -> str:
     """Ставит новую версию из архива. Возвращает её номер."""
     updates = db.data_dir() / "updates"
@@ -188,6 +199,7 @@ def install(content: bytes, app_dir: Path = APP_DIR) -> str:
     backup.create(reason="before-update")
 
     old_files, new_files = _code_files(app_dir), _code_files(root)
+    shipped = _previous_manifest(updates)
     shutil.rmtree(previous, ignore_errors=True)
     for rel in old_files:
         (previous / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -195,8 +207,11 @@ def install(content: bytes, app_dir: Path = APP_DIR) -> str:
     for rel in new_files:
         (app_dir / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(root / rel, app_dir / rel)
-    for rel in old_files - new_files:  # файлы, удалённые в новой версии
-        (app_dir / rel).unlink(missing_ok=True)
+    # удаляем только то, что было частью прошлой версии программы, — свои файлы пользователя не трогаем
+    for rel in old_files - new_files:
+        if (shipped is not None and rel.as_posix() in shipped) or (shipped is None and rel.parts[0] in OWNED_DIRS):
+            (app_dir / rel).unlink(missing_ok=True)
+    (updates / "manifest.json").write_text(json.dumps(sorted(r.as_posix() for r in new_files)), encoding="utf-8")
     shutil.rmtree(work, ignore_errors=True)
     (updates / "pending-check").write_text(version, encoding="utf-8")
     db.set_setting("update_latest", "")

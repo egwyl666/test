@@ -360,6 +360,15 @@ def _touch(c, product_id: int, fields: dict, status: str) -> None:
     )
 
 
+def mark_pending(c, product_id: int, names: list[str]) -> None:
+    """Добавить поля в список «изменилось с последней отправки» (например, фото, заменённые поставщиком)."""
+    row = c.execute("SELECT pending_fields FROM products WHERE id = ?", (product_id,)).fetchone()
+    if row is None:
+        return
+    pending = set(json.loads(row["pending_fields"] or "[]")) | set(names)
+    c.execute("UPDATE products SET pending_fields = ? WHERE id = ?", (json.dumps(sorted(pending)), product_id))
+
+
 def delete(ids: list[int]) -> int:
     files = []
     with db.tx() as c:
