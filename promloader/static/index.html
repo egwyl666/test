@@ -34,6 +34,28 @@
       <div class="jobs" id="jobs"><div class="muted small">Пока ничего не отправлялось.</div></div>
     </div>
 
+    <div class="panel hidden" id="ai-jobs-panel" style="margin-bottom:16px">
+      <h2 style="margin-bottom:6px">✨ Массовый ИИ</h2>
+      <div class="jobs" id="ai-jobs"></div>
+    </div>
+
+    <div class="modal hidden" id="ai-modal">
+      <div class="modal-box">
+        <h2>✨ ИИ для выбранных товаров: <span id="ai-count"></span></h2>
+        <label class="field"><span>Что сделать</span><select id="ai-action"></select></label>
+        <label class="field hidden" id="ai-instr-wrap"><span>Ваша просьба</span>
+          <textarea id="ai-instr" rows="3" style="min-height:70px" placeholder="Например: добавь в конец описания абзац про бесплатную доставку от 1000 грн"></textarea></label>
+        <label class="small" id="ai-empty-wrap" style="display:block;margin-bottom:12px"><input type="checkbox" id="ai-only-empty" checked>
+          только товары, где это ещё не заполнено</label>
+        <p class="small muted" id="ai-eta"></p>
+        <p class="small muted">Тексты сразу попадут в карточки. Если результат не понравится — задание можно целиком откатить.</p>
+        <div class="toolbar" style="margin:0;justify-content:flex-end">
+          <button class="btn" id="ai-cancel-modal">Отмена</button>
+          <button class="btn primary" id="ai-start">Запустить</button>
+        </div>
+      </div>
+    </div>
+
     <div class="panel">
       <div class="toolbar">
         <div class="chips" id="chips"></div>
@@ -46,6 +68,7 @@
         <span class="small muted" id="selected-count"></span>
         <span class="spacer"></span>
         <button class="btn primary" data-action="send" disabled>Отправить на Prom</button>
+        <button class="btn" data-action="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
         <button class="btn" data-action="ready" disabled>Пометить «готов»</button>
         <button class="btn" data-action="draft" disabled>В черновики</button>
         <button class="btn danger" data-action="delete" disabled>Удалить</button>

@@ -15,7 +15,7 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, autostart, backup, config, db, excel, feed, phototunnel, pricing, products, promcatalog, runtime,
+from . import (ai, aibulk, autostart, backup, config, db, excel, feed, phototunnel, pricing, products, promcatalog, runtime,
                schedule, suppliers, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -42,12 +42,45 @@ async def lifespan(app: FastAPI):
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
-                 asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop))]
+                 asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
+                 asyncio.create_task(ai_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
     phototunnel.tunnel.close()
+
+
+async def ai_worker(stop: asyncio.Event) -> None:
+    """Массовый ИИ: по одному товару, не чаще лимита провайдера; при 429 — пауза на минуту."""
+    pacer = aibulk.Pacer()
+    while not stop.is_set():
+        delay = 3.0
+        try:
+            if await asyncio.to_thread(aibulk.has_work):
+                wait = pacer.wait_time()
+                if wait > 0:
+                    delay = wait
+                else:
+                    pacer.mark()
+                    result = await asyncio.to_thread(aibulk.process_one)
+                    if result == "rate_limited":
+                        aibulk.pause_running("Лимит запросов ИИ — продолжу через минуту")
+                        delay = aibulk.RATE_LIMIT_PAUSE
+                    elif result == "skipped":
+                        pacer.last = 0.0  # пропуск не тратит лимит
+                        delay = 0.05
+                    else:
+                        aibulk.pause_running("")
+                        delay = 0.2
+            else:
+                await asyncio.to_thread(aibulk._finish_jobs)
+        except Exception:
+            log.exception("Сбой массового ИИ")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def schedule_worker(stop: asyncio.Event) -> None:
@@ -137,6 +170,7 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(updater.UpdateError)
 @app.exception_handler(backup.BackupError)
 @app.exception_handler(schedule.ScheduleError)
+@app.exception_handler(aibulk.BulkError)
 @app.exception_handler(autostart.AutostartError)
 async def user_error(request: Request, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -357,6 +391,7 @@ def _settings_view() -> dict:
         "anthropic_key": config.mask(config.get("anthropic_key")),
         "gemini_model": config.get("gemini_model") or ai.DEFAULT_MODELS["gemini"],
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
+        "ai_rate": db.get_setting("ai_rate"),
         "auto_update": config.get("auto_update") != "0",
         "photo_tunnel": config.get("photo_tunnel") != "0",
         "quick_updates": db.get_setting("quick_updates") != "0",
@@ -397,6 +432,11 @@ async def save_settings(data: dict = Body(...)):
         if data["ai_provider"] not in ("", *ai.PROVIDERS):
             raise HTTPException(400, "Неизвестный провайдер ИИ")
         db.set_setting("ai_provider", data["ai_provider"])
+    if "ai_rate" in data:
+        rate = str(data["ai_rate"] or "").strip()
+        if rate and (not rate.isdigit() or not 1 <= int(rate) <= 1000):
+            raise HTTPException(400, "Запросов в минуту: число от 1 до 1000")
+        db.set_setting("ai_rate", rate)
     for key in ("gemini_model", "claude_model"):
         if key in data:
             db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
@@ -782,3 +822,26 @@ async def _catalog_bg() -> None:
     except Exception as exc:
         log.exception("Сбой загрузки каталога Prom")
         promcatalog._set_state(running=False, error=f"Внутренняя ошибка: {exc}")
+
+
+# ---------- массовый ИИ ----------
+
+@app.get("/api/ai/bulk")
+async def ai_bulk_jobs():
+    return {"items": aibulk.list_jobs(), "rate": aibulk.rate_per_minute()}
+
+
+@app.post("/api/ai/bulk")
+async def ai_bulk_create(ids: list[int] = Body(...), action: str = Body(...), instruction: str = Body(""),
+                         only_empty: bool = Body(True)):
+    return aibulk.create(ids, action, instruction, only_empty)
+
+
+@app.post("/api/ai/bulk/{job_id}/status")
+async def ai_bulk_status(job_id: int, status: str = Body(..., embed=True)):
+    return aibulk.set_status(job_id, status)
+
+
+@app.post("/api/ai/bulk/{job_id}/revert")
+async def ai_bulk_revert(job_id: int):
+    return {"restored": await asyncio.to_thread(aibulk.revert, job_id)}

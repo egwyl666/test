@@ -113,6 +113,9 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () =>
         toast(`Не отправлено ${res.rejected.length}: «${first.name || "без названия"}» — ${first.reasons.join("; ")}`, "error");
       }
       loadJobs();
+    } else if (action === "ai") {
+      openAiModal(ids);
+      return;
     } else if (action === "delete") {
       if (!confirm(`Удалить товаров: ${ids.length}? Это нельзя отменить.`)) return;
       await api("/api/products/delete", { method: "POST", json: { ids } });
@@ -216,6 +219,93 @@ function summarizeResult(r) {
   return parts.join(", ") || (r.status ? `статус: ${r.status}` : "");
 }
 
+// ---------- массовый ИИ ----------
+
+const AI_BULK = ["translate_ua", "improve", "keywords", "name", "shorten", "custom"];
+let aiIds = [];
+let aiRate = 8;
+
+function openAiModal(ids) {
+  if (!META.ai || !META.ai.enabled) {
+    toast("Сначала подключите ИИ в «Настройках» (бесплатно через Google Gemini)", "error");
+    return;
+  }
+  aiIds = ids;
+  $("#ai-count").textContent = ids.length;
+  $("#ai-action").innerHTML = AI_BULK.map((k) => `<option value="${k}">${esc(META.ai.actions[k])}</option>`).join("");
+  updateAiModal();
+  $("#ai-modal").classList.remove("hidden");
+}
+
+function updateAiModal() {
+  const action = $("#ai-action").value;
+  $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
+  $("#ai-empty-wrap").classList.toggle("hidden", !["translate_ua", "keywords", "improve"].includes(action));
+  const minutes = Math.ceil(aiIds.length / aiRate);
+  $("#ai-eta").textContent = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
+}
+
+$("#ai-action").addEventListener("change", updateAiModal);
+$("#ai-cancel-modal").addEventListener("click", () => $("#ai-modal").classList.add("hidden"));
+$("#ai-start").addEventListener("click", async () => {
+  try {
+    await api("/api/ai/bulk", { method: "POST", json: {
+      ids: aiIds, action: $("#ai-action").value, instruction: $("#ai-instr").value, only_empty: $("#ai-only-empty").checked,
+    } });
+    $("#ai-modal").classList.add("hidden");
+    toast("Задание для ИИ запущено", "ok");
+    loadAiJobs();
+  } catch (err) {
+    toast(err.message, "error");
+  }
+});
+
+const AI_JOB_STATUS = {
+  running: ["sending", "Идёт"], paused: ["draft", "Пауза"], done: ["synced", "Готово"],
+  cancelled: ["draft", "Отменено"], reverted: ["draft", "Откачено"],
+};
+
+let aiTimer;
+async function loadAiJobs() {
+  clearTimeout(aiTimer);
+  let data;
+  try { data = await api("/api/ai/bulk"); } catch { return; }
+  aiRate = data.rate;
+  $("#ai-jobs-panel").classList.toggle("hidden", !data.items.length);
+  $("#ai-jobs").innerHTML = data.items.map((j) => {
+    const [cls, label] = AI_JOB_STATUS[j.status] || ["draft", j.status];
+    const c = j.counts;
+    const doneCount = (c.done || 0) + (c.skipped || 0) + (c.error || 0);
+    const stats = [`${doneCount} из ${j.total}`, c.done ? `изменено ${c.done}` : "", c.skipped ? `пропущено ${c.skipped}` : "",
+      c.error ? `ошибок ${c.error}` : ""].filter(Boolean).join(" · ");
+    const active = j.status === "running" || j.status === "paused";
+    return `<div class="job">
+      <span class="badge ${cls}">${label}</span>
+      <span>${esc(j.label)}${j.instruction ? `: «${esc(j.instruction.slice(0, 60))}»` : ""}</span>
+      <span class="msg">${esc(stats)}${j.message ? ` · ${esc(j.message)}` : ""}${j.errors.length ? ` · ${esc(j.errors[0].message)}` : ""}</span>
+      ${j.status === "running" ? `<button class="btn small" data-ai-job="${j.id}" data-st="paused">Пауза</button>` : ""}
+      ${j.status === "paused" ? `<button class="btn small" data-ai-job="${j.id}" data-st="running">Продолжить</button>` : ""}
+      ${active ? `<button class="btn small" data-ai-job="${j.id}" data-st="cancelled">Отменить</button>` : ""}
+      ${c.done && j.status !== "reverted" ? `<button class="btn small danger" data-ai-revert="${j.id}">Откатить</button>` : ""}
+    </div>`;
+  }).join("");
+  $$("[data-ai-job]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api(`/api/ai/bulk/${b.dataset.aiJob}/status`, { method: "POST", json: { status: b.dataset.st } }); }
+    catch (err) { toast(err.message, "error"); }
+    loadAiJobs();
+  }));
+  $$("[data-ai-revert]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Вернуть прежние тексты у всех товаров этого задания?")) return;
+    const r = await api(`/api/ai/bulk/${b.dataset.aiRevert}/revert`, { method: "POST" });
+    toast(`Откачено: ${r.restored}`, "ok");
+    loadAiJobs();
+    loadProducts();
+  }));
+  if (data.items.some((j) => j.status === "running")) {
+    aiTimer = setTimeout(() => { loadAiJobs(); loadProducts(); }, 4000);
+  }
+}
+
 // ---------- каталог с Prom ----------
 
 let catalogTimer;
@@ -254,6 +344,7 @@ $("#prom-catalog").addEventListener("click", async () => {
 (async () => {
   await loadMeta();
   api("/api/prom/catalog").then(showCatalogState).catch(() => {});
+  loadAiJobs();
   $("#supplier-filter").innerHTML = `<option value="">Все поставщики</option><option value="none">Без поставщика</option>` +
     META.suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
   $("#supplier-filter").value = list.supplier;

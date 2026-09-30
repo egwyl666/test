@@ -97,6 +97,8 @@
         <p class="small muted" style="margin-top:-6px">Ключ создаётся в <a href="https://platform.claude.com/" target="_blank" rel="noopener">консоли Anthropic</a>; оплата по использованию.</p>
         <label class="field"><span>Модель</span><input id="claude-model" name="claude_model"></label>
       </div>
+      <label class="field"><span>Массовый ИИ: запросов в минуту <span class="muted">(пусто — по умолчанию: 8 для бесплатного Gemini, 30 для Claude)</span></span>
+        <input id="ai-rate" inputmode="numeric" style="max-width:160px"></label>
       <div class="toolbar">
         <button class="btn primary" id="ai-save">Сохранить</button>
         <button class="btn" id="ai-check">Проверить</button>
@@ -189,6 +191,7 @@
       $("#anthropic-state").textContent = s.anthropic_key ? `(сейчас: ${s.anthropic_key})` : "(не задан)";
       $("#gemini-model").value = s.gemini_model;
       $("#claude-model").value = s.claude_model;
+      $("#ai-rate").value = s.ai_rate || "";
       showProvider();
       for (const [key, locked] of Object.entries(s.locked)) {
         const el = document.querySelector(`[name=${key}]`);
@@ -245,6 +248,7 @@
         ai_provider: $("#ai-provider").value,
         gemini_key: $("#gemini-key").value, gemini_model: $("#gemini-model").value,
         anthropic_key: $("#anthropic-key").value, claude_model: $("#claude-model").value,
+        ai_rate: $("#ai-rate").value,
       };
     }
     $("#ai-save").onclick = () => save(aiBody());

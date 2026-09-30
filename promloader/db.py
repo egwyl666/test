@@ -122,6 +122,28 @@ CREATE TABLE IF NOT EXISTS schedules (
     created_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS ai_jobs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    action       TEXT NOT NULL,
+    instruction  TEXT NOT NULL DEFAULT '',
+    only_empty   INTEGER NOT NULL DEFAULT 1,
+    status       TEXT NOT NULL DEFAULT 'running',
+    message      TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ai_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES ai_jobs(id) ON DELETE CASCADE,
+    product_id  INTEGER NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    message     TEXT NOT NULL DEFAULT '',
+    old         TEXT,
+    new         TEXT
+);
+CREATE INDEX IF NOT EXISTS ai_items_job ON ai_items(job_id, status);
+
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        INTEGER NOT NULL DEFAULT 0,

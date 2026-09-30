@@ -357,3 +357,8 @@ div.field { margin-bottom: 14px; }
 .schedule-row .time { width: 110px; }
 .schedule-row select { width: auto; padding: 5px 8px; }
 .schedule-row .info { flex-basis: 100%; }
+
+/* ---------- модальное окно ---------- */
+.modal { position: fixed; inset: 0; background: rgba(20, 20, 30, .45); z-index: 150; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal-box { background: #fff; border-radius: 12px; padding: 22px; width: 520px; max-width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.modal-box h2 { margin-top: 0; }
