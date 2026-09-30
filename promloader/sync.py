@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import config, db, feed, phototunnel, products
+from . import config, db, feed, notify, phototunnel, products
 from .prom_api import PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
@@ -172,7 +172,9 @@ def _fail_or_retry(job: dict, err: PromError) -> None:
         return
     log.error("Задача %s не выполнена: %s", job["id"], err)
     _update_job(job["id"], status="failed", attempts=attempts, last_error=str(err))
+    count = len(json.loads(job["products"]))
     _finish_products(json.loads(job["products"]), ok=False, message=str(err))
+    notify.send("sync_failed", f"❗ <b>Отправка на Prom не удалась</b> (товаров: {count})\n{notify.esc(err)}")
 
 
 def _has_local_photos(product_ids: list[int]) -> bool:
@@ -266,6 +268,8 @@ async def _poll(job: dict, client: PromClient) -> None:
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
     _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False), last_error=message)
+    if not ok:
+        notify.send("sync_failed", f"❗ <b>Prom не принял импорт</b>\n{notify.esc(message[:300])}")
     _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=_per_product_errors(result))
 
 

@@ -12,7 +12,7 @@ import json
 import re
 from datetime import datetime, timedelta
 
-from . import db
+from . import db, notify
 
 GRACE = timedelta(minutes=10)      # опоздание до 10 минут — это ещё «вовремя»
 SNOOZE = timedelta(hours=1)
@@ -202,6 +202,8 @@ def tick(now: datetime | None = None) -> list[str]:
         else:
             _save(s["id"], last_slot=slot.isoformat(), pending_slot=slot.isoformat())
             done.append(f"{s['label']}: ждёт решения")
+            notify.send("schedule_missed", f"⏰ Выгрузка на Prom за {when} ({s['label']}) не выполнена — программа не работала. "
+                                           "Откройте Prom Loader и выберите: выгрузить сейчас, отложить или пропустить.")
     return done
 
 

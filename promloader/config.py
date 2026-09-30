@@ -20,6 +20,7 @@ ENV = {
     "claude_model": "CLAUDE_MODEL",
     "github_token": "PROMLOADER_GITHUB_TOKEN",
     "update_repo": "PROMLOADER_UPDATE_REPO",
+    "telegram_token": "TELEGRAM_BOT_TOKEN",
 }
 
 

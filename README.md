@@ -100,6 +100,7 @@ uvicorn promloader.main:app --host 0.0.0.0 --port 8000
 | `PROM_API_BASE` | адрес API (по умолчанию `https://my.prom.ua/api/v1`) |
 | `AI_PROVIDER` | `gemini` или `claude` (иначе задаётся в «Настройках») |
 | `GEMINI_API_KEY`, `GEMINI_MODEL` | ключ и модель Gemini (по умолчанию `gemini-2.5-flash`; список доступных моделей — кнопка «Проверить» в настройках) |
+| `TELEGRAM_BOT_TOKEN` | токен бота для уведомлений (иначе задаётся в «Настройках») |
 | `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` | ключ и модель Claude (по умолчанию `claude-opus-5-5`) |
 
 ### Фото и публичный адрес
@@ -153,6 +154,10 @@ promloader/
   schedule.py   выгрузка по расписанию и пропущенные запуски
   autostart.py  запуск вместе с Windows
   phototunnel.py временный доступ Prom к фото с компьютера
+  promcatalog.py загрузка своего каталога с Prom
+  aibulk.py     массовый ИИ: очередь, темп, откат
+  orders.py     заказы с Prom
+  notify.py     уведомления в Telegram
   excel.py      разбор Excel/CSV/XML, выбор строк, сопоставление колонок
   feed.py       генерация YML для Prom
   prom_api.py   клиент API Prom.ua

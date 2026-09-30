@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Заказы — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/orders">Заказы</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
+      <a href="/settings">Настройки</a>
+    </nav>
+    <div class="right">
+      <button class="btn" id="refresh">↻ Проверить новые</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <h1 style="margin:0">Заказы с Prom</h1>
+      <span class="spacer"></span>
+      <span class="small muted" id="poll-info"></span>
+    </div>
+    <div id="orders-off" class="panel hidden">
+      Чтобы видеть заказы, укажите API-токен Prom в <a href="/settings">Настройках</a>.
+      Заказы проверяются автоматически каждые 5 минут. Уведомления о новых заказах можно получать в Telegram — это тоже в Настройках.
+    </div>
+    <div class="err-text" id="orders-error" style="margin-bottom:10px"></div>
+    <div class="chips" id="chips" style="margin-bottom:14px"></div>
+    <div id="list"></div>
+    <div id="empty" class="panel empty-state hidden">Заказов пока нет.</div>
+  </main>
+
+  <div class="modal hidden" id="cancel-modal">
+    <div class="modal-box">
+      <h2>Отменить заказ №<span id="cancel-id"></span></h2>
+      <label class="field"><span>Причина</span><select id="cancel-reason"></select></label>
+      <label class="field"><span>Комментарий для покупателя (необязательно)</span><textarea id="cancel-text" rows="2" style="min-height:60px"></textarea></label>
+      <div class="toolbar" style="margin:0;justify-content:flex-end">
+        <button class="btn" id="cancel-close">Назад</button>
+        <button class="btn primary" id="cancel-go">Отменить заказ</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script>
+    let data = null;
+    let filter = "";
+
+    const STATUS_CLASS = { pending: "ready", received: "sending", delivered: "synced", paid: "synced", canceled: "error", draft: "draft" };
+
+    async function load() {
+      data = await api(`/api/orders?${new URLSearchParams({ status: filter })}`);
+      $("#orders-off").classList.toggle("hidden", data.enabled);
+      $("#orders-error").textContent = data.error ? `Не удалось получить заказы: ${data.error}` : "";
+      $("#poll-info").textContent = data.last_poll ? `проверено ${formatDate(data.last_poll)}` : "";
+      const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
+      $("#chips").innerHTML = [["", "Все", total], ...Object.entries(data.statuses).map(([k, v]) => [k, v, data.counts[k] || 0])]
+        .filter(([k, , n]) => !k || n)
+        .map(([k, label, n]) => `<button class="chip ${k === filter ? "active" : ""}" data-s="${k}">${esc(label)}<b>${n}</b></button>`).join("");
+      $$("#chips .chip").forEach((c) => c.onclick = () => { filter = c.dataset.s; load(); });
+      $("#empty").classList.toggle("hidden", data.items.length > 0 || !data.enabled);
+      $("#list").innerHTML = data.items.map(orderCard).join("");
+      $$("[data-set]").forEach((b) => b.onclick = () => setStatus(Number(b.dataset.id), b.dataset.set));
+      const unseen = data.items.filter((o) => o.new).map((o) => o.id);
+      if (unseen.length) setTimeout(() => api("/api/orders/seen", { method: "POST", json: { ids: unseen } }).then(loadMeta), 3000);
+    }
+
+    function orderCard(o) {
+      const items = o.items.map((i) => `
+        <div class="order-item">
+          ${i.image ? `<img src="${esc(i.image)}" alt="" loading="lazy">` : `<div class="noimg"></div>`}
+          <div style="flex:1">${i.local_id ? `<a href="/product?id=${i.local_id}">${esc(i.name)}</a>` : esc(i.name)}
+            <div class="small muted">${esc(i.sku || i.external_id)}</div></div>
+          <div class="small">× ${esc(i.quantity)}</div>
+          <div class="price">${esc(i.total || i.price)}</div>
+        </div>`).join("");
+      const actions = Object.entries(data.settable).filter(([k]) => k !== o.status)
+        .map(([k, v]) => `<button class="btn small ${k === "canceled" ? "danger" : k === "received" ? "primary" : ""}" data-id="${o.id}" data-set="${k}">${esc(v)}</button>`).join("");
+      return `<div class="panel order ${o.new ? "is-new" : ""}">
+        <div class="toolbar" style="margin-bottom:8px">
+          <b>№${o.id}</b>
+          <span class="badge ${STATUS_CLASS[o.status] || "draft"}">${esc(o.status_label)}</span>
+          ${o.new ? `<span class="badge ready">не просмотрен</span>` : ""}
+          <span class="muted small">${esc(formatDate(o.date))}${o.source ? ` · ${esc(o.source)}` : ""}</span>
+          <span class="spacer"></span>
+          <b style="font-size:17px">${esc(o.price)}</b>
+        </div>
+        <div class="order-grid">
+          <div>
+            <div><b>${esc(o.client) || "Покупатель"}</b></div>
+            ${o.phone ? `<div><a href="tel:${esc(o.phone)}">${esc(o.phone)}</a></div>` : ""}
+            ${o.email ? `<div class="small muted">${esc(o.email)}</div>` : ""}
+            ${o.delivery ? `<div class="small" style="margin-top:6px">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
+            ${o.payment ? `<div class="small">💳 ${esc(o.payment)}</div>` : ""}
+            ${o.notes ? `<div class="small" style="margin-top:6px">💬 ${esc(o.notes)}</div>` : ""}
+          </div>
+          <div>${items}</div>
+        </div>
+        <div class="toolbar" style="margin:10px 0 0">${actions}</div>
+      </div>`;
+    }
+
+    let cancelId = null;
+    async function setStatus(id, status) {
+      if (status === "canceled") {
+        cancelId = id;
+        $("#cancel-id").textContent = id;
+        $("#cancel-reason").innerHTML = Object.entries(data.cancel_reasons).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+        $("#cancel-modal").classList.remove("hidden");
+        return;
+      }
+      try {
+        await api(`/api/orders/${id}/status`, { method: "POST", json: { status } });
+        toast("Статус изменён на Prom", "ok");
+        load();
+      } catch (err) { toast(err.message, "error"); }
+    }
+    $("#cancel-close").onclick = () => $("#cancel-modal").classList.add("hidden");
+    $("#cancel-go").onclick = async () => {
+      try {
+        await api(`/api/orders/${cancelId}/status`, { method: "POST", json: {
+          status: "canceled", reason: $("#cancel-reason").value, text: $("#cancel-text").value } });
+        $("#cancel-modal").classList.add("hidden");
+        toast("Заказ отменён", "ok");
+        load();
+      } catch (err) { toast(err.message, "error"); }
+    };
+    $("#refresh").onclick = async () => {
+      try {
+        const r = await api("/api/orders/refresh", { method: "POST" });
+        toast(r.new ? `Новых заказов: ${r.new}` : "Новых заказов нет", "ok");
+        load();
+      } catch (err) { toast(err.message, "error"); }
+    };
+
+    loadMeta().catch(() => {});
+    load().catch((err) => toast(err.message, "error"));
+    setInterval(() => load().catch(() => {}), 60000);
+  </script>
+</body>
+</html>

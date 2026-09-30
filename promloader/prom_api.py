@@ -76,6 +76,22 @@ class PromClient:
             params["last_id"] = last_id
         return await self._request("GET", "/products/list", params=params)
 
+    async def list_orders(self, limit: int = 100, last_id: int | None = None, **params) -> dict:
+        query = {"limit": limit, **{k: v for k, v in params.items() if v not in (None, "")}}
+        if last_id:
+            query["last_id"] = last_id
+        return await self._request("GET", "/orders/list", params=query)
+
+    async def set_order_status(self, ids: list[int], status: str, cancellation_reason: str = "",
+                               cancellation_text: str = "") -> dict:
+        """Формат — как в официальном примере Prom (company-api-example)."""
+        body = {"status": status, "ids": ids}
+        if cancellation_reason:
+            body["cancellation_reason"] = cancellation_reason
+        if cancellation_text:
+            body["cancellation_text"] = cancellation_text
+        return await self._request("POST", "/orders/set_status", json=body)
+
     async def import_file(self, content: bytes, settings: dict | None = None, filename: str = "products.xml") -> str:
         """Загружает YML-файл целиком. Фото Prom скачает сам по ссылкам <picture>."""
         body = await self._request(

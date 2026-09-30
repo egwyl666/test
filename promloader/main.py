@@ -15,15 +15,15 @@ from fastapi import Body, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, config, db, excel, feed, phototunnel, pricing, products, promcatalog, runtime,
-               schedule, suppliers, sync, updater)
+from . import (ai, aibulk, autostart, backup, config, db, excel, feed, notify, orders, phototunnel, pricing, products,
+               promcatalog, runtime, schedule, suppliers, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
 MAX_UPLOAD = 25 * 1024 * 1024
 PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
-    "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html",
+    "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -43,12 +43,29 @@ async def lifespan(app: FastAPI):
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
-                 asyncio.create_task(ai_worker(stop))]
+                 asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
     phototunnel.tunnel.close()
+
+
+async def orders_worker(stop: asyncio.Event) -> None:
+    """Раз в 5 минут забирает заказы с Prom (если указан токен)."""
+    while not stop.is_set():
+        if orders.enabled():
+            try:
+                async with sync.make_client() as client:
+                    await orders.poll(client)
+            except PromError:
+                pass  # ошибка сохранена и видна на странице заказов
+            except Exception:
+                log.exception("Сбой опроса заказов")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=orders.POLL_MINUTES * 60)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def ai_worker(stop: asyncio.Event) -> None:
@@ -171,6 +188,7 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(backup.BackupError)
 @app.exception_handler(schedule.ScheduleError)
 @app.exception_handler(aibulk.BulkError)
+@app.exception_handler(notify.NotifyError)
 @app.exception_handler(autostart.AutostartError)
 async def user_error(request: Request, exc: Exception):
     return JSONResponse({"detail": str(exc)}, status_code=400)
@@ -222,6 +240,7 @@ async def meta():
         "version": updater.current_version(),
         "update_available": db.get_setting("update_latest"),
         "missed_schedules": schedule.missed(),
+        "orders_unseen": db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"],
         "ai": {"enabled": ai.enabled(), "provider": ai.settings()["provider"],
                "actions": {k: v[0] for k, v in ai.ACTIONS.items()}},
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
@@ -392,6 +411,10 @@ def _settings_view() -> dict:
         "gemini_model": config.get("gemini_model") or ai.DEFAULT_MODELS["gemini"],
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
         "ai_rate": db.get_setting("ai_rate"),
+        "telegram_token": config.mask(notify.token()),
+        "telegram_chat": db.get_setting("telegram_chat_name") if notify.chat_id() else "",
+        "telegram_events": sorted(notify.enabled_events()),
+        "telegram_event_labels": notify.EVENTS,
         "auto_update": config.get("auto_update") != "0",
         "photo_tunnel": config.get("photo_tunnel") != "0",
         "quick_updates": db.get_setting("quick_updates") != "0",
@@ -413,6 +436,12 @@ async def get_settings():
 async def save_settings(data: dict = Body(...)):
     if data.get("prom_token"):
         db.set_setting("prom_token", data["prom_token"].strip())
+    if data.get("telegram_token"):
+        db.set_setting("telegram_token", data["telegram_token"].strip())
+        db.set_setting("telegram_chat_id", "")
+    if "telegram_events" in data:
+        events = [e for e in data["telegram_events"] if e in notify.EVENTS]
+        db.set_setting("telegram_events", ",".join(events) or "none")
     if "quick_updates" in data:
         db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
         if data["quick_updates"]:
@@ -845,3 +874,49 @@ async def ai_bulk_status(job_id: int, status: str = Body(..., embed=True)):
 @app.post("/api/ai/bulk/{job_id}/revert")
 async def ai_bulk_revert(job_id: int):
     return {"restored": await asyncio.to_thread(aibulk.revert, job_id)}
+
+
+# ---------- заказы и Telegram ----------
+
+@app.get("/api/orders")
+async def list_orders(status: str = "", limit: int = 100, offset: int = 0):
+    return {**orders.list_orders(status, min(limit, 500), offset), "statuses": orders.STATUSES,
+            "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS, "enabled": orders.enabled()}
+
+
+@app.post("/api/orders/refresh")
+async def refresh_orders():
+    if not config.get("prom_token"):
+        raise HTTPException(400, "Сначала укажите API-токен Prom в «Настройках»")
+    try:
+        async with sync.make_client() as client:
+            new = await orders.poll(client)
+    except PromError as exc:
+        raise HTTPException(502, str(exc))
+    return {"new": new}
+
+
+@app.post("/api/orders/seen")
+async def orders_seen(ids: list[int] = Body(default=[], embed=True)):
+    orders.mark_seen(ids or None)
+    return {"ok": True}
+
+
+@app.post("/api/orders/{order_id}/status")
+async def order_status(order_id: int, status: str = Body(...), reason: str = Body(""), text: str = Body("")):
+    try:
+        async with sync.make_client() as client:
+            return await orders.set_status(client, order_id, status, reason, text)
+    except PromError as exc:
+        raise HTTPException(400 if exc.status in (None, 400, 422) else 502, str(exc))
+
+
+@app.post("/api/telegram/find")
+async def telegram_find():
+    return await asyncio.to_thread(notify.find_chat)
+
+
+@app.post("/api/telegram/test")
+async def telegram_test():
+    await asyncio.to_thread(notify.send_now, "✅ Prom Loader подключён. Сюда будут приходить новые заказы и важные сообщения.")
+    return {"ok": True}

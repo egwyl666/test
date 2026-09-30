@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import db, excel, pricing, products
+from . import db, excel, notify, pricing, products
 
 log = logging.getLogger("promloader.suppliers")
 
@@ -497,6 +497,8 @@ def run(supplier_id: int, trigger: str = "manual", force: bool = False, transpor
         except Exception as exc:
             log.exception("Поставщик %s: сбой обновления", supplier_id)
             status, message = "failed", f"Внутренняя ошибка: {exc}"
+        if status == "failed":
+            notify.send("supplier_failed", f"⚠️ <b>Поставщик «{notify.esc(s['name'])}» не обновился</b>\n{notify.esc(message)}")
         with db.tx() as c:
             c.execute("UPDATE supplier_runs SET status = ?, stats = ?, message = ?, finished_at = ? WHERE id = ?",
                       (status, json.dumps(stats, ensure_ascii=False), message, db.now(), run_id))

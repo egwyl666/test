@@ -34,6 +34,8 @@ async function loadMeta() {
   Object.assign(META, await api("/api/meta"));
   showUpdateBanner();
   showMissedSchedules();
+  const link = document.querySelector('.topbar nav a[href="/orders"]');
+  if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
   return META;
 }
 

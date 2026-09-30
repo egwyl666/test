@@ -12,6 +12,7 @@
     <a class="logo" href="/">Prom<span>Loader</span></a>
     <nav>
       <a href="/">Товары</a>
+      <a href="/orders">Заказы</a>
       <a href="/suppliers">Поставщики</a>
       <a href="/pricing">Наценка</a>
       <a href="/import">Импорт файла</a>
@@ -73,6 +74,25 @@
       <button class="btn" id="schedule-add">+ Добавить время выгрузки</button>
       <label class="small" id="autostart-wrap" style="display:block;margin-top:14px"><input type="checkbox" id="autostart">
         <b>Запускать Prom Loader вместе с Windows</b> <span class="muted">— чтобы расписание работало, даже если вы забыли открыть программу</span></label>
+    </div>
+
+    <div class="panel" id="telegram">
+      <h2>📨 Уведомления в Telegram <span class="muted small">(по желанию)</span></h2>
+      <ol class="small" style="margin-top:-4px;line-height:1.7">
+        <li>В Telegram откройте <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>, отправьте ему <code>/newbot</code>,
+          придумайте имя боту. BotFather пришлёт <b>токен</b> — длинную строку вида <code>123456:ABC-…</code>. Вставьте её ниже и нажмите «Сохранить».</li>
+        <li>Откройте своего нового бота (ссылка есть в сообщении BotFather) и нажмите <b>«Старт»</b> или напишите ему что-нибудь.</li>
+        <li>Нажмите <b>«Найти чат»</b>, затем «Отправить тест».</li>
+      </ol>
+      <label class="field"><span>Токен бота <span class="muted" id="tg-state"></span></span>
+        <input id="tg-token" type="password" placeholder="123456789:AA…" autocomplete="new-password"></label>
+      <div class="small" style="margin-bottom:10px">Присылать: <span id="tg-events"></span></div>
+      <div class="toolbar">
+        <button class="btn primary" id="tg-save">Сохранить</button>
+        <button class="btn" id="tg-find">Найти чат</button>
+        <button class="btn" id="tg-test">Отправить тест</button>
+        <span class="small" id="tg-result"></span>
+      </div>
     </div>
 
     <div class="panel" id="ai">
@@ -409,9 +429,38 @@
       } catch (err) { toast(err.message, "error"); e.target.checked = !e.target.checked; }
     };
 
+    // ---------- Telegram ----------
+    function fillTelegram(s) {
+      $("#tg-token").value = "";
+      $("#tg-state").textContent = s.telegram_token
+        ? `(сейчас: ${s.telegram_token}${s.telegram_chat ? `, чат: ${s.telegram_chat}` : ", чат не найден"})` : "(не задан)";
+      $("#tg-events").innerHTML = Object.entries(s.telegram_event_labels).map(([k, v]) =>
+        `<label style="margin-right:12px;white-space:nowrap"><input type="checkbox" value="${k}" ${s.telegram_events.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("");
+    }
+    const tgOut = (text, ok) => { $("#tg-result").textContent = text; $("#tg-result").style.color = ok ? "var(--ok)" : "var(--err)"; };
+    $("#tg-save").onclick = async () => {
+      try {
+        const s = await api("/api/settings", { method: "POST", json: {
+          telegram_token: $("#tg-token").value, telegram_events: $$("#tg-events input:checked").map((i) => i.value) } });
+        fillTelegram(s);
+        tgOut("Сохранено", true);
+      } catch (err) { tgOut(err.message, false); }
+    };
+    $("#tg-find").onclick = async () => {
+      try {
+        const r = await api("/api/telegram/find", { method: "POST" });
+        tgOut(`Чат найден: ${r.name}`, true);
+        fillTelegram(await api("/api/settings"));
+      } catch (err) { tgOut(err.message, false); }
+    };
+    $("#tg-test").onclick = async () => {
+      try { await api("/api/telegram/test", { method: "POST" }); tgOut("Сообщение отправлено — проверьте Telegram", true); }
+      catch (err) { tgOut(err.message, false); }
+    };
+
     loadMeta().catch(() => {});
     loadSchedules().catch(() => {});
-    api("/api/settings").then((s) => { fill(s); fillUpdates(s); }).catch((err) => toast(err.message, "error"));
+    api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); }).catch((err) => toast(err.message, "error"));
     loadBackups().catch(() => {});
   </script>
 </body>

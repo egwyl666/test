@@ -366,3 +366,13 @@ div.field { margin-bottom: 14px; }
 table.offers { border-collapse: collapse; margin-top: 6px; font-size: 13px; }
 table.offers td { padding: 3px 12px 3px 0; }
 table.offers tr.active td { font-weight: 600; color: var(--accent); }
+
+/* ---------- заказы ---------- */
+.nav-badge { background: var(--err); color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; margin-left: 3px; }
+.order.is-new { outline: 2px solid var(--accent); }
+.order-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 20px; }
+.order-item { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.order-item:first-child { border-top: none; }
+.order-item img, .order-item .noimg { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; background: var(--bg); }
+.order-item .price { font-weight: 600; white-space: nowrap; }
+@media (max-width: 800px) { .order-grid { grid-template-columns: 1fr; } }

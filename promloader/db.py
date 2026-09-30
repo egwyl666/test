@@ -144,6 +144,16 @@ CREATE TABLE IF NOT EXISTS ai_items (
 );
 CREATE INDEX IF NOT EXISTS ai_items_job ON ai_items(job_id, status);
 
+CREATE TABLE IF NOT EXISTS orders (
+    id            INTEGER PRIMARY KEY,
+    status        TEXT NOT NULL DEFAULT '',
+    date_created  TEXT NOT NULL DEFAULT '',
+    data          TEXT NOT NULL,
+    seen          INTEGER NOT NULL DEFAULT 0,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS orders_date ON orders(date_created);
+
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        INTEGER NOT NULL DEFAULT 0,
