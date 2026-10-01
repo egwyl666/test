@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, config, db, excel, feed, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, autostart, backup, config, db, diagnose, excel, feed, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -25,7 +25,7 @@ MAX_UPLOAD = 25 * 1024 * 1024
 PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
-    "/support": "support.html",
+    "/support": "support.html", "/diagnose": "diagnose.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -434,6 +434,28 @@ async def jobs():
 @app.get("/api/sync/photos")
 async def photo_access():
     return {"enabled": phototunnel.enabled(), "r2": r2.active(), **phototunnel.tunnel.status()}
+
+
+@app.post("/api/diagnose")
+async def diagnose_start(product_id: int = Body(..., embed=True)):
+    try:
+        products.get(product_id)
+    except KeyError:
+        raise HTTPException(404, "Товар не найден")
+    if any(not r["done"] for r in diagnose.RUNS.values()):
+        raise HTTPException(409, "Проверка уже идёт — дождитесь её окончания")
+    run = diagnose.Run(products.get(product_id))
+    task = asyncio.create_task(diagnose.execute(run, product_id))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return run.state
+
+
+@app.get("/api/diagnose/{run_id}")
+async def diagnose_state(run_id: str):
+    if run_id not in diagnose.RUNS:
+        raise HTTPException(404)
+    return diagnose.RUNS[run_id]
 
 
 @app.post("/api/r2/check")

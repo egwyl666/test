@@ -4,6 +4,7 @@
 """
 
 import json
+from urllib.parse import quote
 
 import httpx
 
@@ -119,6 +120,16 @@ class PromClient:
     async def import_url(self, url: str, settings: dict | None = None) -> str:
         body = await self._request("POST", "/products/import_url", json={"url": url, **(settings or DEFAULT_IMPORT_SETTINGS)})
         return _import_id(body)
+
+    async def get_by_external_id(self, external_id: str) -> dict | None:
+        """Товар на Prom по артикулу программы (id оффера в файле). None — такого товара нет."""
+        try:
+            body = await self._request("GET", f"/products/by_external_id/{quote(str(external_id), safe='')}")
+        except PromError as err:
+            if err.status == 404:
+                return None
+            raise
+        return body.get("product", body) if isinstance(body, dict) else None
 
     async def import_status(self, import_id: str) -> dict:
         return await self._request("GET", f"/products/import/status/{import_id}")
