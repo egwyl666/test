@@ -12,7 +12,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from . import config, db, feed, notify, phototunnel, products, r2
-from .prom_api import PromClient, PromError, import_state
+from .prom_api import DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
 
@@ -346,7 +346,19 @@ async def _start(job: dict, client: PromClient) -> None:
     job_products = _absorb_queued(job)
     ids = [int(pid) for pid in job_products]
     content = feed.build(ids, await _photo_base_url(ids))
-    import_id = await client.import_file(content, import_settings())
+    settings = {**DEFAULT_IMPORT_SETTINGS, **(import_settings() or {})}
+    if db.get_setting("import_plain") == "1":
+        settings.pop("updated_fields", None)
+    try:
+        import_id = await client.import_file(content, settings)
+    except PromError as err:
+        if err.status not in (400, 422) or "updated_fields" not in settings:
+            raise
+        # Prom не принял список полей — дальше отправляем без него (как раньше)
+        log.warning("Prom не принял updated_fields (%s) — отправляю без списка полей", err)
+        db.set_setting("import_plain", "1")
+        settings.pop("updated_fields")
+        import_id = await client.import_file(content, settings)
     _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", started_at=db.now(),
                 next_run_at=_at(POLL_SECONDS))
 

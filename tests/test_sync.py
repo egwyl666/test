@@ -257,3 +257,22 @@ def test_job_file_download(client):
     r = client.get(f"/api/sync/jobs/{job()['id']}/file")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     assert "<yml_catalog" in r.text and "Кружка" in r.text
+
+
+def test_import_sends_fields_to_update_and_falls_back():
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm()
+    run(fake)
+    upload = next(r for r in fake.requests if r.url.path.endswith("/import_file"))
+    assert b'"updated_fields": ["name", "sku", "price"' in upload.content
+    # Prom отклонил список полей — повтор без него, и дальше без него
+    pid2 = ready_product(name="Второй")
+    make_due()
+    run(fake)
+    fake2 = FakeProm(upload=[(400, {"error": "updated_fields: unknown value"}), (200, {"id": "imp-2"})])
+    sync.enqueue([pid2])
+    run(fake2)
+    uploads = [r for r in fake2.requests if r.url.path.endswith("/import_file")]
+    assert len(uploads) == 2 and b"updated_fields" not in uploads[1].content
+    assert db.get_setting("import_plain") == "1"

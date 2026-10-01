@@ -7,11 +7,16 @@ import json
 
 import httpx
 
+# Что обновлять у товаров из файла — как галочки «Інформація, яку потрібно оновити» в ручном импорте.
+UPDATED_FIELDS = ["name", "sku", "price", "images_urls", "presence", "quantity_in_stock", "description", "group",
+                  "keywords", "attributes", "discount", "labels", "gtin", "mpn"]
+
 DEFAULT_IMPORT_SETTINGS = {
     # Товары, которых нет в файле, не трогаем: выгружаем только выбранные.
     "mark_missing_product_as": "none",
     "force_update": False,
     "only_available": False,
+    "updated_fields": UPDATED_FIELDS,
 }
 
 # Статусы импорта: всё, что не «в процессе», считается завершённым.
