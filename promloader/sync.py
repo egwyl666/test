@@ -147,6 +147,36 @@ def _finish_products(job_products: dict, ok: bool, message: str = "", per_produc
                 )
 
 
+NOTHING_FOUND = ("Prom принял файл, но не нашёл в нём товаров (total: 0) — товар на Prom не появился. "
+                 "Нажмите «Скачать файл» у этой выгрузки и загрузите его в кабинете Prom вручную "
+                 "(Імпорт → Завантажити файл з комп'ютера): кабинет покажет, что ему не нравится. Пришлите это в «Поддержку»")
+
+
+def _found_nothing(result: dict) -> bool:
+    """Prom отвечает «SUCCESS», даже если не узнал в файле ни одного товара."""
+    total = result.get("total") if isinstance(result, dict) else None
+    return isinstance(total, int) and total == 0
+
+
+def repair_false_success() -> int:
+    """Версии до 1.3.3 считали выгрузку успешной при total: 0 — возвращаем такие товары в «ошибку»."""
+    fixed = 0
+    for job in db.query("SELECT * FROM sync_jobs WHERE status = 'done' AND kind = 'import' AND result IS NOT NULL"):
+        try:
+            result = json.loads(job["result"])
+        except ValueError:
+            continue
+        if not _found_nothing(result):
+            continue
+        with db.tx() as c:
+            c.execute("UPDATE sync_jobs SET status = 'failed', last_error = ? WHERE id = ?", (NOTHING_FOUND, job["id"]))
+            for pid in json.loads(job["products"]):
+                c.execute("""UPDATE products SET status = 'error', last_error = ?, synced_at = NULL, pending_fields = '["*"]'
+                             WHERE id = ? AND status = 'synced'""", (NOTHING_FOUND, int(pid)))
+        fixed += 1
+    return fixed
+
+
 def _per_product_errors(result: dict) -> dict:
     """Пытается сопоставить ошибки импорта с артикулами. Формат ошибок Prom может отличаться — берём что узнаём."""
     found = {}
@@ -332,6 +362,9 @@ async def _poll(job: dict, client: PromClient) -> None:
         return
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
+    if ok and _found_nothing(result):
+        ok = False
+        message = NOTHING_FOUND
     _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False), last_error=message)
     per_product = _per_product_errors(result)
     if ok:

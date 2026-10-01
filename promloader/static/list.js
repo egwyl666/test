@@ -189,6 +189,7 @@ async function loadJobs() {
         <span>#${j.id} · товаров: ${j.count}</span>
         <span class="msg" title="${esc(msg)}">${esc(msg)}</span>
         <span class="muted">${esc(formatDate(j.updated_at))}</span>
+        <a class="btn small" href="/api/sync/jobs/${j.id}/file" title="Файл, который ушёл на Prom: можно загрузить в кабинете вручную">Скачать файл</a>
         ${j.status === "failed" ? `<button class="btn small" data-retry="${j.id}">Повторить</button>` : ""}
       </div>`;
     }).join("");

@@ -40,6 +40,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(app: FastAPI):
     db.init()
     suppliers.recover()
+    fixed = sync.repair_false_success()
+    if fixed:
+        log.warning("Выгрузки, в которых Prom не нашёл товаров, помечены как неудачные: %d", fixed)
     stop = asyncio.Event()
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
@@ -433,6 +436,19 @@ async def r2_check():
 @app.get("/api/r2/stats")
 async def r2_stats():
     return {"active": r2.active(), **await asyncio.to_thread(r2.stats)}
+
+
+@app.get("/api/sync/jobs/{job_id}/file")
+async def job_file(job_id: int):
+    """Файл выгрузки — чтобы загрузить его в кабинете Prom вручную и увидеть подробный отчёт."""
+    job = db.query_one("SELECT products FROM sync_jobs WHERE id = ?", (job_id,))
+    if job is None:
+        raise HTTPException(404)
+    ids = [int(pid) for pid in json.loads(job["products"]) if db.query_one("SELECT 1 FROM products WHERE id = ?", (int(pid),))]
+    base = (r2.base_url() if r2.active() else "") or config.public_base_url() or (phototunnel.tunnel.url or "")
+    content = await asyncio.to_thread(feed.build, ids, base)
+    return Response(content, media_type="application/xml",
+                    headers={"Content-Disposition": f'attachment; filename="promloader-vygruzka-{job_id}.xml"'})
 
 
 @app.post("/api/sync/jobs/{job_id}/retry")

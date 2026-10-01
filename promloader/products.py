@@ -299,7 +299,7 @@ def validate(p: dict, image_count: int | None = None) -> dict:
     if not (p.get("description") or p.get("description_ua") or "").strip():
         warnings.append("Нет описания")
     if not (p.get("group_name") or "").strip():
-        warnings.append("Не указана группа")
+        warnings.append("Не указана группа — на Prom товар попадёт в группу «Без группы»")
     if not (p.get("name_ua") or "").strip():
         warnings.append("Нет названия на украинском")
     return {"errors": errors, "warnings": warnings, "ok": not errors}

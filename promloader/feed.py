@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 from . import db, products
 
 # Prom: available="true" — в наличии, "false" — под заказ, пусто — нет в наличии.
+NO_GROUP = "Без группы"  # в YML у каждого товара должна быть категория
 AVAILABLE_ATTR = {"available": "true", "order": "false", "not_available": ""}
 
 _has_tags = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
@@ -49,16 +50,19 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
         product_ids = [r["id"] for r in rows]
     items = [products.get(pid) for pid in product_ids]
 
+    shop_name = shop_name or db.get_setting("shop_name") or "Магазин"
     root = ET.Element("yml_catalog", date=datetime.now().strftime("%Y-%m-%d %H:%M"))
     shop = ET.SubElement(root, "shop")
-    if shop_name:
-        _sub(shop, "name", shop_name)
+    # name, company и url в YML обязательны
+    _sub(shop, "name", shop_name)
+    _sub(shop, "company", shop_name)
+    _sub(shop, "url", base_url or "https://prom.ua")
     currencies = ET.SubElement(shop, "currencies")
     for cur in sorted({p["currency"] or "UAH" for p in items} or {"UAH"}):
         ET.SubElement(currencies, "currency", id=cur, rate="1")
 
     categories = ET.SubElement(shop, "categories")
-    for group in sorted({p["group_name"] for p in items if p["group_name"]}):
+    for group in sorted({p["group_name"] or NO_GROUP for p in items}):
         _sub(categories, "category", group, id=category_id(group))
 
     offers = ET.SubElement(shop, "offers")
@@ -72,8 +76,7 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
         if p["old_price"] and p["price"] and p["old_price"] > p["price"]:
             _sub(offer, "oldprice", _fmt_price(p["old_price"]))
         _sub(offer, "currencyId", p["currency"] or "UAH")
-        if p["group_name"]:
-            _sub(offer, "categoryId", category_id(p["group_name"]))
+        _sub(offer, "categoryId", category_id(p["group_name"] or NO_GROUP))
         for img in products.image_rows(p["id"])[: products.MAX_IMAGES]:
             _sub(offer, "picture", products.image_src(img, base_url))
         _sub(offer, "vendorCode", p["external_id"])
