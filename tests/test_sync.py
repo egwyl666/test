@@ -276,3 +276,11 @@ def test_import_sends_fields_to_update_and_falls_back():
     uploads = [r for r in fake2.requests if r.url.path.endswith("/import_file")]
     assert len(uploads) == 2 and b"updated_fields" not in uploads[1].content
     assert db.get_setting("import_plain") == "1"
+
+
+def test_job_records_what_was_sent():
+    pid = ready_product()
+    sync.enqueue([pid])
+    run(FakeProm())
+    sent = job()["sent"]
+    assert sent["offers"] == 1 and sent["version"] and "updated_fields" in sent["settings"]

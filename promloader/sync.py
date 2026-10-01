@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import config, db, feed, notify, phototunnel, products, r2
+from . import config, db, feed, notify, phototunnel, products, r2, updater
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
@@ -100,6 +100,7 @@ def list_jobs(limit: int = 20) -> list[dict]:
         job["products"] = json.loads(job["products"])
         job["count"] = len(job["products"])
         job["result"] = json.loads(job["result"]) if job["result"] else None
+        job["sent"] = json.loads(job["sent"]) if job.get("sent") else None
         jobs.append(job)
     return jobs
 
@@ -359,8 +360,11 @@ async def _start(job: dict, client: PromClient) -> None:
         db.set_setting("import_plain", "1")
         settings.pop("updated_fields")
         import_id = await client.import_file(content, settings)
+    # что именно ушло на Prom — чтобы по /api/sync/jobs было видно версию и настройки
+    sent = {"version": updater.current_version(), "file": "products.xml", "bytes": len(content),
+            "offers": content.count(b"<offer "), "settings": settings}
     _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", started_at=db.now(),
-                next_run_at=_at(POLL_SECONDS))
+                sent=json.dumps(sent, ensure_ascii=False), next_run_at=_at(POLL_SECONDS))
 
 
 async def _poll(job: dict, client: PromClient) -> None:
