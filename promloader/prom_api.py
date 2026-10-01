@@ -24,11 +24,16 @@ IMPORT_DONE_OK = {"success", "partial"}
 IMPORT_DONE_FAIL = {"fatal", "error", "failed"}
 
 
+# «В данный момент действует ограничение на запуск одновременных импортов» — Prom ещё занят предыдущим.
+BUSY_MARKERS = ("одновременн", "одночасн", "ограничение на запуск", "обмеження на запуск")
+
+
 class PromError(Exception):
-    def __init__(self, message: str, retryable: bool = False, status: int | None = None):
+    def __init__(self, message: str, retryable: bool = False, status: int | None = None, busy: bool = False):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+        self.busy = busy  # Prom занят другим импортом — просто подождать
 
 
 class PromClient:
@@ -66,7 +71,11 @@ class PromClient:
         except ValueError:
             raise PromError(f"Prom вернул не JSON (HTTP {code}): {response.text[:300]}", retryable=code >= 500, status=code)
         if code >= 400:
-            raise PromError(f"Prom отклонил запрос (HTTP {code}): {_error_text(body)}", status=code)
+            text = _error_text(body)
+            if any(m in text.lower() for m in BUSY_MARKERS):
+                raise PromError("Prom ещё выполняет предыдущий импорт и не даёт запустить новый — программа подождёт "
+                                "и повторит сама", retryable=True, status=code, busy=True)
+            raise PromError(f"Prom отклонил запрос (HTTP {code}): {text}", status=code)
         if isinstance(body, dict) and body.get("error"):
             raise PromError(f"Prom: {_error_text(body)}", status=code)
         return body

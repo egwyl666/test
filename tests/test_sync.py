@@ -284,7 +284,7 @@ def test_import_sends_fields_to_update_and_falls_back():
     run(fake2)
     uploads = [r for r in fake2.requests if r.url.path.endswith("/import_file")]
     assert len(uploads) == 2 and b"updated_fields" not in uploads[1].content
-    assert db.get_setting("import_plain") == "1"
+    assert db.get_setting("import_plain_v2") == "1"
 
 
 def test_job_records_what_was_sent():
@@ -327,3 +327,32 @@ def test_feed_file_served_by_tunnel_server_and_app(client):
     r = httpx.get(f"http://127.0.0.1:{port}/feed/0123456789abcdef0123456789abcdef.xml")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/xml")
     assert httpx.get(f"http://127.0.0.1:{port}/feed/../prom.db").status_code == 404
+
+
+def test_prom_busy_with_another_import_waits_instead_of_failing():
+    """Prom: «действует ограничение на запуск одновременных импортов» — ждём, не ошибка, список полей не трогаем."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    busy = (400, {"status": 400, "message": "В данный момент действует ограничение на запуск одновременных импортов"})
+    fake = FakeProm(upload=[busy, busy, (200, {"id": "imp-1"})])
+    for _ in range(2):
+        run(fake)
+        j = job()
+        assert j["status"] == "pending" and j["attempts"] == 0 and "подождёт" in j["last_error"]
+        assert products.get(pid)["status"] == "sending"
+        make_due()
+    run(fake)
+    assert job()["status"] == "waiting" and db.get_setting("import_plain_v2") is None or db.get_setting("import_plain_v2") == ""
+    uploads = [r for r in fake.requests if r.url.path.endswith("/import_file")]
+    assert all(b"updated_fields" in r.content for r in uploads)
+
+
+def test_jobs_failed_because_prom_was_busy_are_requeued():
+    pid = ready_product()
+    sync.enqueue([pid])
+    with db.tx() as c:
+        c.execute("""UPDATE sync_jobs SET status = 'failed', last_error = 'Prom отклонил запрос (HTTP 400): {"status": 400, '
+                     || '"message": "В данный момент действует ограничение на запуск одновременн'""")
+        c.execute("UPDATE products SET status = 'error'")
+    assert sync.repair_false_success() == 1
+    assert products.get(pid)["status"] == "sending" and sync.list_jobs()[0]["status"] == "pending"

@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from . import config, db, feed, notify, phototunnel, products, r2, updater
-from .prom_api import DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
+from .prom_api import BUSY_MARKERS, DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
 
@@ -162,8 +162,13 @@ def _found_nothing(result: dict) -> bool:
 
 
 def repair_false_success() -> int:
-    """Версии до 1.3.3 считали выгрузку успешной при total: 0 — возвращаем такие товары в «ошибку»."""
+    """Чиним следы старых версий: выгрузки «успешные» при total: 0 (до 1.3.3) и упавшие из-за того,
+    что Prom был занят другим импортом (до 1.3.7) — вторые ставим в очередь заново."""
     fixed = 0
+    for job in db.query("SELECT id, last_error FROM sync_jobs WHERE status = 'failed'"):
+        if any(m in job["last_error"].lower() for m in BUSY_MARKERS):
+            retry_job(job["id"])
+            fixed += 1
     for job in db.query("SELECT * FROM sync_jobs WHERE status = 'done' AND kind = 'import' AND result IS NOT NULL"):
         try:
             result = json.loads(job["result"])
@@ -196,7 +201,15 @@ def _per_product_errors(result: dict) -> dict:
     return found
 
 
+BUSY_RETRY_SECONDS = 120
+BUSY_GIVE_UP = timedelta(hours=12)
+
+
 def _fail_or_retry(job: dict, err: PromError) -> None:
+    if getattr(err, "busy", False) and datetime.now(timezone.utc) - datetime.fromisoformat(job["created_at"]) < BUSY_GIVE_UP:
+        # Prom занят другим импортом — это не ошибка: ждём, попытки не тратим
+        _update_job(job["id"], last_error=str(err), next_run_at=_at(BUSY_RETRY_SECONDS))
+        return
     attempts = job["attempts"] + 1
     if err.retryable and attempts < MAX_ATTEMPTS:
         delay = BACKOFF_SECONDS[min(attempts - 1, len(BACKOFF_SECONDS) - 1)]
@@ -350,7 +363,7 @@ async def _start(job: dict, client: PromClient) -> None:
     ids = [int(pid) for pid in job_products]
     content = feed.build(ids, await _photo_base_url(ids))
     settings = {**DEFAULT_IMPORT_SETTINGS, **(import_settings() or {})}
-    if db.get_setting("import_plain") == "1":
+    if db.get_setting("import_plain_v2") == "1":
         settings.pop("updated_fields", None)
     method = "url" if db.get_setting("import_method") == "url" else "file"
     import_id, sent = await _send_import(client, content, settings, method)
@@ -395,11 +408,11 @@ async def _send_import(client: PromClient, content: bytes, settings: dict, metho
     try:
         import_id = await send()
     except PromError as err:
-        if err.status not in (400, 422) or "updated_fields" not in settings:
+        if err.status not in (400, 422) or "updated_fields" not in settings or "updated_fields" not in str(err):
             raise
         # Prom не принял список полей — дальше отправляем без него
         log.warning("Prom не принял updated_fields (%s) — отправляю без списка полей", err)
-        db.set_setting("import_plain", "1")
+        db.set_setting("import_plain_v2", "1")  # v2: до 1.3.7 ставилось по ошибке на любой 400
         settings = {k: v for k, v in settings.items() if k != "updated_fields"}
         import_id = await send()
     sent = {"version": updater.current_version(), "method": method, "bytes": len(content),
