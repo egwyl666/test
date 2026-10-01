@@ -220,3 +220,40 @@ def test_one_prom_import_at_a_time_and_queued_ones_merge():
     make_due()
     run(fake)
     assert {products.get(pid)["status"] for pid in (first, second, third)} == {"synced"}
+
+
+def test_success_with_zero_products_is_not_success():
+    """Prom отвечает SUCCESS с total: 0, если не узнал в файле товаров — товар не должен стать «На Prom»."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm(statuses=[(200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0, "errors": []})])
+    run(fake)
+    make_due()
+    run(fake)
+    p = products.get(pid)
+    assert p["status"] == "error" and "не нашёл в нём товаров" in p["last_error"]
+    assert job()["status"] == "failed"
+
+
+def test_old_false_successes_are_repaired():
+    pid = ready_product()
+    sync.enqueue([pid])
+    run(FakeProm())
+    make_due()
+    run(FakeProm())
+    assert products.get(pid)["status"] == "synced"
+    with db.tx() as c:  # так выглядела выгрузка в 1.3.2 и раньше
+        c.execute("""UPDATE sync_jobs SET result = '{"status": "SUCCESS", "total": 0}'""")
+    assert sync.repair_false_success() == 1 and sync.repair_false_success() == 0
+    p = products.get(pid)
+    assert p["status"] == "error" and p["synced_at"] is None
+    assert sync.retry_job(job()["id"])["accepted"] == 1
+    assert not sync._quick_ok(pid)  # повтор — полным импортом
+
+
+def test_job_file_download(client):
+    pid = ready_product()
+    sync.enqueue([pid])
+    r = client.get(f"/api/sync/jobs/{job()['id']}/file")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    assert "<yml_catalog" in r.text and "Кружка" in r.text

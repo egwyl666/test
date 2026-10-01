@@ -51,3 +51,15 @@ def test_no_oldprice_without_discount():
     pid = products.create({"name": "A", "price": 100, "old_price": 90})
     offer = ET.fromstring(feed.build([pid], "")).find("shop/offers/offer")
     assert offer.find("oldprice") is None
+
+
+def test_required_yml_fields_present():
+    """name/company/url у магазина и categoryId у каждого товара — даже без группы."""
+    from promloader import feed as feedmod
+    pid = products.create({"name": "Без группы товар", "price": 10})
+    root = ET.fromstring(feedmod.build([pid], "https://pub-1.r2.dev"))
+    shop = root.find("shop")
+    assert shop.findtext("name") and shop.findtext("company") and shop.findtext("url") == "https://pub-1.r2.dev"
+    offer = shop.find("offers/offer")
+    cat_id = offer.findtext("categoryId")
+    assert cat_id and shop.find(f"categories/category[@id='{cat_id}']").text == feedmod.NO_GROUP
