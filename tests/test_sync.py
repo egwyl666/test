@@ -84,7 +84,7 @@ def test_invalid_products_are_rejected():
     assert res["accepted"] == 0
     reasons = {r["id"]: " ".join(r["reasons"]) for r in res["rejected"]}
     assert "Нет названия" in reasons[bad]
-    assert "публичный адрес" in reasons[local_photo]
+    assert "Фото для Prom" in reasons[local_photo]
 
     db.set_setting("photo_tunnel", "1")  # по умолчанию фото уйдут через временный туннель
     assert sync.enqueue([local_photo])["accepted"] == 1

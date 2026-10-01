@@ -11,7 +11,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import config, db, feed, notify, phototunnel, products
+from . import config, db, feed, notify, phototunnel, products, r2
 from .prom_api import PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
@@ -34,7 +34,7 @@ def import_settings() -> dict | None:
 def enqueue(product_ids: list[int]) -> dict:
     """Ставит товары в очередь. Товары с ошибками заполнения не берутся — возвращаются с причиной."""
     accepted, rejected = {}, []
-    base_url = config.public_base_url()
+    base_url = config.public_base_url() or (r2.base_url() if r2.active() else "")
     for pid in product_ids:
         try:
             p = products.get(pid)
@@ -44,8 +44,8 @@ def enqueue(product_ids: list[int]) -> dict:
         if p["status"] == "sending":
             reasons.append("Уже отправляется")
         if not base_url and not phototunnel.enabled() and any(not img["external"] for img in p["images"]):
-            reasons.append("Фото загружены с компьютера, а временный доступ к фото выключен и публичный адрес не указан "
-                           "(Настройки) — Prom не сможет их скачать")
+            reasons.append("Фото загружены с компьютера, а способ передать их Prom не выбран "
+                           "(Настройки → «Фото для Prom») — Prom не сможет их скачать")
         if reasons:
             rejected.append({"id": pid, "name": p["name"], "reasons": reasons})
         else:
@@ -184,7 +184,13 @@ def _has_local_photos(product_ids: list[int]) -> bool:
 
 
 async def _photo_base_url(product_ids: list[int]) -> str:
-    """Адрес, по которому Prom скачает фото: постоянный из настроек или временный туннель."""
+    """Адрес, по которому Prom скачает фото: хранилище R2, постоянный адрес из настроек или временный туннель."""
+    if r2.active():
+        try:
+            await asyncio.to_thread(r2.upload, r2.local_files(product_ids))
+        except r2.R2Error as exc:
+            raise PromError(f"Фото не загрузились в хранилище R2: {exc}", retryable=exc.retryable)
+        return r2.base_url()
     base = config.public_base_url()
     if base or not phototunnel.enabled():
         return base

@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, config, db, excel, feed, notify, orders, phototunnel, pricing, products,
+from . import (ai, aibulk, autostart, backup, config, db, excel, feed, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -46,12 +46,31 @@ async def lifespan(app: FastAPI):
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
-                 asyncio.create_task(support_worker(stop))]
+                 asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
     phototunnel.tunnel.close()
+
+
+async def r2_worker(stop: asyncio.Event) -> None:
+    """Новые фото заранее уходят в хранилище R2, чтобы отправка на Prom не ждала загрузки."""
+    while not stop.is_set():
+        delay = 120
+        try:
+            if await asyncio.to_thread(r2.sweep) >= r2.SWEEP_BATCH:
+                delay = 5  # фото много — продолжаем без долгой паузы
+        except r2.R2Error as exc:
+            log.warning("Фоновая загрузка фото в R2: %s", exc)
+            delay = 600
+        except Exception:
+            log.exception("Сбой фоновой загрузки фото в R2")
+            delay = 600
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def support_worker(stop: asyncio.Event) -> None:
@@ -400,7 +419,20 @@ async def jobs():
 
 @app.get("/api/sync/photos")
 async def photo_access():
-    return {"enabled": phototunnel.enabled(), **phototunnel.tunnel.status()}
+    return {"enabled": phototunnel.enabled(), "r2": r2.active(), **phototunnel.tunnel.status()}
+
+
+@app.post("/api/r2/check")
+async def r2_check():
+    try:
+        return {"ok": True, "message": await asyncio.to_thread(r2.check)}
+    except r2.R2Error as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/r2/stats")
+async def r2_stats():
+    return {"active": r2.active(), **await asyncio.to_thread(r2.stats)}
 
 
 @app.post("/api/sync/jobs/{job_id}/retry")
@@ -437,6 +469,10 @@ def _settings_view() -> dict:
         "support_chat_id": support.channel()["chat_id"],
         "auto_update": config.get("auto_update") != "0",
         "photo_tunnel": config.get("photo_tunnel") != "0",
+        "photo_storage": "r2" if config.get("photo_storage") == "r2" else ("tunnel" if config.get("photo_tunnel") != "0" else "off"),
+        "r2_active": r2.active(),
+        **{k: r2.settings()[k] for k in r2.FIELDS if k not in r2.SECRET_FIELDS},
+        **{k: config.mask(config.get(k)) for k in r2.SECRET_FIELDS},
         "quick_updates": db.get_setting("quick_updates") != "0",
         "quick_updates_error": db.get_setting("quick_updates_error"),
         "github_token": config.mask(config.get("github_token")),
@@ -473,6 +509,26 @@ async def save_settings(data: dict = Body(...)):
             db.set_setting("quick_updates_error", "")
     if "photo_tunnel" in data:
         db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
+    if any(k in data for k in r2.FIELDS):
+        fresh = {k: str(data.get(k) or "").strip() for k in r2.FIELDS}
+        fresh["r2_account_id"] = r2.account_id(fresh["r2_account_id"])
+        fresh["r2_public_url"] = r2.public_url(fresh["r2_public_url"])
+        try:
+            r2.validate(fresh)
+        except r2.R2Error as exc:
+            raise HTTPException(400, str(exc))
+        for key, value in fresh.items():
+            if key in data and (value or key not in r2.SECRET_FIELDS):  # пустой ключ = «не менять»
+                db.set_setting(key, value)
+    if "photo_storage" in data:
+        mode = data["photo_storage"]
+        if mode not in ("r2", "tunnel", "off"):
+            raise HTTPException(400, "Неизвестный способ передачи фото")
+        if mode == "r2" and not r2.configured():
+            raise HTTPException(400, "Чтобы выбрать хранилище R2, заполните все поля R2 и нажмите «Проверить»")
+        db.set_setting("photo_storage", "r2" if mode == "r2" else "")
+        if mode != "r2":
+            db.set_setting("photo_tunnel", "1" if mode == "tunnel" else "0")
     if "auto_update" in data:
         db.set_setting("auto_update", "1" if data["auto_update"] else "0")
     if data.get("github_token"):

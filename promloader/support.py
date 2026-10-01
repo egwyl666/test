@@ -93,6 +93,7 @@ def diagnostics(client: dict | None = None) -> dict:
             "prom_token_set": bool(config.get("prom_token")),
             "public_base_url_set": bool(config.public_base_url()),
             "photo_tunnel": config.get("photo_tunnel") != "0",
+            "photo_storage": config.get("photo_storage") or "",
             "ai_provider": config.get("ai_provider"),
             "auto_update": config.get("auto_update") != "0",
             "quick_updates": db.get_setting("quick_updates") != "0",

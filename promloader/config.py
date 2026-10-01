@@ -21,6 +21,12 @@ ENV = {
     "github_token": "PROMLOADER_GITHUB_TOKEN",
     "update_repo": "PROMLOADER_UPDATE_REPO",
     "telegram_token": "TELEGRAM_BOT_TOKEN",
+    "photo_storage": "PROMLOADER_PHOTO_STORAGE",
+    "r2_account_id": "R2_ACCOUNT_ID",
+    "r2_access_key_id": "R2_ACCESS_KEY_ID",
+    "r2_secret_access_key": "R2_SECRET_ACCESS_KEY",
+    "r2_bucket": "R2_BUCKET",
+    "r2_public_url": "R2_PUBLIC_URL",
 }
 
 

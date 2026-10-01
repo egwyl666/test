@@ -418,3 +418,11 @@ main { padding-bottom: 70px; }
   main { padding: 16px; }
   table.runs { display: block; overflow-x: auto; }
 }
+
+/* ---------- фото для Prom ---------- */
+.photo-mode { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
+.photo-mode:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.photo-mode input { margin-top: 4px; }
+.r2-guide { background: var(--bg); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
+.r2-guide summary { cursor: pointer; }

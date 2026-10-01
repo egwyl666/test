@@ -176,6 +176,13 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     sent_at      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS r2_objects (
+    target       TEXT NOT NULL,
+    file         TEXT NOT NULL,
+    uploaded_at  TEXT NOT NULL,
+    PRIMARY KEY (target, file)
+);
+
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        INTEGER NOT NULL DEFAULT 0,

@@ -51,13 +51,8 @@
         <span>Публичный адрес этого сайта</span>
         <input name="public_base_url" placeholder="https://loader.example.com">
       </label>
-      <label class="small" style="display:block;margin:-4px 0 8px"><input type="checkbox" id="photo-tunnel">
-        <b>Фото с компьютера:</b> на время отправки открывать Prom временный доступ только к фото (через бесплатный Cloudflare)</label>
-      <p class="small muted" style="margin-top:0">
-        Prom сам скачивает фото по ссылкам, а программа на домашнем компьютере из интернета не видна. С этой галочкой при отправке
-        программа ненадолго открывает временный адрес, через который доступны <b>только фото</b> (не товары и не настройки), и закрывает его
-        через 30 минут после отправки. Поле «Публичный адрес» заполняйте, только если программа стоит на сервере с постоянным адресом.
-      </p>
+      <p class="small muted" style="margin-top:-6px">Заполняйте, только если программа стоит на сервере с постоянным адресом.
+        Для фото с домашнего компьютера — блок «Фото для Prom» ниже.</p>
       <label class="field"><span>Название магазина (для превью)</span><input name="shop_name"></label>
       <div class="toolbar">
         <button class="btn primary" id="save">Сохранить</button>
@@ -65,6 +60,60 @@
         <span id="check-result" class="small"></span>
       </div>
     </form>
+
+    <div class="panel" id="photos">
+      <h2>🖼 Фото для Prom</h2>
+      <p class="small muted" style="margin-top:-6px">Prom не принимает фото файлами — он сам скачивает их по ссылкам. Фото из интернета
+        (от поставщика, ссылки в Excel) уже имеют ссылку. А фото <b>с компьютера и картинки, вставленные в Excel</b>, нужно где-то
+        выложить, чтобы Prom смог их забрать. Выберите как:</p>
+      <label class="photo-mode"><input type="radio" name="photo-mode" value="r2">
+        <span><b>Хранилище Cloudflare R2</b> <span class="badge synced">рекомендуется</span><br>
+        <span class="small muted">Каждое фото загружается один раз и получает постоянную ссылку. Компьютер может быть выключен,
+          когда Prom забирает фото. Бесплатно до 10 ГБ (это примерно 50–100 тысяч фото). Нужно один раз настроить — инструкция ниже.</span></span></label>
+      <label class="photo-mode"><input type="radio" name="photo-mode" value="tunnel">
+        <span><b>Временный доступ через Cloudflare</b> — без настройки<br>
+        <span class="small muted">На время отправки программа открывает адрес, через который видны только фото, и закрывает его через
+          30 минут. Компьютер должен быть включён, пока Prom скачивает фото; адрес каждый раз новый.</span></span></label>
+      <label class="photo-mode"><input type="radio" name="photo-mode" value="off">
+        <span><b>Не передавать фото с компьютера</b><br>
+        <span class="small muted">Товары с такими фото не отправятся — программа предупредит.</span></span></label>
+
+      <div id="r2-box" class="hidden" style="margin-top:12px">
+        <details class="r2-guide" id="r2-guide">
+          <summary><b>Как настроить R2 — 10 минут, один раз</b></summary>
+          <ol class="small" style="line-height:1.75">
+            <li>Зарегистрируйтесь на <a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">cloudflare.com</a> (бесплатно)
+              и откройте слева <b>R2 Object Storage</b>. Cloudflare попросит привязать карту — до 10 ГБ хранения и миллиона загрузок
+              в месяц деньги не списываются, скачивание фото Prom'ом бесплатно всегда.</li>
+            <li><b>Create bucket</b> → имя, например <code>promloader-photos</code> → Create. Впишите это имя в поле «Имя бакета».</li>
+            <li>В бакете: <b>Settings → Public access → R2.dev subdomain → Allow</b> (введите <code>allow</code> для подтверждения).
+              Скопируйте появившийся адрес <b>Public R2.dev Bucket URL</b> (вида <code>https://pub-….r2.dev</code>) в поле «Публичный адрес».</li>
+            <li>Вернитесь на главную R2 → справа <b>Account details</b>: скопируйте <b>Account ID</b>. Там же
+              <b>Manage API tokens</b> (или «Manage R2 API Tokens») → <b>Create Account API token</b> (подойдёт и User API token):
+              права <b>Object Read &amp; Write</b>, в «Specify bucket» выберите свой бакет → Create.</li>
+            <li>Cloudflare покажет <b>Access Key ID</b> и <b>Secret Access Key</b> — скопируйте оба сразу, секрет показывается один раз.</li>
+            <li>Нажмите «Сохранить» и «Проверить». Зелёная надпись — готово: выберите «Хранилище Cloudflare R2» выше.</li>
+          </ol>
+        </details>
+        <div class="row">
+          <label class="field"><span>Account ID</span><input id="r2_account_id" placeholder="32 символа или адрес https://….r2.cloudflarestorage.com"></label>
+          <label class="field"><span>Имя бакета</span><input id="r2_bucket" placeholder="promloader-photos"></label>
+        </div>
+        <div class="row">
+          <label class="field"><span>Access Key ID <span class="muted" id="r2-akid-state"></span></span>
+            <input id="r2_access_key_id" type="password" autocomplete="new-password" placeholder="вставьте, чтобы заменить"></label>
+          <label class="field"><span>Secret Access Key <span class="muted" id="r2-secret-state"></span></span>
+            <input id="r2_secret_access_key" type="password" autocomplete="new-password" placeholder="вставьте, чтобы заменить"></label>
+        </div>
+        <label class="field"><span>Публичный адрес бакета</span><input id="r2_public_url" placeholder="https://pub-xxxxxxxx.r2.dev"></label>
+      </div>
+      <div class="toolbar">
+        <button class="btn primary" id="photos-save">Сохранить</button>
+        <button class="btn hidden" id="r2-check">Проверить R2</button>
+        <span class="small" id="photos-result"></span>
+      </div>
+      <p class="small muted" id="r2-stats"></p>
+    </div>
 
     <div class="panel" id="schedule">
       <h2>⏰ Выгрузка на Prom по расписанию</h2>
@@ -262,8 +311,7 @@
 
     $("#save").onclick = () => {
       const f = $("#form");
-      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value,
-             photo_tunnel: $("#photo-tunnel").checked });
+      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value });
     };
     $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value,
                                           quick_updates: $("#quick-updates").checked });
@@ -324,7 +372,6 @@
     // ---------- обновления ----------
     function fillUpdates(s) {
       $("#version").textContent = s.version;
-      $("#photo-tunnel").checked = s.photo_tunnel;
       $("#quick-updates").checked = s.quick_updates;
       $("#quick-error").textContent = !s.quick_updates && s.quick_updates_error
         ? `Выключено автоматически: Prom не принял быстрый запрос (${s.quick_updates_error}). Товары отправляются обычным импортом.` : "";
@@ -461,6 +508,60 @@
       } catch (err) { toast(err.message, "error"); e.target.checked = !e.target.checked; }
     };
 
+    // ---------- фото для Prom ----------
+    const R2_FIELDS = ["r2_account_id", "r2_bucket", "r2_access_key_id", "r2_secret_access_key", "r2_public_url"];
+    const photosOut = (text, ok) => { $("#photos-result").textContent = text; $("#photos-result").style.color = ok ? "var(--ok)" : "var(--err)"; };
+    const photoMode = () => ($$("input[name=photo-mode]").find((i) => i.checked) || {}).value;
+    function showR2() {
+      const r2 = photoMode() === "r2";
+      $("#r2-box").classList.toggle("hidden", !r2);
+      $("#r2-check").classList.toggle("hidden", !r2);
+    }
+    function fillPhotos(s) {
+      $$("input[name=photo-mode]").forEach((i) => { i.checked = i.value === s.photo_storage; });
+      for (const k of ["r2_account_id", "r2_bucket", "r2_public_url"]) $("#" + k).value = s[k] || "";
+      $("#r2_access_key_id").value = $("#r2_secret_access_key").value = "";
+      $("#r2-akid-state").textContent = s.r2_access_key_id ? `(сейчас: ${s.r2_access_key_id})` : "";
+      $("#r2-secret-state").textContent = s.r2_secret_access_key ? "(задан)" : "";
+      $("#r2-guide").open = !s.r2_bucket;
+      showR2();
+      loadR2Stats();
+    }
+    async function loadR2Stats() {
+      try {
+        const st = await api("/api/r2/stats");
+        $("#r2-stats").textContent = !st.active ? ""
+          : !st.uploaded && !st.waiting ? "Фото с компьютера пока нет — новые будут загружаться в хранилище сами"
+          : `В хранилище: ${st.uploaded} фото` + (st.waiting ? `, ждут загрузки: ${st.waiting} (загружаются в фоне и перед отправкой)` : " — все фото загружены");
+      } catch { /* не важно */ }
+    }
+    $$("input[name=photo-mode]").forEach((i) => i.addEventListener("change", showR2));
+    async function saveR2Fields() {
+      const data = {};
+      for (const k of R2_FIELDS) data[k] = $("#" + k).value.trim();
+      return api("/api/settings", { method: "POST", json: data });
+    }
+    $("#photos-save").onclick = async () => {
+      const mode = photoMode();
+      try {
+        if (mode === "r2") await saveR2Fields();
+        const s = await api("/api/settings", { method: "POST", json: { photo_storage: mode } });
+        fillPhotos(s);
+        photosOut(mode === "r2" ? "Сохранено: фото с компьютера и из Excel будут отправляться через R2" : "Сохранено", true);
+      } catch (err) {
+        photosOut(err.message, false);
+        if (mode === "r2") showR2();
+      }
+    };
+    $("#r2-check").onclick = async () => {
+      photosOut("Проверяю: загружаю пробный файл…", true);
+      try {
+        await saveR2Fields();
+        const r = await api("/api/r2/check", { method: "POST" });
+        photosOut(r.message, true);
+      } catch (err) { photosOut(err.message, false); }
+    };
+
     // ---------- Telegram ----------
     let tgEvents = {};
     const tgOut = (text, ok) => { $("#tg-result").textContent = text; $("#tg-result").style.color = ok ? "var(--ok)" : "var(--err)"; };
@@ -588,7 +689,7 @@
 
     loadMeta().catch(() => {});
     loadSchedules().catch(() => {});
-    api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); }).catch((err) => toast(err.message, "error"));
+    api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); fillPhotos(s); }).catch((err) => toast(err.message, "error"));
     loadBackups().catch(() => {});
     loadRecipients().catch(() => {});
   </script>

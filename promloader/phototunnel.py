@@ -46,8 +46,10 @@ class TunnelError(Exception):
 
 
 def enabled() -> bool:
-    """Туннель нужен, только если не задан постоянный публичный адрес и пользователь его не выключил."""
-    return not config.public_base_url() and config.get("photo_tunnel") != "0"
+    """Туннель нужен, только если фото не идут через R2, нет постоянного адреса и пользователь его не выключил."""
+    from . import r2
+
+    return not r2.active() and not config.public_base_url() and config.get("photo_tunnel") != "0"
 
 
 # ---------- сервер только для фото ----------
