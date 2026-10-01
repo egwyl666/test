@@ -213,6 +213,7 @@ MIGRATIONS = {
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",
+        "started_at": "TEXT",
     },
 }
 

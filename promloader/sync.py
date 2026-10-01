@@ -280,21 +280,52 @@ async def _start_quick(job: dict, client: PromClient) -> None:
                     + (f", с ошибками {len(errors)}" if errors else ""))
 
 
+WAIT_PREVIOUS = "Ждёт, пока Prom закончит выгрузку №{}"
+
+
+def _import_in_progress(job_id: int):
+    """Prom обрабатывает импорты по одному: пока идёт предыдущий, новый не запускаем."""
+    return db.query_one("SELECT id FROM sync_jobs WHERE kind = 'import' AND status = 'waiting' AND id != ? "
+                        "ORDER BY id LIMIT 1", (job_id,))
+
+
+def _absorb_queued(job: dict) -> dict:
+    """Всё, что накопилось в очереди за время ожидания, — в этот же файл: один импорт вместо нескольких."""
+    others = db.query("SELECT id, products FROM sync_jobs WHERE kind = 'import' AND status = 'pending' AND attempts = 0 "
+                      "AND id != ? ORDER BY id", (job["id"],))
+    job_products = json.loads(job["products"])
+    if not others:
+        return job_products
+    for row in others:
+        job_products.update(json.loads(row["products"]))
+    with db.tx() as c:
+        c.execute("UPDATE sync_jobs SET products = ?, updated_at = ? WHERE id = ?",
+                  (json.dumps(job_products), db.now(), job["id"]))
+        c.executemany("DELETE FROM sync_jobs WHERE id = ?", [(row["id"],) for row in others])
+    job["products"] = json.dumps(job_products)
+    return job_products
+
+
 async def _start(job: dict, client: PromClient) -> None:
     if job.get("kind") == "quick":
         return await _start_quick(job, client)
-    job_products = json.loads(job["products"])
+    busy = _import_in_progress(job["id"])
+    if busy:
+        _update_job(job["id"], last_error=WAIT_PREVIOUS.format(busy["id"]), next_run_at=_at(POLL_SECONDS))
+        return
+    job_products = _absorb_queued(job)
     ids = [int(pid) for pid in job_products]
     content = feed.build(ids, await _photo_base_url(ids))
     import_id = await client.import_file(content, import_settings())
-    _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", next_run_at=_at(POLL_SECONDS))
+    _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", started_at=db.now(),
+                next_run_at=_at(POLL_SECONDS))
 
 
 async def _poll(job: dict, client: PromClient) -> None:
     result = await client.import_status(job["import_id"])
     state = import_state(result)
     if state == "running":
-        started = datetime.fromisoformat(job["created_at"])
+        started = datetime.fromisoformat(job.get("started_at") or job["created_at"])
         if datetime.now(timezone.utc) - started > MAX_WAIT:
             raise PromError("Prom слишком долго обрабатывает импорт — проверьте раздел «Импорт» в кабинете")
         _update_job(job["id"], result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS), attempts=0)
@@ -332,7 +363,10 @@ async def run_once(client_factory: Callable[[], PromClient] = make_client) -> in
         return len(due)
     async with client:
         for row in due:
-            job = dict(row)
+            fresh = db.query_one("SELECT * FROM sync_jobs WHERE id = ?", (row["id"],))
+            if fresh is None or fresh["status"] not in ("pending", "waiting"):
+                continue  # задачу уже объединили с другой (или она завершилась) в этом же проходе
+            job = dict(fresh)
             try:
                 if job["status"] == "pending":
                     await _start(job, client)

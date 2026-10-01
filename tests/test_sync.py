@@ -187,3 +187,36 @@ def test_import_settings_override():
     fake = FakeProm()
     run(fake)
     assert b'"force_update": true' in fake.requests[0].content
+
+
+def test_one_prom_import_at_a_time_and_queued_ones_merge():
+    """Пока Prom обрабатывает импорт, новый не запускаем; всё накопившееся уходит одним файлом."""
+    fake = FakeProm(statuses=[(200, {"status": "PROCESSING"})])
+    first = ready_product(name="Первый")
+    sync.enqueue([first])
+    run(fake)
+    assert len([r for r in fake.requests if r.url.path.endswith("/import_file")]) == 1
+    # пока первый импорт идёт: ручная отправка и обновление поставщика
+    second, third = ready_product(name="Второй"), ready_product(name="Третий")
+    sync.enqueue([second])
+    sync.enqueue([third])
+    make_due()
+    run(fake)
+    uploads = [r for r in fake.requests if r.url.path.endswith("/import_file")]
+    assert len(uploads) == 1
+    waiting = [j for j in sync.list_jobs() if j["status"] == "pending"]
+    assert waiting and all("Ждёт, пока Prom закончит" in j["last_error"] for j in waiting)
+    # первый импорт закончился — второй и третий уходят одним файлом
+    fake.statuses = [(200, {"status": "SUCCESS"})]
+    make_due()
+    run(fake)
+    make_due()
+    run(fake)
+    uploads = [r for r in fake.requests if r.url.path.endswith("/import_file")]
+    assert len(uploads) == 2
+    body = uploads[1].content.decode("utf-8", "replace")
+    assert "Второй" in body and "Третий" in body and "Первый" not in body
+    assert len(sync.list_jobs()) == 2
+    make_due()
+    run(fake)
+    assert {products.get(pid)["status"] for pid in (first, second, third)} == {"synced"}
