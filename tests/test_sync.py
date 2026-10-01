@@ -2,8 +2,9 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
-from promloader import db, products, sync
+from promloader import db, phototunnel, products, sync
 from promloader.prom_api import PromClient
 
 from .conftest import make_image
@@ -20,7 +21,7 @@ class FakeProm:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         assert request.headers["authorization"] == "Bearer tkn"
-        if request.url.path.endswith("/products/import_file"):
+        if request.url.path.endswith("/products/import_file") or request.url.path.endswith("/products/import_url"):
             code, body = self.upload.pop(0) if len(self.upload) > 1 else self.upload[0]
         elif "/products/import/status/" in request.url.path:
             code, body = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
@@ -222,14 +223,22 @@ def test_one_prom_import_at_a_time_and_queued_ones_merge():
     assert {products.get(pid)["status"] for pid in (first, second, third)} == {"synced"}
 
 
-def test_success_with_zero_products_is_not_success():
+@pytest.fixture
+def tunnel(monkeypatch):
+    monkeypatch.setattr(phototunnel.tunnel, "ensure_url", lambda transport=None: "https://t.trycloudflare.com")
+
+
+def test_success_with_zero_products_is_not_success(tunnel):
     """Prom отвечает SUCCESS с total: 0, если не узнал в файле товаров — товар не должен стать «На Prom»."""
     pid = ready_product()
     sync.enqueue([pid])
     fake = FakeProm(statuses=[(200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0, "errors": []})])
     run(fake)
     make_due()
-    run(fake)
+    run(fake)  # файл: 0 товаров -> тот же файл по ссылке
+    assert job()["sent"]["method"] == "url" and job()["status"] == "waiting"
+    make_due()
+    run(fake)  # по ссылке тоже 0
     p = products.get(pid)
     assert p["status"] == "error" and "не нашёл в нём товаров" in p["last_error"]
     assert job()["status"] == "failed"
@@ -284,3 +293,37 @@ def test_job_records_what_was_sent():
     run(FakeProm())
     sent = job()["sent"]
     assert sent["offers"] == 1 and sent["version"] and "updated_fields" in sent["settings"]
+
+
+def test_import_by_url_when_file_upload_finds_nothing(tunnel):
+    """Вручную загруженный файл Prom читает, а через API — нет: программа сама переходит на импорт по ссылке."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm(statuses=[(200, {"status": "SUCCESS", "total": 0}), (200, {"status": "SUCCESS", "total": 1, "created": 1})])
+    run(fake)
+    make_due()
+    run(fake)
+    by_url = next(r for r in fake.requests if r.url.path.endswith("/import_url"))
+    url = json.loads(by_url.content)["url"]
+    assert url.startswith("https://t.trycloudflare.com/feed/") and "updated_fields" in json.loads(by_url.content)
+    name = url.rsplit("/", 1)[-1]
+    assert b"<offer " in (phototunnel.feeds_dir() / name).read_bytes()
+    make_due()
+    run(fake)
+    assert products.get(pid)["status"] == "synced" and db.get_setting("import_method") == "url"
+    # следующие выгрузки — сразу по ссылке
+    pid2 = ready_product(name="Второй")
+    sync.enqueue([pid2])
+    fake2 = FakeProm()
+    run(fake2)
+    assert [r.url.path.rsplit("/", 1)[-1] for r in fake2.requests] == ["import_url"]
+
+
+def test_feed_file_served_by_tunnel_server_and_app(client):
+    phototunnel.feeds_dir().joinpath("0123456789abcdef0123456789abcdef.xml").write_bytes(b"<yml_catalog/>")
+    assert client.get("/feed/0123456789abcdef0123456789abcdef.xml").text == "<yml_catalog/>"
+    assert client.get("/feed/nothex.xml").status_code == 404
+    port = phototunnel.tunnel._ensure_server()
+    r = httpx.get(f"http://127.0.0.1:{port}/feed/0123456789abcdef0123456789abcdef.xml")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/xml")
+    assert httpx.get(f"http://127.0.0.1:{port}/feed/../prom.db").status_code == 404

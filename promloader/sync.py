@@ -8,6 +8,8 @@
 import asyncio
 import json
 import logging
+import time
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
@@ -350,21 +352,61 @@ async def _start(job: dict, client: PromClient) -> None:
     settings = {**DEFAULT_IMPORT_SETTINGS, **(import_settings() or {})}
     if db.get_setting("import_plain") == "1":
         settings.pop("updated_fields", None)
+    method = "url" if db.get_setting("import_method") == "url" else "file"
+    import_id, sent = await _send_import(client, content, settings, method)
+    # что именно ушло на Prom — чтобы по /api/sync/jobs было видно версию, способ и настройки
+    _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", started_at=db.now(),
+                sent=json.dumps(sent, ensure_ascii=False), next_run_at=_at(POLL_SECONDS))
+
+
+FEED_KEEP_SECONDS = 2 * 24 * 3600
+
+
+async def _publish_feed(content: bytes) -> str:
+    """Выкладывает файл выгрузки по публичной ссылке — для импорта Prom «по ссылке»."""
+    name = f"{uuid.uuid4().hex}.xml"
+    if r2.active():
+        try:
+            await asyncio.to_thread(r2.put, f"feed/{name}", content, "text/xml; charset=utf-8")
+        except r2.R2Error as exc:
+            raise PromError(f"Файл выгрузки не загрузился в R2: {exc}", retryable=exc.retryable)
+        return f"{r2.base_url()}/feed/{name}"
+    folder = phototunnel.feeds_dir()
+    for old in folder.glob("*.xml"):
+        if time.time() - old.stat().st_mtime > FEED_KEEP_SECONDS:
+            old.unlink(missing_ok=True)
+    (folder / name).write_bytes(content)
+    base = config.public_base_url()
+    if not base:
+        try:
+            base = await asyncio.to_thread(phototunnel.tunnel.ensure_url)
+        except phototunnel.TunnelError as exc:
+            raise PromError(str(exc), retryable=True)
+    return f"{base}/feed/{name}"
+
+
+async def _send_import(client: PromClient, content: bytes, settings: dict, method: str) -> tuple[str, dict]:
+    """Отправляет файл на Prom: загрузкой файла или ссылкой на него. Возвращает id импорта и что ушло."""
+    url = await _publish_feed(content) if method == "url" else ""
+
+    async def send():
+        return await (client.import_url(url, settings) if url else client.import_file(content, settings))
+
     try:
-        import_id = await client.import_file(content, settings)
+        import_id = await send()
     except PromError as err:
         if err.status not in (400, 422) or "updated_fields" not in settings:
             raise
-        # Prom не принял список полей — дальше отправляем без него (как раньше)
+        # Prom не принял список полей — дальше отправляем без него
         log.warning("Prom не принял updated_fields (%s) — отправляю без списка полей", err)
         db.set_setting("import_plain", "1")
-        settings.pop("updated_fields")
-        import_id = await client.import_file(content, settings)
-    # что именно ушло на Prom — чтобы по /api/sync/jobs было видно версию и настройки
-    sent = {"version": updater.current_version(), "file": "products.xml", "bytes": len(content),
+        settings = {k: v for k, v in settings.items() if k != "updated_fields"}
+        import_id = await send()
+    sent = {"version": updater.current_version(), "method": method, "bytes": len(content),
             "offers": content.count(b"<offer "), "settings": settings}
-    _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", started_at=db.now(),
-                sent=json.dumps(sent, ensure_ascii=False), next_run_at=_at(POLL_SECONDS))
+    if url:
+        sent["url"] = url
+    return import_id, sent
 
 
 async def _poll(job: dict, client: PromClient) -> None:
@@ -378,9 +420,23 @@ async def _poll(job: dict, client: PromClient) -> None:
         return
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
+    sent = json.loads(job.get("sent") or "{}")
+    if ok and _found_nothing(result) and sent.get("method", "file") == "file":
+        # Prom не увидел товаров в загруженном файле — тот же файл по ссылке («Завантажити файл з сервера»)
+        ids = [int(pid) for pid in json.loads(job["products"])]
+        content = feed.build(ids, await _photo_base_url(ids))
+        import_id, retry = await _send_import(client, content, sent.get("settings") or dict(DEFAULT_IMPORT_SETTINGS), "url")
+        retry["after_file_import"] = job["import_id"]
+        _update_job(job["id"], import_id=import_id, sent=json.dumps(retry, ensure_ascii=False), started_at=db.now(),
+                    result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS),
+                    last_error="Prom не увидел товаров в загруженном файле — повторяю тот же файл по ссылке")
+        return
     if ok and _found_nothing(result):
         ok = False
         message = NOTHING_FOUND
+    if ok and sent.get("after_file_import") and db.get_setting("import_method") != "url":
+        log.warning("Импорт по ссылке сработал, а загрузкой файла — нет: дальше отправляю по ссылке")
+        db.set_setting("import_method", "url")
     _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False), last_error=message)
     per_product = _per_product_errors(result)
     if ok:

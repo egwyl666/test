@@ -261,6 +261,17 @@ async def media(name: str):
     return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
+@app.get("/feed/{name}.xml")
+async def feed_file(name: str):
+    """Файл выгрузки для импорта Prom по ссылке (имя случайное, как у фото)."""
+    if not re.fullmatch(r"[0-9a-f]{32}", name):
+        raise HTTPException(404)
+    path = phototunnel.feeds_dir() / f"{name}.xml"
+    if not path.is_file():
+        raise HTTPException(404)
+    return Response(path.read_bytes(), media_type="text/xml; charset=utf-8")
+
+
 @app.get("/feed/prom.yml")
 async def feed_all(key: str = ""):
     """Постоянная ссылка для автоимпорта в кабинете Prom (все товары, кроме черновиков)."""

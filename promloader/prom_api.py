@@ -102,7 +102,7 @@ class PromClient:
         body = await self._request(
             "POST",
             "/products/import_file",
-            files={"file": (filename, content, "application/xml")},
+            files={"file": (filename, content, "text/xml")},
             data={"data": json.dumps(settings or DEFAULT_IMPORT_SETTINGS)},
         )
         return _import_id(body)
