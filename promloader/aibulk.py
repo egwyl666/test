@@ -138,10 +138,9 @@ def process_one(runner=ai.run) -> str:
     try:
         changes = runner(p, item["action"], item["instruction"])
     except ai.AIError as exc:
-        text = str(exc)
-        if "лимит" in text:
-            return "rate_limited"
-        _mark(item["id"], "error", text)
+        if exc.temporary:
+            return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим этот же товар
+        _mark(item["id"], "error", str(exc))
         return "error"
     if item["only_empty"] and fields:
         changes = {k: v for k, v in changes.items() if k not in fields or not (p.get(k) or "").strip()}

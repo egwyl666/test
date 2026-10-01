@@ -12,6 +12,21 @@ PRODUCT = {
 }
 
 
+MODELS = ["gemini-2.0-flash-001", "gemini-3.8-flash", "gemini-3.8-flash-lite", "gemini-3.9-flash-preview-09-2026",
+          "gemini-3.8-pro", "gemini-3.8-flash-image", "gemini-flash-latest", "embedding-001"]
+
+
+def models_page():
+    return {"models": [{"name": f"models/{m}", "supportedGenerationMethods": ["embedContent" if "embedding" in m
+                                                                            else "generateContent"]} for m in MODELS]}
+
+
+@pytest.fixture(autouse=True)
+def fast(monkeypatch):
+    monkeypatch.setattr(ai, "_sleep", lambda s: None)
+    ai._auto_cache.clear()
+
+
 def use(provider, key="k-123", model=""):
     db.set_setting("ai_provider", provider)
     db.set_setting("gemini_key" if provider == "gemini" else "anthropic_key", key)
@@ -23,6 +38,8 @@ def gemini_reply(payload: dict, status=200):
     seen = []
 
     def handler(request):
+        if request.method == "GET" and request.url.path.endswith("/models") and status == 200:
+            return httpx.Response(200, json=models_page())
         seen.append(request)
         if status != 200:
             return httpx.Response(status, json={"error": {"code": status, "message": "boom"}})
@@ -71,7 +88,8 @@ def test_gemini_unchanged_result_is_error():
         ai.run(PRODUCT, "name", transport=transport)
 
 
-@pytest.mark.parametrize("status, text", [(429, "лимит"), (403, "ключ"), (404, "модель не найдена"), (500, "HTTP 500")])
+@pytest.mark.parametrize("status, text", [(429, "лимит"), (403, "ключ"), (404, "модель не найдена"), (503, "перегружен"),
+                                          (400, "HTTP 400")])
 def test_gemini_errors(status, text):
     use("gemini")
     transport, _ = gemini_reply({}, status=status)
@@ -80,7 +98,7 @@ def test_gemini_errors(status, text):
 
 
 def test_gemini_blocked():
-    use("gemini")
+    use("gemini", model="gemini-x")
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}}))
     with pytest.raises(ai.AIError, match="SAFETY"):
         ai.run(PRODUCT, "improve", transport=transport)
@@ -97,7 +115,7 @@ def test_gemini_models_list():
     assert ai.gemini_models("k", transport) == ["gemini-a", "gemini-b"]
     use("gemini", model="gemini-zzz")
     res = ai.check(transport)
-    assert res["ok"] and "нет в списке" in res["message"]
+    assert res["ok"] and "выбирать сама" in res["message"] and db.get_setting("gemini_model") == ""
 
 
 def claude_reply(text: str, stop_reason="end_turn"):
@@ -150,3 +168,54 @@ def test_api_endpoint(client, monkeypatch):
     assert s["gemini_key"] == "AIza…-key" and s["gemini_model"] == "gemini-x"
     assert client.get("/api/meta").json()["ai"]["enabled"] is True
     assert client.post("/api/settings", json={"ai_provider": "gpt"}).status_code == 400
+
+
+def test_rank_models():
+    assert ai.rank_models(MODELS) == ["gemini-3.8-flash", "gemini-2.0-flash-001", "gemini-flash-latest",
+                                      "gemini-3.8-flash-lite", "gemini-3.9-flash-preview-09-2026", "gemini-3.8-pro"]
+
+
+def gemini_server(behaviour):
+    """behaviour: модель -> HTTP-статус ответа на generateContent."""
+    calls = []
+
+    def handler(request):
+        if request.method == "GET":
+            return httpx.Response(200, json=models_page())
+        model = request.url.path.rsplit("/", 1)[-1].split(":")[0]
+        calls.append(model)
+        status = behaviour.get(model, 200)
+        if status != 200:
+            return httpx.Response(status, json={"error": {"message": f"{model} says {status}"}})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps(
+            {"description": "<p>Новое</p>"})}]}}]})
+    return httpx.MockTransport(handler), calls
+
+
+def test_auto_model_picks_best_and_remembers():
+    use("gemini")
+    transport, calls = gemini_server({})
+    assert ai.run(PRODUCT, "improve", transport=transport)["description"] == "<p>Новое</p>"
+    assert calls == ["gemini-3.8-flash"] and db.get_setting("gemini_model_used") == "gemini-3.8-flash"
+
+
+def test_removed_model_switches_to_auto():
+    use("gemini", model="gemini-2.5-flash")  # старая модель по умолчанию, Google её убрал
+    transport, calls = gemini_server({"gemini-2.5-flash": 404})
+    ai.run(PRODUCT, "improve", transport=transport)
+    assert calls == ["gemini-2.5-flash", "gemini-3.8-flash"] and db.get_setting("gemini_model") == ""
+
+
+def test_overloaded_model_retried_then_next_model():
+    use("gemini")
+    transport, calls = gemini_server({"gemini-3.8-flash": 503})
+    ai.run(PRODUCT, "improve", transport=transport)
+    assert calls == ["gemini-3.8-flash"] * 3 + ["gemini-2.0-flash-001"]
+
+
+def test_overload_everywhere_is_temporary_error():
+    use("gemini")
+    transport, _ = gemini_server({m: 503 for m in MODELS})
+    with pytest.raises(ai.AIError, match="перегружен") as err:
+        ai.run(PRODUCT, "improve", transport=transport)
+    assert err.value.temporary

@@ -170,7 +170,7 @@
           <input id="gemini-key" name="gemini_key" type="password" placeholder="вставьте новый ключ, чтобы заменить" autocomplete="new-password"></label>
         <p class="small muted" style="margin-top:-6px">Ключ бесплатно создаётся в <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> → «Get API key».
           На бесплатном тарифе есть лимит запросов в минуту и в день, и Google может использовать запросы для улучшения своих моделей.</p>
-        <label class="field"><span>Модель</span><input id="gemini-model" name="gemini_model" list="gemini-models"></label>
+        <label class="field"><span>Модель <span class="muted" id="gemini-model-used"></span></span><input id="gemini-model" name="gemini_model" list="gemini-models" placeholder="авто — программа выберет сама (рекомендуется)"></label>
         <datalist id="gemini-models"></datalist>
       </div>
       <div id="ai-claude" class="hidden">
@@ -291,6 +291,7 @@
       $("#gemini-state").textContent = s.gemini_key ? `(сейчас: ${s.gemini_key})` : "(не задан)";
       $("#anthropic-state").textContent = s.anthropic_key ? `(сейчас: ${s.anthropic_key})` : "(не задан)";
       $("#gemini-model").value = s.gemini_model;
+      $("#gemini-model-used").textContent = !s.gemini_model && s.gemini_model_used ? `(сейчас: ${s.gemini_model_used})` : "";
       $("#claude-model").value = s.claude_model;
       $("#ai-rate").value = s.ai_rate || "";
       showProvider();

@@ -117,7 +117,7 @@ async def ai_worker(stop: asyncio.Event) -> None:
                     pacer.mark()
                     result = await asyncio.to_thread(aibulk.process_one)
                     if result == "rate_limited":
-                        aibulk.pause_running("Лимит запросов ИИ — продолжу через минуту")
+                        aibulk.pause_running("ИИ-сервис занят (лимит запросов или перегрузка) — продолжу через минуту")
                         delay = aibulk.RATE_LIMIT_PAUSE
                     elif result == "skipped":
                         pacer.last = 0.0  # пропуск не тратит лимит
@@ -460,7 +460,8 @@ def _settings_view() -> dict:
         "ai_providers": ai.PROVIDERS,
         "gemini_key": config.mask(config.get("gemini_key")),
         "anthropic_key": config.mask(config.get("anthropic_key")),
-        "gemini_model": config.get("gemini_model") or ai.DEFAULT_MODELS["gemini"],
+        "gemini_model": config.get("gemini_model"),
+        "gemini_model_used": db.get_setting("gemini_model_used"),
         "claude_model": config.get("claude_model") or ai.DEFAULT_MODELS["claude"],
         "ai_rate": db.get_setting("ai_rate"),
         "telegram_token": config.mask(notify.token()),

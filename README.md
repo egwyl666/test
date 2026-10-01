@@ -105,7 +105,7 @@ uvicorn promloader.main:app --host 0.0.0.0 --port 8000
 | `APP_PASSWORD`, `APP_USER` | закрыть интерфейс паролем (логин по умолчанию `admin`); фото и фид остаются открытыми, их забирает Prom |
 | `PROM_API_BASE` | адрес API (по умолчанию `https://my.prom.ua/api/v1`) |
 | `AI_PROVIDER` | `gemini` или `claude` (иначе задаётся в «Настройках») |
-| `GEMINI_API_KEY`, `GEMINI_MODEL` | ключ и модель Gemini (по умолчанию `gemini-2.5-flash`; список доступных моделей — кнопка «Проверить» в настройках) |
+| `GEMINI_API_KEY`, `GEMINI_MODEL` | ключ и модель Gemini (по умолчанию выбирается автоматически из моделей, доступных ключу) |
 | `TELEGRAM_BOT_TOKEN` | токен бота для уведомлений (иначе задаётся в «Настройках») |
 | `PROMLOADER_PHOTO_STORAGE` | `r2` — отправлять фото через R2 |
 | `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_URL` | хранилище фото Cloudflare R2 |

@@ -50,7 +50,7 @@ def test_rate_limit_keeps_item_pending():
     aibulk.create([a], "keywords")
 
     def limited(*args):
-        raise ai.AIError("Gemini: превышен лимит запросов")
+        raise ai.AIError("Gemini: превышен лимит запросов", temporary=True)
 
     assert aibulk.process_one(limited) == "rate_limited"
     assert aibulk.has_work()
