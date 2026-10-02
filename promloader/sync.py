@@ -22,6 +22,7 @@ BACKOFF_SECONDS = [10, 30, 60, 120, 300, 600, 900]
 MAX_ATTEMPTS = len(BACKOFF_SECONDS) + 1
 POLL_SECONDS = 5
 MAX_WAIT = timedelta(hours=2)
+NOTHING_WAIT = timedelta(minutes=15)  # «SUCCESS, total: 0» столько времени подряд — в файле правда нет товаров
 
 
 def _at(seconds: float) -> str:
@@ -153,6 +154,13 @@ def _finish_products(job_products: dict, ok: bool, message: str = "", per_produc
 NOTHING_FOUND = ("Prom принял файл, но не нашёл в нём товаров (total: 0) — товар на Prom не появился. "
                  "Нажмите «Скачать файл» у этой выгрузки и загрузите его в кабинете Prom вручную "
                  "(Імпорт → Завантажити файл з комп'ютера): кабинет покажет, что ему не нравится. Пришлите это в «Поддержку»")
+
+
+def _progress(result: dict) -> str:
+    total = result.get("total") if isinstance(result, dict) else None
+    if isinstance(total, int) and total:
+        return f"Prom принял файл (товаров: {total}) и обрабатывает их — обычно 1–3 минуты"
+    return "Prom принял файл и разбирает его"
 
 
 def _found_nothing(result: dict) -> bool:
@@ -427,10 +435,15 @@ async def _poll(job: dict, client: PromClient) -> None:
     state = import_state(result)
     if state == "running":
         started = datetime.fromisoformat(job.get("started_at") or job["created_at"])
-        if datetime.now(timezone.utc) - started > MAX_WAIT:
+        waited = datetime.now(timezone.utc) - started
+        if _found_nothing(result) and waited > NOTHING_WAIT:
+            state = "ok"  # Prom так и не нашёл товаров в файле — разбираемся ниже
+        elif waited > MAX_WAIT:
             raise PromError("Prom слишком долго обрабатывает импорт — проверьте раздел «Импорт» в кабинете")
-        _update_job(job["id"], result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS), attempts=0)
-        return
+        if state == "running":
+            _update_job(job["id"], result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS),
+                        attempts=0, last_error=_progress(result))
+            return
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
     sent = json.loads(job.get("sent") or "{}")

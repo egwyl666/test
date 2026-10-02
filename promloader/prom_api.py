@@ -20,7 +20,9 @@ DEFAULT_IMPORT_SETTINGS = {
     "updated_fields": UPDATED_FIELDS,
 }
 
-# Статусы импорта: всё, что не «в процессе», считается завершённым.
+# Статусы импорта. Проверено на живом кабинете: сразу после отправки Prom отвечает "SUCCESS" с нулевыми
+# счётчиками (файл принят), а товары обрабатывает в фоне ещё 1–3 минуты; потом статус становится
+# "PARTIAL"/"SUCCESS" с заполненными счётчиками (created/updated/…). Поэтому "SUCCESS" само по себе — не конец.
 IMPORT_DONE_OK = {"success", "partial"}
 IMPORT_DONE_FAIL = {"fatal", "error", "failed"}
 
@@ -158,8 +160,20 @@ def _error_text(body) -> str:
 def import_state(status_body: dict) -> str:
     """'running' | 'ok' | 'failed' по ответу /products/import/status."""
     status = str(status_body.get("status", "")).lower()
-    if status in IMPORT_DONE_OK:
-        return "ok"
     if status in IMPORT_DONE_FAIL:
         return "failed"
+    if status in IMPORT_DONE_OK:
+        return "ok" if status == "partial" or import_counted(status_body) else "running"
     return "running"
+
+
+def import_counted(body: dict) -> bool:
+    """Prom отчитался по всем товарам файла: создано + обновлено + без изменений + с ошибками = всего."""
+    total = body.get("total")
+    if not isinstance(total, int):
+        return True  # ответ без счётчиков — верим статусу
+    if total == 0:
+        return False  # файл ещё не разобран (или товаров нет — это решает ожидание в sync)
+    n = lambda key: body.get(key) or 0  # noqa: E731
+    done = max(n("imported"), n("created") + n("updated")) + n("not_changed") + n("with_errors_count")
+    return done >= total

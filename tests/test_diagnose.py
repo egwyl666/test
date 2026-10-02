@@ -46,6 +46,7 @@ class Prom:
 @pytest.fixture(autouse=True)
 def fast(monkeypatch):
     monkeypatch.setattr(diagnose, "POLL_SECONDS", 0)
+    monkeypatch.setattr(diagnose, "NOTHING_SECONDS", 0)
     monkeypatch.setattr(phototunnel.tunnel, "ensure_url", lambda transport=None: "https://t.trycloudflare.com")
 
 

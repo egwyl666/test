@@ -17,7 +17,8 @@ from . import db, feed, products, sync
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError, import_state
 
 POLL_SECONDS = 3
-WAIT_SECONDS = 180
+WAIT_SECONDS = 600
+NOTHING_SECONDS = 300  # «SUCCESS, total: 0» столько подряд — Prom не нашёл товаров в файле
 RUNS: dict[str, dict] = {}
 
 
@@ -49,7 +50,8 @@ def _short(data, limit: int = 1500) -> str:
 
 async def _wait_import(run: Run, client, import_id: str, title: str) -> dict | None:
     s = run.step(title)
-    seen, deadline = [], time.monotonic() + WAIT_SECONDS
+    seen, started = [], time.monotonic()
+    deadline = started + WAIT_SECONDS
     while time.monotonic() < deadline:
         try:
             result = await client.import_status(import_id)
@@ -58,9 +60,12 @@ async def _wait_import(run: Run, client, import_id: str, title: str) -> dict | N
             return None
         if not seen or seen[-1] != result:
             seen.append(result)
-            s["detail"] = f"Статус: {result.get('status')}"
+            s["detail"] = f"Статус: {result.get('status')}, товаров в файле: {result.get('total')} — Prom обрабатывает " \
+                          f"(обычно 1–3 минуты)"
             s["data"] = seen
         state = import_state(result)
+        if state == "running" and sync._found_nothing(result) and time.monotonic() - started > NOTHING_SECONDS:
+            state = "ok"
         if state != "running":
             if state == "failed":
                 run.finish(s, "fail", "Prom завершил импорт с ошибкой", seen)
@@ -187,7 +192,7 @@ async def _execute(run: Run, product_id: int, client_factory) -> None:
             run.finish(s, "ok", f"Prom принял, номер импорта {import_id}", sent)
             result = await _wait_import(run, client, import_id, "Prom обрабатывает импорт")
             if result is None:
-                run.verdict("Prom не закончил импорт за 3 минуты. Посмотрите в кабинете, не висит ли там импорт "
+                run.verdict(f"Prom не закончил импорт за {WAIT_SECONDS // 60} минут. Посмотрите в кабинете, не висит ли там импорт "
                             "«В процесі», и отмените его")
                 return
             after = await _on_prom(run, client, ext, f"Появился ли товар «{ext}» на Prom")

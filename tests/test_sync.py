@@ -228,7 +228,12 @@ def tunnel(monkeypatch):
     monkeypatch.setattr(phototunnel.tunnel, "ensure_url", lambda transport=None: "https://t.trycloudflare.com")
 
 
-def test_success_with_zero_products_is_not_success(tunnel):
+@pytest.fixture
+def no_wait(monkeypatch):
+    monkeypatch.setattr(sync, "NOTHING_WAIT", __import__("datetime").timedelta(0))
+
+
+def test_success_with_zero_products_is_not_success(tunnel, no_wait):
     """Prom отвечает SUCCESS с total: 0, если не узнал в файле товаров — товар не должен стать «На Prom»."""
     pid = ready_product()
     sync.enqueue([pid])
@@ -295,7 +300,7 @@ def test_job_records_what_was_sent():
     assert sent["offers"] == 1 and sent["version"] and "updated_fields" in sent["settings"]
 
 
-def test_import_by_url_when_file_upload_finds_nothing(tunnel):
+def test_import_by_url_when_file_upload_finds_nothing(tunnel, no_wait):
     """Вручную загруженный файл Prom читает, а через API — нет: программа сама переходит на импорт по ссылке."""
     pid = ready_product()
     sync.enqueue([pid])
@@ -356,3 +361,33 @@ def test_jobs_failed_because_prom_was_busy_are_requeued():
         c.execute("UPDATE products SET status = 'error'")
     assert sync.repair_false_success() == 1
     assert products.get(pid)["status"] == "sending" and sync.list_jobs()[0]["status"] == "pending"
+
+
+def test_bare_success_is_not_the_end():
+    """Живой Prom: сначала "SUCCESS" с нулями (файл принят), через пару минут — счётчики. Ждём счётчиков."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm(statuses=[
+        (200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0}),
+        (200, {"status": "SUCCESS", "total": 1, "imported": 0, "created": 0}),
+        (200, {"status": "PARTIAL", "total": 1, "imported": 1, "created": 1, "errors": []}),
+    ])
+    run(fake)
+    for expected in ("waiting", "waiting"):
+        make_due()
+        run(fake)
+        assert job()["status"] == expected and products.get(pid)["status"] == "sending"
+    assert "обрабатывает" in job()["last_error"]
+    make_due()
+    run(fake)
+    assert job()["status"] == "done" and products.get(pid)["status"] == "synced"
+
+
+def test_import_state_rules():
+    from promloader.prom_api import import_state
+    assert import_state({"status": "SUCCESS", "total": 0, "imported": 0}) == "running"
+    assert import_state({"status": "SUCCESS", "total": 2, "imported": 1}) == "running"
+    assert import_state({"status": "SUCCESS", "total": 2, "imported": 1, "not_changed": 1}) == "ok"
+    assert import_state({"status": "PARTIAL", "total": 1, "created": 1}) == "ok"
+    assert import_state({"status": "SUCCESS", "imported": 1}) == "ok"  # без счётчика total — верим статусу
+    assert import_state({"status": "FATAL"}) == "failed"
