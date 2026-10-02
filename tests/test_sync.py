@@ -2,8 +2,9 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
-from promloader import db, products, sync
+from promloader import db, phototunnel, products, sync
 from promloader.prom_api import PromClient
 
 from .conftest import make_image
@@ -20,7 +21,7 @@ class FakeProm:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         assert request.headers["authorization"] == "Bearer tkn"
-        if request.url.path.endswith("/products/import_file"):
+        if request.url.path.endswith("/products/import_file") or request.url.path.endswith("/products/import_url"):
             code, body = self.upload.pop(0) if len(self.upload) > 1 else self.upload[0]
         elif "/products/import/status/" in request.url.path:
             code, body = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
@@ -222,14 +223,27 @@ def test_one_prom_import_at_a_time_and_queued_ones_merge():
     assert {products.get(pid)["status"] for pid in (first, second, third)} == {"synced"}
 
 
-def test_success_with_zero_products_is_not_success():
+@pytest.fixture
+def tunnel(monkeypatch):
+    monkeypatch.setattr(phototunnel.tunnel, "ensure_url", lambda transport=None: "https://t.trycloudflare.com")
+
+
+@pytest.fixture
+def no_wait(monkeypatch):
+    monkeypatch.setattr(sync, "NOTHING_WAIT", __import__("datetime").timedelta(0))
+
+
+def test_success_with_zero_products_is_not_success(tunnel, no_wait):
     """Prom отвечает SUCCESS с total: 0, если не узнал в файле товаров — товар не должен стать «На Prom»."""
     pid = ready_product()
     sync.enqueue([pid])
     fake = FakeProm(statuses=[(200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0, "errors": []})])
     run(fake)
     make_due()
-    run(fake)
+    run(fake)  # файл: 0 товаров -> тот же файл по ссылке
+    assert job()["sent"]["method"] == "url" and job()["status"] == "waiting"
+    make_due()
+    run(fake)  # по ссылке тоже 0
     p = products.get(pid)
     assert p["status"] == "error" and "не нашёл в нём товаров" in p["last_error"]
     assert job()["status"] == "failed"
@@ -257,3 +271,125 @@ def test_job_file_download(client):
     r = client.get(f"/api/sync/jobs/{job()['id']}/file")
     assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
     assert "<yml_catalog" in r.text and "Кружка" in r.text
+
+
+def test_import_sends_fields_to_update_and_falls_back():
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm()
+    run(fake)
+    upload = next(r for r in fake.requests if r.url.path.endswith("/import_file"))
+    assert b'"updated_fields": ["name", "sku", "price"' in upload.content
+    # Prom отклонил список полей — повтор без него, и дальше без него
+    pid2 = ready_product(name="Второй")
+    make_due()
+    run(fake)
+    fake2 = FakeProm(upload=[(400, {"error": "updated_fields: unknown value"}), (200, {"id": "imp-2"})])
+    sync.enqueue([pid2])
+    run(fake2)
+    uploads = [r for r in fake2.requests if r.url.path.endswith("/import_file")]
+    assert len(uploads) == 2 and b"updated_fields" not in uploads[1].content
+    assert db.get_setting("import_plain_v2") == "1"
+
+
+def test_job_records_what_was_sent():
+    pid = ready_product()
+    sync.enqueue([pid])
+    run(FakeProm())
+    sent = job()["sent"]
+    assert sent["offers"] == 1 and sent["version"] and "updated_fields" in sent["settings"]
+
+
+def test_import_by_url_when_file_upload_finds_nothing(tunnel, no_wait):
+    """Вручную загруженный файл Prom читает, а через API — нет: программа сама переходит на импорт по ссылке."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm(statuses=[(200, {"status": "SUCCESS", "total": 0}), (200, {"status": "SUCCESS", "total": 1, "created": 1})])
+    run(fake)
+    make_due()
+    run(fake)
+    by_url = next(r for r in fake.requests if r.url.path.endswith("/import_url"))
+    url = json.loads(by_url.content)["url"]
+    assert url.startswith("https://t.trycloudflare.com/feed/") and "updated_fields" in json.loads(by_url.content)
+    name = url.rsplit("/", 1)[-1]
+    assert b"<offer " in (phototunnel.feeds_dir() / name).read_bytes()
+    make_due()
+    run(fake)
+    assert products.get(pid)["status"] == "synced" and db.get_setting("import_method") == "url"
+    # следующие выгрузки — сразу по ссылке
+    pid2 = ready_product(name="Второй")
+    sync.enqueue([pid2])
+    fake2 = FakeProm()
+    run(fake2)
+    assert [r.url.path.rsplit("/", 1)[-1] for r in fake2.requests] == ["import_url"]
+
+
+def test_feed_file_served_by_tunnel_server_and_app(client):
+    phototunnel.feeds_dir().joinpath("0123456789abcdef0123456789abcdef.xml").write_bytes(b"<yml_catalog/>")
+    assert client.get("/feed/0123456789abcdef0123456789abcdef.xml").text == "<yml_catalog/>"
+    assert client.get("/feed/nothex.xml").status_code == 404
+    port = phototunnel.tunnel._ensure_server()
+    r = httpx.get(f"http://127.0.0.1:{port}/feed/0123456789abcdef0123456789abcdef.xml")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/xml")
+    assert httpx.get(f"http://127.0.0.1:{port}/feed/../prom.db").status_code == 404
+
+
+def test_prom_busy_with_another_import_waits_instead_of_failing():
+    """Prom: «действует ограничение на запуск одновременных импортов» — ждём, не ошибка, список полей не трогаем."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    busy = (400, {"status": 400, "message": "В данный момент действует ограничение на запуск одновременных импортов"})
+    fake = FakeProm(upload=[busy, busy, (200, {"id": "imp-1"})])
+    for _ in range(2):
+        run(fake)
+        j = job()
+        assert j["status"] == "pending" and j["attempts"] == 0 and "подождёт" in j["last_error"]
+        assert products.get(pid)["status"] == "sending"
+        make_due()
+    run(fake)
+    assert job()["status"] == "waiting" and db.get_setting("import_plain_v2") is None or db.get_setting("import_plain_v2") == ""
+    uploads = [r for r in fake.requests if r.url.path.endswith("/import_file")]
+    assert all(b"updated_fields" in r.content for r in uploads)
+
+
+def test_jobs_failed_because_prom_was_busy_are_requeued():
+    pid = ready_product()
+    sync.enqueue([pid])
+    with db.tx() as c:
+        c.execute("""UPDATE sync_jobs SET status = 'failed', last_error = 'Prom отклонил запрос (HTTP 400): {"status": 400, '
+                     || '"message": "В данный момент действует ограничение на запуск одновременн'""")
+        c.execute("UPDATE products SET status = 'error'")
+    assert sync.repair_false_success() == 1
+    assert products.get(pid)["status"] == "sending" and sync.list_jobs()[0]["status"] == "pending"
+
+
+def test_bare_success_is_not_the_end():
+    """Живой Prom: сначала "SUCCESS" с нулями (файл принят), через пару минут — счётчики. Ждём счётчиков."""
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm(statuses=[
+        (200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0}),
+        (200, {"status": "SUCCESS", "total": 1, "imported": 0, "created": 0}),
+        (200, {"status": "PARTIAL", "total": 1, "imported": 0, "created": 0}),
+        (200, {"status": "PARTIAL", "total": 1, "imported": 1, "created": 1, "errors": []}),
+    ])
+    run(fake)
+    for expected in ("waiting", "waiting", "waiting"):
+        make_due()
+        run(fake)
+        assert job()["status"] == expected and products.get(pid)["status"] == "sending"
+    assert "обрабатывает" in job()["last_error"]
+    make_due()
+    run(fake)
+    assert job()["status"] == "done" and products.get(pid)["status"] == "synced"
+
+
+def test_import_state_rules():
+    from promloader.prom_api import import_state
+    assert import_state({"status": "SUCCESS", "total": 0, "imported": 0}) == "running"
+    assert import_state({"status": "SUCCESS", "total": 2, "imported": 1}) == "running"
+    assert import_state({"status": "SUCCESS", "total": 2, "imported": 1, "not_changed": 1}) == "ok"
+    assert import_state({"status": "PARTIAL", "total": 1, "created": 1}) == "ok"
+    assert import_state({"status": "PARTIAL", "total": 1, "imported": 0, "updated": 0}) == "running"
+    assert import_state({"status": "SUCCESS", "imported": 1}) == "ok"  # без счётчика total — верим статусу
+    assert import_state({"status": "FATAL"}) == "failed"

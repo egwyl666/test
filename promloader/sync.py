@@ -8,11 +8,13 @@
 import asyncio
 import json
 import logging
+import time
+import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import config, db, feed, notify, phototunnel, products, r2
-from .prom_api import PromClient, PromError, import_state
+from . import config, db, feed, notify, phototunnel, products, r2, updater
+from .prom_api import BUSY_MARKERS, DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
 
@@ -20,6 +22,7 @@ BACKOFF_SECONDS = [10, 30, 60, 120, 300, 600, 900]
 MAX_ATTEMPTS = len(BACKOFF_SECONDS) + 1
 POLL_SECONDS = 5
 MAX_WAIT = timedelta(hours=2)
+NOTHING_WAIT = timedelta(minutes=15)  # «SUCCESS, total: 0» столько времени подряд — в файле правда нет товаров
 
 
 def _at(seconds: float) -> str:
@@ -100,6 +103,7 @@ def list_jobs(limit: int = 20) -> list[dict]:
         job["products"] = json.loads(job["products"])
         job["count"] = len(job["products"])
         job["result"] = json.loads(job["result"]) if job["result"] else None
+        job["sent"] = json.loads(job["sent"]) if job.get("sent") else None
         jobs.append(job)
     return jobs
 
@@ -152,6 +156,13 @@ NOTHING_FOUND = ("Prom принял файл, но не нашёл в нём т�
                  "(Імпорт → Завантажити файл з комп'ютера): кабинет покажет, что ему не нравится. Пришлите это в «Поддержку»")
 
 
+def _progress(result: dict) -> str:
+    total = result.get("total") if isinstance(result, dict) else None
+    if isinstance(total, int) and total:
+        return f"Prom принял файл (товаров: {total}) и обрабатывает их — обычно 1–3 минуты"
+    return "Prom принял файл и разбирает его"
+
+
 def _found_nothing(result: dict) -> bool:
     """Prom отвечает «SUCCESS», даже если не узнал в файле ни одного товара."""
     total = result.get("total") if isinstance(result, dict) else None
@@ -159,8 +170,13 @@ def _found_nothing(result: dict) -> bool:
 
 
 def repair_false_success() -> int:
-    """Версии до 1.3.3 считали выгрузку успешной при total: 0 — возвращаем такие товары в «ошибку»."""
+    """Чиним следы старых версий: выгрузки «успешные» при total: 0 (до 1.3.3) и упавшие из-за того,
+    что Prom был занят другим импортом (до 1.3.7) — вторые ставим в очередь заново."""
     fixed = 0
+    for job in db.query("SELECT id, last_error FROM sync_jobs WHERE status = 'failed'"):
+        if any(m in job["last_error"].lower() for m in BUSY_MARKERS):
+            retry_job(job["id"])
+            fixed += 1
     for job in db.query("SELECT * FROM sync_jobs WHERE status = 'done' AND kind = 'import' AND result IS NOT NULL"):
         try:
             result = json.loads(job["result"])
@@ -193,7 +209,15 @@ def _per_product_errors(result: dict) -> dict:
     return found
 
 
+BUSY_RETRY_SECONDS = 120
+BUSY_GIVE_UP = timedelta(hours=12)
+
+
 def _fail_or_retry(job: dict, err: PromError) -> None:
+    if getattr(err, "busy", False) and datetime.now(timezone.utc) - datetime.fromisoformat(job["created_at"]) < BUSY_GIVE_UP:
+        # Prom занят другим импортом — это не ошибка: ждём, попытки не тратим
+        _update_job(job["id"], last_error=str(err), next_run_at=_at(BUSY_RETRY_SECONDS))
+        return
     attempts = job["attempts"] + 1
     if err.retryable and attempts < MAX_ATTEMPTS:
         delay = BACKOFF_SECONDS[min(attempts - 1, len(BACKOFF_SECONDS) - 1)]
@@ -248,7 +272,8 @@ def _quick_items(ids: list[int]) -> list[dict]:
 def _quick_errors(body: dict) -> dict:
     errors = body.get("errors") or {}
     if isinstance(errors, dict):
-        return {str(k): str(v) for k, v in errors.items()}
+        # живой ответ Prom: {"PLTEST-NOPE": {"id": "Продукт не найден"}}
+        return {str(k): "; ".join(map(str, v.values())) if isinstance(v, dict) else str(v) for k, v in errors.items()}
     found = {}
     for item in errors if isinstance(errors, list) else []:
         if isinstance(item, dict):
@@ -282,11 +307,18 @@ async def _start_quick(job: dict, client: PromClient) -> None:
             body = await client.edit_by_external_id(_quick_items(chunk))
             body = body if isinstance(body, dict) else {}
             chunk_errors = _quick_errors(body)
+            missing = {ext for ext, text in chunk_errors.items() if "не найден" in text.lower() or "not found" in text.lower()}
+            if missing:
+                # товара нет на Prom (удалили в кабинете) — создаём заново полным импортом
+                marks = ",".join("?" * len(chunk))
+                fallback += [r["id"] for r in db.query(f"SELECT id, external_id FROM products WHERE id IN ({marks})", chunk)
+                             if r["external_id"] in missing]
+                chunk_errors = {k: v for k, v in chunk_errors.items() if k not in missing}
             errors.update(chunk_errors)
             if "processed_ids" in body:
                 done = len(body.get("processed_ids") or [])
                 processed += done
-                if done < len(chunk) - len(chunk_errors):
+                if done < len(chunk) - len(chunk_errors) - len(missing):
                     # Prom обработал не всё и не сказал, что именно, — надёжнее отправить пачку полным импортом
                     fallback += chunk
             else:
@@ -346,9 +378,64 @@ async def _start(job: dict, client: PromClient) -> None:
     job_products = _absorb_queued(job)
     ids = [int(pid) for pid in job_products]
     content = feed.build(ids, await _photo_base_url(ids))
-    import_id = await client.import_file(content, import_settings())
+    settings = {**DEFAULT_IMPORT_SETTINGS, **(import_settings() or {})}
+    if db.get_setting("import_plain_v2") == "1":
+        settings.pop("updated_fields", None)
+    method = "url" if db.get_setting("import_method") == "url" else "file"
+    import_id, sent = await _send_import(client, content, settings, method)
+    # что именно ушло на Prom — чтобы по /api/sync/jobs было видно версию, способ и настройки
     _update_job(job["id"], status="waiting", import_id=import_id, attempts=0, last_error="", started_at=db.now(),
-                next_run_at=_at(POLL_SECONDS))
+                sent=json.dumps(sent, ensure_ascii=False), next_run_at=_at(POLL_SECONDS))
+
+
+FEED_KEEP_SECONDS = 2 * 24 * 3600
+
+
+async def _publish_feed(content: bytes) -> str:
+    """Выкладывает файл выгрузки по публичной ссылке — для импорта Prom «по ссылке»."""
+    name = f"{uuid.uuid4().hex}.xml"
+    if r2.active():
+        try:
+            await asyncio.to_thread(r2.put, f"feed/{name}", content, "text/xml; charset=utf-8")
+        except r2.R2Error as exc:
+            raise PromError(f"Файл выгрузки не загрузился в R2: {exc}", retryable=exc.retryable)
+        return f"{r2.base_url()}/feed/{name}"
+    folder = phototunnel.feeds_dir()
+    for old in folder.glob("*.xml"):
+        if time.time() - old.stat().st_mtime > FEED_KEEP_SECONDS:
+            old.unlink(missing_ok=True)
+    (folder / name).write_bytes(content)
+    base = config.public_base_url()
+    if not base:
+        try:
+            base = await asyncio.to_thread(phototunnel.tunnel.ensure_url)
+        except phototunnel.TunnelError as exc:
+            raise PromError(str(exc), retryable=True)
+    return f"{base}/feed/{name}"
+
+
+async def _send_import(client: PromClient, content: bytes, settings: dict, method: str) -> tuple[str, dict]:
+    """Отправляет файл на Prom: загрузкой файла или ссылкой на него. Возвращает id импорта и что ушло."""
+    url = await _publish_feed(content) if method == "url" else ""
+
+    async def send():
+        return await (client.import_url(url, settings) if url else client.import_file(content, settings))
+
+    try:
+        import_id = await send()
+    except PromError as err:
+        if err.status not in (400, 422) or "updated_fields" not in settings or "updated_fields" not in str(err):
+            raise
+        # Prom не принял список полей — дальше отправляем без него
+        log.warning("Prom не принял updated_fields (%s) — отправляю без списка полей", err)
+        db.set_setting("import_plain_v2", "1")  # v2: до 1.3.7 ставилось по ошибке на любой 400
+        settings = {k: v for k, v in settings.items() if k != "updated_fields"}
+        import_id = await send()
+    sent = {"version": updater.current_version(), "method": method, "bytes": len(content),
+            "offers": content.count(b"<offer "), "settings": settings}
+    if url:
+        sent["url"] = url
+    return import_id, sent
 
 
 async def _poll(job: dict, client: PromClient) -> None:
@@ -356,15 +443,34 @@ async def _poll(job: dict, client: PromClient) -> None:
     state = import_state(result)
     if state == "running":
         started = datetime.fromisoformat(job.get("started_at") or job["created_at"])
-        if datetime.now(timezone.utc) - started > MAX_WAIT:
+        waited = datetime.now(timezone.utc) - started
+        if _found_nothing(result) and waited > NOTHING_WAIT:
+            state = "ok"  # Prom так и не нашёл товаров в файле — разбираемся ниже
+        elif waited > MAX_WAIT:
             raise PromError("Prom слишком долго обрабатывает импорт — проверьте раздел «Импорт» в кабинете")
-        _update_job(job["id"], result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS), attempts=0)
-        return
+        if state == "running":
+            _update_job(job["id"], result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS),
+                        attempts=0, last_error=_progress(result))
+            return
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
+    sent = json.loads(job.get("sent") or "{}")
+    if ok and _found_nothing(result) and sent.get("method", "file") == "file":
+        # Prom не увидел товаров в загруженном файле — тот же файл по ссылке («Завантажити файл з сервера»)
+        ids = [int(pid) for pid in json.loads(job["products"])]
+        content = feed.build(ids, await _photo_base_url(ids))
+        import_id, retry = await _send_import(client, content, sent.get("settings") or dict(DEFAULT_IMPORT_SETTINGS), "url")
+        retry["after_file_import"] = job["import_id"]
+        _update_job(job["id"], import_id=import_id, sent=json.dumps(retry, ensure_ascii=False), started_at=db.now(),
+                    result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS),
+                    last_error="Prom не увидел товаров в загруженном файле — повторяю тот же файл по ссылке")
+        return
     if ok and _found_nothing(result):
         ok = False
         message = NOTHING_FOUND
+    if ok and sent.get("after_file_import") and db.get_setting("import_method") != "url":
+        log.warning("Импорт по ссылке сработал, а загрузкой файла — нет: дальше отправляю по ссылке")
+        db.set_setting("import_method", "url")
     _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False), last_error=message)
     per_product = _per_product_errors(result)
     if ok:

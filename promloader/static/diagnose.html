@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Проверка выгрузки — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+  <style>
+    .diag-step { display: grid; grid-template-columns: 28px 1fr; gap: 4px 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+    .diag-step:first-child { border-top: 0; }
+    .diag-step .icon { font-size: 18px; line-height: 1.4; }
+    .diag-step .detail { color: var(--muted); font-size: 14px; }
+    .diag-step details { grid-column: 2; font-size: 12px; }
+    .diag-step pre { white-space: pre-wrap; word-break: break-word; background: var(--bg); border-radius: 8px; padding: 8px; max-height: 300px; overflow: auto; }
+    .verdict { font-size: 16px; padding: 14px 16px; border-radius: 10px; margin-top: 14px; }
+    .verdict.ok { background: var(--ok-soft); color: var(--ok); }
+    .verdict.bad { background: var(--err-soft); color: var(--err); }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav>
+      <a href="/">Товары</a>
+      <a href="/orders">Заказы</a>
+      <a href="/suppliers">Поставщики</a>
+      <a href="/pricing">Наценка</a>
+      <a href="/import">Импорт файла</a>
+      <a href="/settings">Настройки</a>
+      <a href="/support">Поддержка</a>
+    </nav>
+  </header>
+
+  <main style="max-width:900px">
+    <h1>🔍 Проверка выгрузки</h1>
+    <p class="muted" style="margin-top:-6px">Один товар проходит весь путь до Prom по шагам: токен → файл → фото → отправка →
+      обработка у Prom → появился ли товар. Это настоящая выгрузка одного товара (как «Отправить»), обычно 1–3 минуты.</p>
+
+    <div class="panel">
+      <label class="field"><span>Товар</span><select id="product"></select></label>
+      <div class="toolbar" style="margin:0">
+        <button class="btn primary" id="start">Начать проверку</button>
+        <button class="btn hidden" id="copy">Скопировать отчёт</button>
+        <a class="btn hidden" id="to-support" href="/support?from=/diagnose">Отправить в поддержку</a>
+        <span class="small muted" id="state"></span>
+      </div>
+    </div>
+
+    <div class="panel hidden" id="result" style="margin-top:16px">
+      <div id="steps"></div>
+      <div class="verdict hidden" id="verdict"></div>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script>
+    const ICON = { running: "⏳", ok: "✅", warn: "⚠️", fail: "❌", info: "ℹ️" };
+    let timer = null;
+    let last = null;
+
+    async function loadProducts() {
+      const want = new URLSearchParams(location.search).get("id");
+      const r = await api("/api/products?limit=500");
+      const order = { error: 0, ready: 1, synced: 2, draft: 3, sending: 4 };
+      const items = r.items.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+      $("#product").innerHTML = items.map((p) =>
+        `<option value="${p.id}">${esc(p.name)} · ${esc(p.external_id)} · ${esc(META.statuses[p.status] || p.status)}</option>`).join("")
+        || `<option value="">Нет товаров</option>`;
+      if (want) $("#product").value = want;
+    }
+
+    function render(st) {
+      last = st;
+      $("#result").classList.remove("hidden");
+      $("#steps").innerHTML = st.steps.map((s) => `
+        <div class="diag-step">
+          <span class="icon">${ICON[s.status] || "•"}</span>
+          <div><b>${esc(s.title)}</b><div class="detail">${esc(s.detail || (s.status === "running" ? "выполняется…" : ""))}</div></div>
+          ${s.data ? `<details><summary class="muted">подробности</summary><pre>${esc(JSON.stringify(s.data, null, 2))}</pre></details>` : ""}
+        </div>`).join("");
+      const v = $("#verdict");
+      v.classList.toggle("hidden", !st.verdict);
+      v.className = "verdict " + (st.verdict.startsWith("Всё работает") ? "ok" : "bad") + (st.verdict ? "" : " hidden");
+      v.textContent = st.verdict;
+      $("#state").textContent = st.done ? "" : "Идёт проверка…";
+      $("#start").disabled = !st.done;
+      $("#copy").classList.toggle("hidden", !st.done);
+      $("#to-support").classList.toggle("hidden", !st.done);
+    }
+
+    async function poll(id) {
+      try {
+        const st = await api(`/api/diagnose/${id}`);
+        render(st);
+        if (!st.done) timer = setTimeout(() => poll(id), 1500);
+      } catch (err) { $("#state").textContent = err.message; $("#start").disabled = false; }
+    }
+
+    $("#start").onclick = async () => {
+      if (!$("#product").value) return;
+      clearTimeout(timer);
+      try {
+        const st = await api("/api/diagnose", { method: "POST", json: { product_id: Number($("#product").value) } });
+        render(st);
+        poll(st.id);
+      } catch (err) { toast(err.message, "error"); }
+    };
+
+    function reportText() {
+      if (!last) return "";
+      const lines = [`Проверка выгрузки: ${last.product.name} (${last.product.external_id})`, ""];
+      for (const s of last.steps) {
+        lines.push(`${ICON[s.status] || "•"} ${s.title}: ${s.detail}`);
+        if (s.data) lines.push(JSON.stringify(s.data));
+      }
+      lines.push("", "Итог: " + last.verdict);
+      return lines.join("\n");
+    }
+    $("#copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(reportText()); toast("Отчёт скопирован — вставьте его в сообщение", "ok"); }
+      catch { toast("Не удалось скопировать — выделите текст на странице вручную", "error"); }
+    };
+    $("#to-support").onclick = () => {
+      try { localStorage.setItem("promloader-support-draft", JSON.stringify({ description: reportText() })); } catch { /* ок */ }
+    };
+
+    loadMeta().then(loadProducts).catch((err) => toast(err.message, "error"));
+  </script>
+</body>
+</html>
