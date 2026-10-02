@@ -272,7 +272,8 @@ def _quick_items(ids: list[int]) -> list[dict]:
 def _quick_errors(body: dict) -> dict:
     errors = body.get("errors") or {}
     if isinstance(errors, dict):
-        return {str(k): str(v) for k, v in errors.items()}
+        # живой ответ Prom: {"PLTEST-NOPE": {"id": "Продукт не найден"}}
+        return {str(k): "; ".join(map(str, v.values())) if isinstance(v, dict) else str(v) for k, v in errors.items()}
     found = {}
     for item in errors if isinstance(errors, list) else []:
         if isinstance(item, dict):
@@ -306,11 +307,18 @@ async def _start_quick(job: dict, client: PromClient) -> None:
             body = await client.edit_by_external_id(_quick_items(chunk))
             body = body if isinstance(body, dict) else {}
             chunk_errors = _quick_errors(body)
+            missing = {ext for ext, text in chunk_errors.items() if "не найден" in text.lower() or "not found" in text.lower()}
+            if missing:
+                # товара нет на Prom (удалили в кабинете) — создаём заново полным импортом
+                marks = ",".join("?" * len(chunk))
+                fallback += [r["id"] for r in db.query(f"SELECT id, external_id FROM products WHERE id IN ({marks})", chunk)
+                             if r["external_id"] in missing]
+                chunk_errors = {k: v for k, v in chunk_errors.items() if k not in missing}
             errors.update(chunk_errors)
             if "processed_ids" in body:
                 done = len(body.get("processed_ids") or [])
                 processed += done
-                if done < len(chunk) - len(chunk_errors):
+                if done < len(chunk) - len(chunk_errors) - len(missing):
                     # Prom обработал не всё и не сказал, что именно, — надёжнее отправить пачку полным импортом
                     fallback += chunk
             else:

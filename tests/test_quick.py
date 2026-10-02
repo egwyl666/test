@@ -102,9 +102,9 @@ def test_per_product_error():
     products.update(pid, {"price": 120}, lock=False)
     ext = products.get(pid)["external_id"]
     sync.enqueue([pid])
-    Prom(edit=(200, {"processed_ids": [], "errors": {ext: "Товар не найден"}})).run()
+    Prom(edit=(200, {"processed_ids": [], "errors": {ext: {"price": "Некорректная цена"}}})).run()
     p = products.get(pid)
-    assert p["status"] == "error" and p["last_error"] == "Товар не найден"
+    assert p["status"] == "error" and p["last_error"] == "Некорректная цена"
 
 
 def test_photos_and_price_together_is_full_import():
@@ -148,3 +148,21 @@ def test_migration_marks_unsent_products(tmp_path):
     assert products.get(pid)["pending_fields"] == '["*"]'
     products.update(pid, {"price": 1}, lock=False)
     assert sync._quick_ok(pid) is False
+
+
+def test_product_deleted_on_prom_is_recreated_by_full_import():
+    """Живой ответ Prom для отсутствующего товара: {"errors": {"PL-…": {"id": "Продукт не найден"}}}."""
+    a, b = synced(), synced(name="Тарелка")
+    products.update(a, {"price": 90}, lock=False)
+    products.update(b, {"price": 95}, lock=False)
+    sync.enqueue([a, b])
+    ext_a, ext_b = products.get(a)["external_id"], products.get(b)["external_id"]
+    prom = Prom(edit=(200, {"processed_ids": [ext_a], "errors": {ext_b: {"id": "Продукт не найден"}}, "warnings": {}}))
+    prom.run()
+    assert products.get(a)["status"] == "synced"
+    assert products.get(b)["status"] == "sending" and products.get(b)["last_error"] == ""
+    assert sorted(kinds()) == ["import", "quick"]  # b ушёл отдельной задачей полного импорта
+
+
+def test_quick_error_text_is_readable():
+    assert sync._quick_errors({"errors": {"X": {"price": "Неверная цена"}}}) == {"X": "Неверная цена"}
