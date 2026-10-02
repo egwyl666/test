@@ -20,9 +20,9 @@ DEFAULT_IMPORT_SETTINGS = {
     "updated_fields": UPDATED_FIELDS,
 }
 
-# Статусы импорта. Проверено на живом кабинете: сразу после отправки Prom отвечает "SUCCESS" с нулевыми
-# счётчиками (файл принят), а товары обрабатывает в фоне ещё 1–3 минуты; потом статус становится
-# "PARTIAL"/"SUCCESS" с заполненными счётчиками (created/updated/…). Поэтому "SUCCESS" само по себе — не конец.
+# Статусы импорта. Проверено на живом кабинете (обновление 1 товара):
+#   +3 с SUCCESS total 0 → +10 с SUCCESS total 1 → +89 с PARTIAL total 1, updated 0 → +172 с PARTIAL updated 1.
+# Ни "SUCCESS", ни "PARTIAL" сами по себе не значат «готово» — конец, когда счётчики покрыли все товары файла.
 IMPORT_DONE_OK = {"success", "partial"}
 IMPORT_DONE_FAIL = {"fatal", "error", "failed"}
 
@@ -163,7 +163,7 @@ def import_state(status_body: dict) -> str:
     if status in IMPORT_DONE_FAIL:
         return "failed"
     if status in IMPORT_DONE_OK:
-        return "ok" if status == "partial" or import_counted(status_body) else "running"
+        return "ok" if import_counted(status_body) else "running"
     return "running"
 
 

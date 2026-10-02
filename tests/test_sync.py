@@ -370,10 +370,11 @@ def test_bare_success_is_not_the_end():
     fake = FakeProm(statuses=[
         (200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0}),
         (200, {"status": "SUCCESS", "total": 1, "imported": 0, "created": 0}),
+        (200, {"status": "PARTIAL", "total": 1, "imported": 0, "created": 0}),
         (200, {"status": "PARTIAL", "total": 1, "imported": 1, "created": 1, "errors": []}),
     ])
     run(fake)
-    for expected in ("waiting", "waiting"):
+    for expected in ("waiting", "waiting", "waiting"):
         make_due()
         run(fake)
         assert job()["status"] == expected and products.get(pid)["status"] == "sending"
@@ -389,5 +390,6 @@ def test_import_state_rules():
     assert import_state({"status": "SUCCESS", "total": 2, "imported": 1}) == "running"
     assert import_state({"status": "SUCCESS", "total": 2, "imported": 1, "not_changed": 1}) == "ok"
     assert import_state({"status": "PARTIAL", "total": 1, "created": 1}) == "ok"
+    assert import_state({"status": "PARTIAL", "total": 1, "imported": 0, "updated": 0}) == "running"
     assert import_state({"status": "SUCCESS", "imported": 1}) == "ok"  # без счётчика total — верим статусу
     assert import_state({"status": "FATAL"}) == "failed"
