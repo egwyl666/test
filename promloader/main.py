@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, config, db, diagnose, excel, feed, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, autostart, backup, config, db, diagnose, excel, feed, rates, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -458,6 +458,16 @@ async def diagnose_state(run_id: str):
     return diagnose.RUNS[run_id]
 
 
+@app.get("/api/rates/{code}")
+async def rate(code: str):
+    if code.upper() not in rates.CURRENCIES:
+        raise HTTPException(404)
+    try:
+        return await asyncio.to_thread(rates.nbu, code)
+    except rates.RateError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/api/r2/check")
 async def r2_check():
     try:
@@ -724,8 +734,14 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
         raise excel.ImportError_("Не выбрано ни одной строки")
     embedded = images if body.get("use_embedded_images", True) else {}
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
+    converter = None
+    if supplier_id:
+        try:
+            converter = suppliers.converter_for(suppliers.get(supplier_id))
+        except KeyError:
+            pass
     items = excel.build_products(rows, header_row, numbers, body.get("mapping") or {}, body.get("defaults"), embedded,
-                                 pricing.Pricer(), supplier_id)
+                                 pricing.Pricer(), supplier_id, converter)
     return items, images
 
 

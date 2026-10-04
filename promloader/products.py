@@ -274,6 +274,15 @@ def find_by_external_id(external_id: str) -> int | None:
 
 # ---------- проверка ----------
 
+_UA_ONLY = re.compile(r"[іїєґІЇЄҐ]")
+_RU_ONLY = re.compile(r"[ыэъёЫЭЪЁ]")
+
+
+def looks_ukrainian(text: str) -> bool:
+    """Текст на украинском: есть і/ї/є/ґ и нет ы/э/ъ/ё (русский текст их почти всегда содержит)."""
+    return bool(_UA_ONLY.search(text or "")) and not _RU_ONLY.search(text or "")
+
+
 def validate(p: dict, image_count: int | None = None) -> dict:
     """errors — отправлять нельзя; warnings — можно, но карточка будет слабой."""
     errors, warnings = [], []
@@ -300,7 +309,7 @@ def validate(p: dict, image_count: int | None = None) -> dict:
         warnings.append("Нет описания")
     if not (p.get("group_name") or "").strip():
         warnings.append("Не указана группа — на Prom товар попадёт в группу «Без группы»")
-    if not (p.get("name_ua") or "").strip():
+    if not (p.get("name_ua") or "").strip() and not looks_ukrainian(p.get("name") or ""):
         warnings.append("Нет названия на украинском")
     return {"errors": errors, "warnings": warnings, "ok": not errors}
 

@@ -18,7 +18,7 @@ from pathlib import Path
 
 import httpx
 
-from . import db, excel, notify, pricing, products
+from . import db, excel, notify, pricing, products, rates
 
 log = logging.getLogger("promloader.suppliers")
 
@@ -30,7 +30,8 @@ SYNC_FIELDS = (
     "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords", "barcode",
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
-            "missing_action", "auto_sync", "interval_hours", "merge_by_barcode")
+            "missing_action", "auto_sync", "interval_hours", "merge_by_barcode",
+            "rate_mode", "rate_currency", "rate_value", "rate_add")
 
 BROKEN_FEED_MIN = 20       # защита включается, если у поставщика было хотя бы столько товаров
 BROKEN_FEED_RATIO = 0.5    # ...и в новом прайсе осталось меньше этой доли
@@ -137,6 +138,20 @@ def update(supplier_id: int, data: dict) -> dict:
                 raise SupplierError("Интервал обновления — число часов")
         elif key in ("auto_sync", "merge_by_barcode"):
             value = 1 if value else 0
+        elif key == "rate_mode":
+            if value not in ("", "manual", "nbu"):
+                raise SupplierError("Пересчёт валюты: не пересчитывать, по курсу НБУ или свой курс")
+        elif key == "rate_currency":
+            value = str(value or "USD").strip().upper()
+            if value not in rates.CURRENCIES:
+                raise SupplierError("Валюта прайса: " + ", ".join(rates.CURRENCIES))
+        elif key in ("rate_value", "rate_add"):
+            try:
+                value = float(str(value or 0).replace(",", "."))
+            except ValueError:
+                raise SupplierError("Курс и надбавка к курсу — числа, например 41.5 и 2")
+            if key == "rate_value" and value < 0 or key == "rate_add" and not -50 <= value <= 100:
+                raise SupplierError("Курс не может быть отрицательным, надбавка — от -50 до 100%")
         elif key == "new_status" and value not in NEW_STATUSES:
             raise SupplierError("Статус новых товаров: draft или ready")
         elif key == "missing_action" and value not in MISSING_ACTIONS:
@@ -484,6 +499,20 @@ def _queue_changed(changed: list[int]) -> int:
     return queued
 
 
+def converter_for(s: dict, transport=None):
+    """Пересчёт цен прайса в гривны по настройкам поставщика (None — цены уже в гривнах)."""
+    try:
+        currency = (s.get("defaults") or {}).get("currency") or ""
+        currency = currency if currency and currency != "UAH" else (s.get("rate_currency") or "USD")
+        conv = rates.converter(s.get("rate_mode") or "", currency, s.get("rate_value") or 0,
+                               s.get("rate_add") or 0, transport)
+        if conv:
+            conv(None)  # курс основной валюты прайса — сразу, чтобы ошибка была понятной
+        return conv
+    except rates.RateError as exc:
+        raise SupplierError(str(exc))
+
+
 def run(supplier_id: int, trigger: str = "manual", force: bool = False, transport=None) -> dict:
     """Полное обновление поставщика. Возвращает запись о запуске."""
     with _running_lock:
@@ -507,11 +536,11 @@ def run(supplier_id: int, trigger: str = "manual", force: bool = False, transpor
             spec = s["rows"] or f"{s['header_row'] + 1}-"
             numbers = excel.parse_row_spec(spec, len(rows))
             items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
-                                         pricing.Pricer(), supplier_id)
+                                         pricing.Pricer(), supplier_id, converter_for(s))
             stats, changed = apply_items(s, items, embedded, run_id, force)
             if s["auto_sync"]:
                 stats["queued"] = _queue_changed(changed)
-        except (SupplierError, excel.ImportError_) as exc:
+        except (SupplierError, excel.ImportError_, rates.RateError) as exc:
             status, message = "failed", str(exc)
         except Exception as exc:
             log.exception("Поставщик %s: сбой обновления", supplier_id)

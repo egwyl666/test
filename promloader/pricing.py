@@ -112,6 +112,9 @@ class Pricer:
     def apply(self, data: dict, supplier_id: int | None = None) -> list[str]:
         """Проставляет data['price'] по закупке/РРЦ. Возвращает предупреждения."""
         cost, rrp = data.get("cost_price"), data.get("rrp")
+        # «0» в прайсе поставщика — это «цены нет», а не бесплатный товар: иначе наценка с округлением даст 9 грн
+        cost = cost if cost and cost > 0 else None
+        rrp = rrp if rrp and rrp > 0 else None
         if cost is None and rrp is None:
             return []
         price, rule = self.price(cost, rrp, supplier_id, data.get("group_name", ""))

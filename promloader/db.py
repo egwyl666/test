@@ -210,6 +210,10 @@ MIGRATIONS = {
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",
+        "rate_mode": "TEXT NOT NULL DEFAULT ''",
+        "rate_currency": "TEXT NOT NULL DEFAULT 'USD'",
+        "rate_value": "REAL NOT NULL DEFAULT 0",
+        "rate_add": "REAL NOT NULL DEFAULT 0",
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",

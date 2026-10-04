@@ -69,8 +69,10 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
     for p in items:
         offer = ET.SubElement(offers, "offer", id=p["external_id"], available=AVAILABLE_ATTR.get(p["presence"], "true"))
         _sub(offer, "name", p["name"])
-        if p["name_ua"]:
-            _sub(offer, "name_ua", p["name_ua"])
+        # Prom считает <name> русским; если текст уже украинский, а украинской версии нет — отдаём его и как украинский
+        name_ua = p["name_ua"] or (p["name"] if products.looks_ukrainian(p["name"]) else "")
+        if name_ua:
+            _sub(offer, "name_ua", name_ua)
         if p["price"] is not None:
             _sub(offer, "price", _fmt_price(p["price"]))
         if p["old_price"] and p["price"] and p["old_price"] > p["price"]:
@@ -92,8 +94,9 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
             _sub(offer, "keywords", p["keywords"])
         if p["description"]:
             _sub(offer, "description", description_html(p["description"]))
-        if p["description_ua"]:
-            _sub(offer, "description_ua", description_html(p["description_ua"]))
+        description_ua = p["description_ua"] or (p["description"] if products.looks_ukrainian(p["description"]) else "")
+        if description_ua:
+            _sub(offer, "description_ua", description_html(description_ua))
         for param in p["params"]:
             if param["name"] and param["value"]:
                 _sub(offer, "param", param["value"], name=param["name"])

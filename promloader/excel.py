@@ -266,6 +266,20 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
     return mapping
 
 
+MONEY_FIELDS = ("price", "old_price", "cost_price", "rrp")
+
+
+def convert_money(data: dict, converter) -> None:
+    """Цены прайса в валюте поставщика -> гривны (до наценки: правила наценки считают уже в гривнах)."""
+    rate = converter(data.get("currency"))
+    if not rate:
+        return
+    for key in MONEY_FIELDS:
+        if data.get(key) is not None:
+            data[key] = round(data[key] * rate, 2)
+    data["currency"] = "UAH"
+
+
 def _split_urls(text: str) -> list[str]:
     return [u for u in re.split(r"[\s,;|]+", text or "") if re.match(r"^https?://", u)]
 
@@ -279,6 +293,7 @@ def build_products(
     embedded_images: dict[int, list[bytes]] | None = None,
     pricer=None,
     supplier_id: int | None = None,
+    converter=None,
 ) -> list[dict]:
     """Строки -> товары. Для каждой строки: данные, фото, ошибки и предупреждения."""
     defaults = {k: v for k, v in (defaults or {}).items() if v not in (None, "")}
@@ -329,6 +344,8 @@ def build_products(
         # наличие по количеству, если колонки «наличие» нет
         if "presence" not in raw and data.get("quantity") is not None:
             data["presence"] = "available" if data["quantity"] > 0 else "not_available"
+        if converter:
+            convert_money(data, converter)
         price_warnings = pricer.apply(data, supplier_id) if pricer else []
         files = (embedded_images or {}).get(number, [])
         check = products.validate({**data, "params": params}, image_count=len(urls) + len(files))

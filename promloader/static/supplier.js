@@ -20,6 +20,10 @@ function settingsBody() {
     new_status: $("#new-status").value,
     auto_sync: $("#auto-sync").checked,
     merge_by_barcode: $("#merge-barcode").checked,
+    rate_mode: $("#rate-mode").value,
+    rate_value: $("#rate-value").value || 0,
+    rate_add: $("#rate-add").value || 0,
+    rate_currency: $("#def-currency").value === "UAH" ? "USD" : $("#def-currency").value,
     defaults: { group_name: $("#def-group").value, currency: $("#def-currency").value },
   };
   if (gridOpened) Object.assign(body, grid.body());
@@ -43,6 +47,10 @@ function fill(s) {
   $("#merge-barcode").checked = s.merge_by_barcode;
   $("#def-group").value = s.defaults.group_name || "";
   $("#def-currency").value = s.defaults.currency || "UAH";
+  $("#rate-mode").value = s.rate_mode || "";
+  $("#rate-value").value = s.rate_value || "";
+  $("#rate-add").value = s.rate_add || "";
+  showRate();
   $("#products-link").href = `/?supplier=${s.id}`;
   $("#source-info").innerHTML = s.source_name
     ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
@@ -201,3 +209,30 @@ $("#only-bad").onchange = renderPreview;
     toast(err.message, "error");
   }
 })();
+
+// ---------- пересчёт валюты ----------
+const CUR_SIGN = { USD: "$", EUR: "€", PLN: "zł", GBP: "£" };
+async function showRate() {
+  const mode = $("#rate-mode").value;
+  const cur = $("#def-currency").value === "UAH" ? "USD" : $("#def-currency").value;
+  $$(".rate-field").forEach((el) => el.classList.toggle("hidden", !mode));
+  $("#rate-value").closest(".field").classList.toggle("hidden", mode !== "manual");
+  $$(".rate-cur").forEach((el) => { el.textContent = CUR_SIGN[cur] || cur; });
+  const info = $("#rate-info");
+  info.classList.toggle("hidden", !mode);
+  if (!mode) return;
+  const add = Number(String($("#rate-add").value || 0).replace(",", ".")) || 0;
+  let base = Number(String($("#rate-value").value || 0).replace(",", ".")) || 0;
+  let note = "";
+  if (mode === "nbu") {
+    try {
+      const r = await api(`/api/rates/${cur}`);
+      base = r.rate;
+      note = `Курс НБУ на ${r.date}: ${r.rate} грн${r.stale ? " (НБУ сейчас недоступен — последний известный)" : ""}. `;
+    } catch (err) { info.textContent = err.message; return; }
+  }
+  const k = base * (1 + add / 100);
+  info.textContent = note + (k ? `Цены прайса умножаются на ${k.toFixed(4)}: 10 ${CUR_SIGN[cur] || cur} → ${(10 * k).toFixed(2)} грн. ` : "") +
+    "Наценка считается уже от гривен. Чтобы работали правила наценки, колонку с ценой поставщика отметьте как «Закупочная цена».";
+}
+["#rate-mode", "#rate-add", "#rate-value", "#def-currency"].forEach((sel) => $(sel).addEventListener("input", showRate));

@@ -71,6 +71,14 @@
         <label class="field"><span>Новые товары</span>
           <select id="new-status"><option value="draft">черновиками — сначала проверю сам</option><option value="ready">сразу «готов к отправке»</option></select></label>
       </div>
+      <div class="row">
+        <label class="field"><span>Пересчёт в гривны</span>
+          <select id="rate-mode"><option value="">не пересчитывать (цены уже в гривнах)</option>
+            <option value="nbu">по курсу НБУ</option><option value="manual">по своему курсу</option></select></label>
+        <label class="field rate-field"><span>Свой курс, грн за 1 <span class="rate-cur">$</span></span><input id="rate-value" inputmode="decimal" placeholder="например 41.5"></label>
+        <label class="field rate-field"><span>Надбавка к курсу, %</span><input id="rate-add" inputmode="decimal" placeholder="0"></label>
+      </div>
+      <p class="small muted hidden" id="rate-info" style="margin-top:-6px"></p>
       <datalist id="groups"></datalist>
       <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="merge-barcode">
         Объединять с товарами других поставщиков по штрихкоду <span class="muted">(если отмечена колонка «Штрихкод»: цена и наличие — от того, у кого дешевле)</span></label>
