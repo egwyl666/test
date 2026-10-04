@@ -22,6 +22,7 @@ TARGETS = {
     "": "— не импортировать —",
     "external_id": "Артикул / код",
     "barcode": "Штрихкод (EAN) — для объединения поставщиков",
+    "vendor_code": "Артикул поставщика (его код товара)",
     "name": "Название",
     "name_ua": "Название (укр.)",
     "price": "Цена (розничная)",
@@ -50,7 +51,8 @@ HINTS = [
     ("cost_price", r"закуп|вход|опт|дроп|drop|cost|purchase|собіварт|себестоим"),
     ("rrp", r"ррц|rrp|рекоменд|роздр|розн"),
     ("barcode", r"штрих|barcode|^ean|gtin"),
-    ("external_id", r"^@id$|артикул|vendor.?code|код|sku|external|ідентиф|идентиф|^id$"),
+    ("vendor_code", r"vendor.?code|артикул пост|код пост|код виробн|код производ"),
+    ("external_id", r"^@id$|артикул|код|sku|external|ідентиф|идентиф|^id$"),
     ("name", r"назв|наимен|товар|name"),
     ("price", r"цен|ціна|price|стоим|вартість"),
     ("currency", r"валют|currency"),
@@ -278,6 +280,75 @@ def convert_money(data: dict, converter) -> None:
         if data.get(key) is not None:
             data[key] = round(data[key] * rate, 2)
     data["currency"] = "UAH"
+
+
+# ---------- очистка названий от оптовых пометок поставщика ----------
+# «Дисперсер для води (48шт) А 906-212» -> «Дисперсер для води». Убираем только артикул ЭТОЙ строки прайса
+# (в любом написании: «А906-212», «А 906-212», «a906 212») и количество в упаковке рядом с ним или в конце.
+# Модели вроде «LM-130» или «PVP 3000» не трогаем: это не артикул поставщика.
+
+_LOOKALIKE = {a: f"[{a}{b}{a.lower()}{b.lower()}]" for a, b in zip("ABCEHKMOPTX", "АВСЕНКМОРТХ")}
+_LOOKALIKE.update({b: v for (a, v), b in zip(list(_LOOKALIKE.items()), "АВСЕНКМОРТХ")})
+_PACK = r"\(\s*\d+\s*(?:шт\.?|штук|pcs|уп\.?)?\s*\)"
+_MARK = "\x00"
+
+
+def _code_regex(code: str):
+    parts = re.findall(r"[^\W\d_]+|\d+", code or "")
+    if not parts or len("".join(parts)) < 3:
+        return None
+    body = r"[\s\-_./]*".join("".join(_LOOKALIKE.get(ch.upper(), re.escape(ch)) for ch in part) for part in parts)
+    before = r"(?<!\d)" if parts[0][0].isdigit() else r"(?<![^\W\d_])"
+    after = r"(?!\d)" if parts[-1][-1].isdigit() else r"(?![^\W\d_])"
+    return re.compile(before + body + after, re.IGNORECASE)
+
+
+def clean_name(name: str, code: str = "") -> str:
+    text = name or ""
+    codes = [code]
+    variant = re.match(r"^(.*\d)[\s\-_./]+\d{1,2}$", (code or "").strip())
+    if variant and re.search(r"[\s\-_./]", variant.group(1)):
+        codes.append(variant.group(1))  # «AR-0082-1» в прайсе, «AR-0082» в названии
+    for c in codes:
+        rx = _code_regex(c)
+        if rx and rx.search(text):
+            text = rx.sub(_MARK, text)
+            break
+    text = re.sub(r"\d+\s*шт\.?\s*в\s*(?:📦|ящ\w*\.?|короб\w*|уп\w*\.?)?\s*$", _MARK, text, flags=re.IGNORECASE)
+    if _MARK in text:
+        text = re.sub(rf"{_PACK}\s*{_MARK}|{_MARK}\s*{_PACK}", _MARK, text, flags=re.IGNORECASE)
+    text = re.sub(rf"(?:\s*{_PACK})+\s*[{_MARK}\s.,]*$", "", text, flags=re.IGNORECASE)  # упаковка в самом конце
+    text = text.replace(_MARK, " ")
+    text = re.sub(r"\s+([,;:)])", r"\1", text)
+    text = re.sub(r",\s*\)", ")", text)
+    text = re.sub(r"([,;:])(?=[^\s\d])", r"\1 ", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,;:-/.∙·•|")
+    return text if len(text) >= 3 else (name or "").strip()
+
+
+def _code_prefix(code: str) -> str:
+    m = re.match(r"\s*([^\W\d_]*)", (code or "").upper().translate(str.maketrans("АВСЕНКМОРТХ", "ABCEHKMOPTX")))
+    return m.group(1) or "<цифры>"
+
+
+def clean_names(items: list[dict]) -> int:
+    """Чистит названия по всему прайсу. Артикул убирается, только если это внутренний код поставщика:
+    такой префикс (GT-, AR-, А777-…) массово повторяется в прайсе. Редкие — модели производителя (Remax RPP-118,
+    смарт-годинник RM28): они остаются, по ним ищут покупатели. Возвращает число изменённых названий."""
+    codes = [it["data"].get("vendor_code", "").strip() for it in items]
+    counts = Counter(_code_prefix(c) for c in codes if c)
+    threshold = max(5, 0.03 * sum(counts.values()))
+    changed = 0
+    for it, code in zip(items, codes):
+        own = code if code and counts[_code_prefix(code)] >= threshold else ""
+        for key in ("name", "name_ua"):
+            value = it["data"].get(key)
+            if value:
+                cleaned = clean_name(value, own)
+                changed += cleaned != value
+                it["data"][key] = cleaned
+    return changed
 
 
 def _split_urls(text: str) -> list[str]:

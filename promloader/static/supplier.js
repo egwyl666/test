@@ -20,6 +20,7 @@ function settingsBody() {
     new_status: $("#new-status").value,
     auto_sync: $("#auto-sync").checked,
     merge_by_barcode: $("#merge-barcode").checked,
+    clean_names: $("#clean-names").checked,
     rate_mode: $("#rate-mode").value,
     rate_value: $("#rate-value").value || 0,
     rate_add: $("#rate-add").value || 0,
@@ -45,6 +46,7 @@ function fill(s) {
   $("#new-status").value = s.new_status;
   $("#auto-sync").checked = s.auto_sync;
   $("#merge-barcode").checked = s.merge_by_barcode;
+  $("#clean-names").checked = s.clean_names;
   $("#def-group").value = s.defaults.group_name || "";
   $("#def-currency").value = s.defaults.currency || "UAH";
   $("#rate-mode").value = s.rate_mode || "";
@@ -176,7 +178,7 @@ $("#delete").onclick = async () => {
 
 async function preview() {
   try {
-    const body = { ...grid.body(), defaults: settingsBody().defaults, supplier_id: sid };
+    const body = { ...grid.body(), defaults: settingsBody().defaults, supplier_id: sid, clean_names: $("#clean-names").checked };
     const res = await api(`/api/import/${grid.token}/preview`, { method: "POST", json: body });
     items = res.items;
     renderPreview();

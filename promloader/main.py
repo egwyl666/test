@@ -734,14 +734,17 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
         raise excel.ImportError_("Не выбрано ни одной строки")
     embedded = images if body.get("use_embedded_images", True) else {}
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
-    converter = None
+    converter, clean = None, False
     if supplier_id:
         try:
-            converter = suppliers.converter_for(suppliers.get(supplier_id))
+            s = suppliers.get(supplier_id)
+            converter, clean = suppliers.converter_for(s), body.get("clean_names", s["clean_names"])
         except KeyError:
             pass
     items = excel.build_products(rows, header_row, numbers, body.get("mapping") or {}, body.get("defaults"), embedded,
                                  pricing.Pricer(), supplier_id, converter)
+    if clean:
+        excel.clean_names(items)
     return items, images
 
 

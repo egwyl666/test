@@ -82,6 +82,9 @@
       <datalist id="groups"></datalist>
       <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="merge-barcode">
         Объединять с товарами других поставщиков по штрихкоду <span class="muted">(если отмечена колонка «Штрихкод»: цена и наличие — от того, у кого дешевле)</span></label>
+      <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="clean-names">
+        Чистить названия от оптовых пометок <span class="muted">— «(50шт)», «(20)» и артикул поставщика («GT-354», «А 777-251»);
+        модели производителя (Remax RPP-118) остаются. Для артикула отметьте колонку «Артикул поставщика»</span></label>
       <label class="small"><input type="checkbox" id="auto-sync"> Сразу отправлять изменения на Prom
         <span class="muted">(цены и наличие товаров, которые уже на Prom или готовы к отправке)</span></label>
       <div class="toolbar" style="margin:16px 0 0">

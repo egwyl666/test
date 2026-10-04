@@ -28,10 +28,11 @@ NEW_STATUSES = ("draft", "ready")
 SYNC_FIELDS = (
     "name", "name_ua", "description", "description_ua", "price", "old_price", "cost_price", "rrp", "currency",
     "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords", "barcode",
+    "vendor_code",
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
             "missing_action", "auto_sync", "interval_hours", "merge_by_barcode",
-            "rate_mode", "rate_currency", "rate_value", "rate_add")
+            "rate_mode", "rate_currency", "rate_value", "rate_add", "clean_names")
 
 BROKEN_FEED_MIN = 20       # защита включается, если у поставщика было хотя бы столько товаров
 BROKEN_FEED_RATIO = 0.5    # ...и в новом прайсе осталось меньше этой доли
@@ -62,6 +63,7 @@ def _parse(row) -> dict:
     s["defaults"] = json.loads(s["defaults"] or "{}")
     s["auto_sync"] = bool(s["auto_sync"])
     s["merge_by_barcode"] = bool(s.get("merge_by_barcode", 1))
+    s["clean_names"] = bool(s.get("clean_names", 0))
     s["running"] = s["id"] in _running
     return s
 
@@ -136,7 +138,7 @@ def update(supplier_id: int, data: dict) -> dict:
                 value = max(0.0, float(value or 0))
             except (TypeError, ValueError):
                 raise SupplierError("Интервал обновления — число часов")
-        elif key in ("auto_sync", "merge_by_barcode"):
+        elif key in ("auto_sync", "merge_by_barcode", "clean_names"):
             value = 1 if value else 0
         elif key == "rate_mode":
             if value not in ("", "manual", "nbu"):
@@ -537,6 +539,8 @@ def run(supplier_id: int, trigger: str = "manual", force: bool = False, transpor
             numbers = excel.parse_row_spec(spec, len(rows))
             items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
                                          pricing.Pricer(), supplier_id, converter_for(s))
+            if s["clean_names"]:
+                excel.clean_names(items)
             stats, changed = apply_items(s, items, embedded, run_id, force)
             if s["auto_sync"]:
                 stats["queued"] = _queue_changed(changed)

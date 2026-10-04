@@ -26,6 +26,7 @@ STATUSES = {
 TEXT_FIELDS = (
     "external_id", "name", "name_ua", "description", "description_ua", "currency",
     "unit", "presence", "group_name", "vendor", "country", "keywords", "barcode",
+    "vendor_code",
 )
 NUMBER_FIELDS = ("price", "old_price", "cost_price", "rrp")
 INT_FIELDS = ("quantity",)

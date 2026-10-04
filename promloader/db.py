@@ -207,6 +207,7 @@ MIGRATIONS = {
         "prom_id": "INTEGER",
         "pending_fields": "TEXT NOT NULL DEFAULT '[]'",
         "barcode": "TEXT NOT NULL DEFAULT ''",
+        "vendor_code": "TEXT NOT NULL DEFAULT ''",
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",
@@ -214,6 +215,7 @@ MIGRATIONS = {
         "rate_currency": "TEXT NOT NULL DEFAULT 'USD'",
         "rate_value": "REAL NOT NULL DEFAULT 0",
         "rate_add": "REAL NOT NULL DEFAULT 0",
+        "clean_names": "INTEGER NOT NULL DEFAULT 0",
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",
