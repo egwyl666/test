@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import threading
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -28,7 +29,7 @@ NEW_STATUSES = ("draft", "ready")
 SYNC_FIELDS = (
     "name", "name_ua", "description", "description_ua", "price", "old_price", "cost_price", "rrp", "currency",
     "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords", "barcode",
-    "vendor_code",
+    "vendor_code", "cost_currency",
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
             "missing_action", "auto_sync", "interval_hours", "merge_by_barcode",
@@ -142,7 +143,7 @@ def update(supplier_id: int, data: dict) -> dict:
             value = 1 if value else 0
         elif key == "rate_mode":
             if value not in ("", "manual", "nbu"):
-                raise SupplierError("Пересчёт валюты: не пересчитывать, по курсу НБУ или свой курс")
+                raise SupplierError("Курс поставщика: общий или свой")
         elif key == "rate_currency":
             value = str(value or "USD").strip().upper()
             if value not in rates.CURRENCIES:
@@ -501,20 +502,6 @@ def _queue_changed(changed: list[int]) -> int:
     return queued
 
 
-def converter_for(s: dict, transport=None):
-    """Пересчёт цен прайса в гривны по настройкам поставщика (None — цены уже в гривнах)."""
-    try:
-        currency = (s.get("defaults") or {}).get("currency") or ""
-        currency = currency if currency and currency != "UAH" else (s.get("rate_currency") or "USD")
-        conv = rates.converter(s.get("rate_mode") or "", currency, s.get("rate_value") or 0,
-                               s.get("rate_add") or 0, transport)
-        if conv:
-            conv(None)  # курс основной валюты прайса — сразу, чтобы ошибка была понятной
-        return conv
-    except rates.RateError as exc:
-        raise SupplierError(str(exc))
-
-
 def run(supplier_id: int, trigger: str = "manual", force: bool = False, transport=None) -> dict:
     """Полное обновление поставщика. Возвращает запись о запуске."""
     with _running_lock:
@@ -538,7 +525,7 @@ def run(supplier_id: int, trigger: str = "manual", force: bool = False, transpor
             spec = s["rows"] or f"{s['header_row'] + 1}-"
             numbers = excel.parse_row_spec(spec, len(rows))
             items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
-                                         pricing.Pricer(), supplier_id, converter_for(s))
+                                         pricing.Pricer(), supplier_id)
             if s["clean_names"]:
                 excel.clean_names(items)
             stats, changed = apply_items(s, items, embedded, run_id, force)
@@ -612,12 +599,21 @@ def reapply(product_id: int) -> None:
         (db.uploads_dir() / name).unlink(missing_ok=True)
 
 
-def recalc_prices() -> dict:
-    """Пересчёт цен всех товаров с закупкой/РРЦ по текущим правилам (кроме цен, закреплённых вручную)."""
+def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dict:
+    """Пересчёт цен по текущим правилам наценки и курсу (кроме цен, закреплённых вручную).
+
+    ids — только эти товары (None — все с закупкой/РРЦ). send — отправить изменённые цены товаров, которые
+    уже на Prom (None — по настройке «Наценка» → «сразу отправлять новые цены»).
+    """
     pricer = pricing.Pricer()
-    rows = db.query("SELECT id, supplier_id, cost_price, rrp, price, group_name, status, locked_fields FROM products "
-                    "WHERE cost_price IS NOT NULL OR rrp IS NOT NULL")
-    changed = []
+    where = "WHERE (cost_price IS NOT NULL OR rrp IS NOT NULL)"
+    args: list = []
+    if ids is not None:
+        where += f" AND id IN ({','.join('?' * len(ids))})" if ids else " AND 0"
+        args = list(ids)
+    rows = db.query("SELECT id, supplier_id, cost_price, rrp, cost_currency, price, currency, group_name, status, "
+                    f"locked_fields, synced_at FROM products {where}", args)
+    changed, warnings = [], Counter()
     multi = {r["product_id"] for r in db.query(
         "SELECT product_id FROM supplier_items WHERE product_id IS NOT NULL GROUP BY product_id HAVING COUNT(*) > 1")}
     for start in range(0, len(rows), CHUNK):
@@ -629,12 +625,78 @@ def recalc_prices() -> dict:
                     if recompute_offer(c, p["id"], pricer):
                         changed.append(p["id"])
                     continue
-                data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"]}
-                pricer.apply(data, p["supplier_id"])
-                if data.get("price") is not None and data["price"] != p["price"]:
-                    products._touch(c, p["id"], {"price": data["price"]}, p["status"])
+                data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"],
+                        "cost_currency": p["cost_currency"], "currency": p["currency"], "price": p["price"]}
+                for w in pricer.apply(data, p["supplier_id"]):
+                    if w.startswith("Цена не пересчитана"):
+                        warnings[w] += 1
+                updates = {k: data[k] for k in ("price", "currency") if data.get(k) is not None and data[k] != p[k]}
+                if updates:
+                    products._touch(c, p["id"], updates, p["status"])
                     changed.append(p["id"])
+    if send is None:
+        from . import rates
+        send = rates.settings()["auto_send"]
+    on_prom = {p["id"] for p in rows if p["synced_at"]}
     auto = {r["id"] for r in db.query("SELECT id FROM suppliers WHERE auto_sync = 1")}
     by_id = {p["id"]: p["supplier_id"] for p in rows}
-    to_queue = [pid for pid in changed if by_id[pid] in auto]
-    return {"changed": len(changed), "queued": _queue_changed(to_queue)}
+    to_queue = [pid for pid in changed if (send and pid in on_prom) or by_id.get(pid) in auto]
+    return {"changed": len(changed), "queued": _queue_changed(to_queue),
+            "warnings": [f"{w} (товаров: {n})" for w, n in warnings.items()]}
+
+PRICE_ACTIONS = ("as_cost", "percent", "recalc")
+
+
+def bulk_prices(ids: list[int], action: str, value: float = 0) -> dict:
+    """«💲 Цены» для выделенных товаров.
+
+    as_cost — текущая цена это опт: переносим её в закупку (в её валюте) и считаем розничную по наценке и курсу;
+    percent — поднять/снизить цену на value % (цена закрепляется как ручная);
+    recalc  — снять ручное закрепление цены и пересчитать по наценке и курсу.
+    Изменённые цены товаров, которые уже на Prom, отправляются сразу, если так настроено на странице «Наценка».
+    """
+    from . import rates
+
+    if action not in PRICE_ACTIONS:
+        raise SupplierError("Неизвестное действие с ценами")
+    ids = [int(i) for i in ids]
+    if not ids:
+        return {"changed": 0, "queued": 0, "warnings": []}
+    marks = ",".join("?" * len(ids))
+    rows = db.query(f"SELECT * FROM products WHERE id IN ({marks})", ids)
+    warnings = []
+    if action == "percent":
+        if not -90 <= value <= 1000:
+            raise SupplierError("Изменение цены — от -90 до 1000%")
+        changed = []
+        with db.tx() as c:
+            for p in rows:
+                if not p["price"]:
+                    continue
+                new = round(p["price"] * (1 + value / 100), 2)
+                if new != p["price"]:
+                    products._lock(c, p["id"], ["price"])
+                    products._touch(c, p["id"], {"price": new}, p["status"])
+                    changed.append(p["id"])
+        send = rates.settings()["auto_send"]
+        on_prom = [p["id"] for p in rows if p["synced_at"] and p["id"] in changed]
+        return {"changed": len(changed), "queued": _queue_changed(on_prom) if send else 0, "warnings": warnings}
+
+    with db.tx() as c:
+        for p in rows:
+            locked = [f for f in json.loads(p["locked_fields"] or "[]") if f != "price"]
+            fields = {"locked_fields": json.dumps(locked)}
+            if action == "as_cost":
+                if p["rrp"] is not None and p["cost_price"] is None:   # из прайса в $ пришла только цена — она в РРЦ
+                    fields.update(cost_price=p["rrp"], cost_currency=p["cost_currency"] or p["currency"], rrp=None)
+                elif p["price"]:
+                    fields.update(cost_price=p["price"], cost_currency=p["currency"] or "UAH")
+                else:
+                    continue
+            sets = ", ".join(f"{k} = ?" for k in fields)
+            c.execute(f"UPDATE products SET {sets} WHERE id = ?", list(fields.values()) + [p["id"]])
+    if not pricing.list_rules():
+        warnings.append("Правил наценки нет — цена равна закупке по курсу. Добавьте правило на странице «Наценка»")
+    result = recalc_prices(ids)
+    result["warnings"] = warnings + result["warnings"]
+    return result

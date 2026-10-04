@@ -210,6 +210,8 @@ function applyServer(product) {
   for (const el of form.elements) {
     if (!el.name || el === active || el.name in state.pending) continue;
     if (el.name === "external_id" && product.external_id) el.value = product.external_id;
+    // цену и валюту программа могла пересчитать сама (поменяли закупку — цена по наценке и курсу)
+    if (["price", "currency", "cost_currency"].includes(el.name)) el.value = product[el.name] ?? "";
   }
   $("#title").textContent = product.name || "Новый товар";
   $("#status").innerHTML = statusBadge(product.status);
@@ -261,11 +263,13 @@ function renderSupplier(p) {
   const margin = $("#margin");
   if (cost !== null || p.rrp !== null) {
     const parts = [];
-    if (cost !== null) parts.push(`закупка ${formatPrice(cost, p.currency)}`);
-    if (p.rrp !== null) parts.push(`РРЦ ${formatPrice(p.rrp, p.currency)}`);
-    if (cost !== null && p.price) {
-      const m = p.price - cost;
-      parts.push(`маржа ${formatPrice(m, p.currency)} (${Math.round((m / cost) * 100)}%)`);
+    const cc = p.cost_currency || p.currency;
+    const costUah = p.cost_uah ?? (cc === p.currency ? cost : null);
+    if (cost !== null) parts.push(`закупка ${formatPrice(cost, cc)}` + (p.cost_uah ? ` (≈ ${formatPrice(p.cost_uah, "UAH")} по курсу)` : ""));
+    if (p.rrp !== null) parts.push(`РРЦ ${formatPrice(p.rrp, cc)}`);
+    if (costUah !== null && p.price && (p.cost_uah ? p.currency === "UAH" : true)) {
+      const m = p.price - costUah;
+      parts.push(`маржа ${formatPrice(m, p.currency)} (${Math.round((m / costUah) * 100)}%)`);
     }
     margin.textContent = parts.join(" · ") + (locked.has("price") ? "" : " · цена считается по правилам наценки");
   } else {

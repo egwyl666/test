@@ -23,7 +23,7 @@ function settingsBody() {
     clean_names: $("#clean-names").checked,
     rate_mode: $("#rate-mode").value,
     rate_value: $("#rate-value").value || 0,
-    rate_add: $("#rate-add").value || 0,
+    rate_add: 0,
     rate_currency: $("#def-currency").value === "UAH" ? "USD" : $("#def-currency").value,
     defaults: { group_name: $("#def-group").value, currency: $("#def-currency").value },
   };
@@ -49,9 +49,8 @@ function fill(s) {
   $("#clean-names").checked = s.clean_names;
   $("#def-group").value = s.defaults.group_name || "";
   $("#def-currency").value = s.defaults.currency || "UAH";
-  $("#rate-mode").value = s.rate_mode || "";
+  $("#rate-mode").value = s.rate_mode === "manual" ? "manual" : "";
   $("#rate-value").value = s.rate_value || "";
-  $("#rate-add").value = s.rate_add || "";
   showRate();
   $("#products-link").href = `/?supplier=${s.id}`;
   $("#source-info").innerHTML = s.source_name
@@ -212,29 +211,25 @@ $("#only-bad").onchange = renderPreview;
   }
 })();
 
-// ---------- пересчёт валюты ----------
+// ---------- курс ----------
 const CUR_SIGN = { USD: "$", EUR: "€", PLN: "zł", GBP: "£" };
 async function showRate() {
-  const mode = $("#rate-mode").value;
+  const own = $("#rate-mode").value === "manual";
   const cur = $("#def-currency").value === "UAH" ? "USD" : $("#def-currency").value;
-  $$(".rate-field").forEach((el) => el.classList.toggle("hidden", !mode));
-  $("#rate-value").closest(".field").classList.toggle("hidden", mode !== "manual");
+  $$(".rate-field").forEach((el) => el.classList.toggle("hidden", !own));
   $$(".rate-cur").forEach((el) => { el.textContent = CUR_SIGN[cur] || cur; });
   const info = $("#rate-info");
-  info.classList.toggle("hidden", !mode);
-  if (!mode) return;
-  const add = Number(String($("#rate-add").value || 0).replace(",", ".")) || 0;
-  let base = Number(String($("#rate-value").value || 0).replace(",", ".")) || 0;
-  let note = "";
-  if (mode === "nbu") {
+  info.classList.remove("hidden");
+  let k = Number(String($("#rate-value").value || 0).replace(",", ".")) || 0;
+  let note = "Свой курс поставщика. ";
+  if (!own) {
     try {
-      const r = await api(`/api/rates/${cur}`);
-      base = r.rate;
-      note = `Курс НБУ на ${r.date}: ${r.rate} грн${r.stale ? " (НБУ сейчас недоступен — последний известный)" : ""}. `;
-    } catch (err) { info.textContent = err.message; return; }
+      const r = (await api("/api/rates")).current[cur] || {};
+      k = r.rate || 0;
+      note = r.error ? r.error + " " : `Общий курс: 1 ${CUR_SIGN[cur] || cur} = ${k.toFixed(2)} грн (меняется на странице «Наценка»). `;
+    } catch (err) { note = err.message + " "; }
   }
-  const k = base * (1 + add / 100);
-  info.textContent = note + (k ? `Цены прайса умножаются на ${k.toFixed(4)}: 10 ${CUR_SIGN[cur] || cur} → ${(10 * k).toFixed(2)} грн. ` : "") +
-    "Наценка считается уже от гривен. Чтобы работали правила наценки, колонку с ценой поставщика отметьте как «Закупочная цена».";
+  info.textContent = note + (k ? `Закупка 10 ${CUR_SIGN[cur] || cur} = ${(10 * k).toFixed(2)} грн, дальше — наценка. ` : "") +
+    "Цены в гривнах не пересчитываются. Чтобы работала наценка, колонку с ценой поставщика отметьте как «Цена закупки».";
 }
-["#rate-mode", "#rate-add", "#rate-value", "#def-currency"].forEach((sel) => $(sel).addEventListener("input", showRate));
+["#rate-mode", "#rate-value", "#def-currency"].forEach((sel) => $(sel).addEventListener("input", showRate));

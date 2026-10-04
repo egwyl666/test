@@ -49,12 +49,30 @@ async def lifespan(app: FastAPI):
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
-                 asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop))]
+                 asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
+                 asyncio.create_task(rates_worker(stop))]
     yield
     stop.set()
     for task in tasks:
         await task
     phototunnel.tunnel.close()
+
+
+async def rates_worker(stop: asyncio.Event) -> None:
+    """Раз в час: изменился курс (НБУ обновляется раз в день) — пересчитать цены и отправить новые на Prom."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=30)
+    except asyncio.TimeoutError:
+        pass
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(rates.check_changed)
+        except Exception:
+            log.exception("Сбой проверки курса")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=3600)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def r2_worker(stop: asyncio.Event) -> None:
@@ -382,8 +400,7 @@ async def delete_products(ids: list[int] = Body(..., embed=True)):
 
 @app.post("/api/products/status")
 async def set_status(ids: list[int] = Body(...), status: str = Body(...)):
-    products.set_status(ids, status)
-    return {"ok": True}
+    return {"ok": True, "changed": products.set_status(ids, status)}
 
 
 @app.post("/api/products/{product_id}/images")
@@ -456,6 +473,23 @@ async def diagnose_state(run_id: str):
     if run_id not in diagnose.RUNS:
         raise HTTPException(404)
     return diagnose.RUNS[run_id]
+
+
+@app.get("/api/rates")
+async def rates_view():
+    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current)}
+
+
+@app.put("/api/rates")
+async def rates_save(data: dict = Body(...)):
+    """Сохранить курс и сразу пересчитать цены (изменённые цены товаров на Prom — отправить, если включено)."""
+    try:
+        rates.save_settings(data)
+    except rates.RateError as exc:
+        raise HTTPException(400, str(exc))
+    result = await asyncio.to_thread(suppliers.recalc_prices)
+    await asyncio.to_thread(rates.mark_applied)
+    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current), "result": result}
 
 
 @app.get("/api/rates/{code}")
@@ -734,15 +768,14 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
         raise excel.ImportError_("Не выбрано ни одной строки")
     embedded = images if body.get("use_embedded_images", True) else {}
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
-    converter, clean = None, False
+    clean = False
     if supplier_id:
         try:
-            s = suppliers.get(supplier_id)
-            converter, clean = suppliers.converter_for(s), body.get("clean_names", s["clean_names"])
+            clean = body.get("clean_names", suppliers.get(supplier_id)["clean_names"])
         except KeyError:
             pass
     items = excel.build_products(rows, header_row, numbers, body.get("mapping") or {}, body.get("defaults"), embedded,
-                                 pricing.Pricer(), supplier_id, converter)
+                                 pricing.Pricer(), supplier_id)
     if clean:
         excel.clean_names(items)
     return items, images
@@ -888,13 +921,23 @@ async def test_pricing(body: dict = Body(...)):
     cost = products.parse_number(body.get("cost"))
     rrp = products.parse_number(body.get("rrp"))
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
-    price, rule = pricing.Pricer().price(cost, rrp, supplier_id, body.get("category") or "")
+    try:
+        price, rule = pricing.Pricer().price(cost, rrp, supplier_id, body.get("category") or "", body.get("currency") or "UAH")
+    except rates.RateError as exc:
+        return {"error": str(exc)}
     return {"price": price, "rule": rule}
+
+
+@app.post("/api/products/prices")
+async def products_prices(ids: list[int] = Body(...), action: str = Body(...), value: float = Body(0)):
+    return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value)
 
 
 @app.post("/api/pricing/apply")
 async def apply_pricing():
-    return await asyncio.to_thread(suppliers.recalc_prices)
+    result = await asyncio.to_thread(suppliers.recalc_prices)
+    await asyncio.to_thread(rates.mark_applied)
+    return result
 
 
 # ---------- обновления и резервные копии ----------

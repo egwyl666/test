@@ -54,7 +54,7 @@ function renderRows() {
       <td class="hide-sm">${esc(p.group_name)}</td>
       <td class="price">${esc(formatPrice(p.price, p.currency))}${p.cost_price !== null ? `<div class="small muted" style="font-weight:400">закупка ${esc(formatPrice(p.cost_price, p.currency))}</div>` : ""}</td>
       <td class="hide-sm small">${esc(META.presence[p.presence] || "")}${p.quantity !== null ? ` · ${p.quantity}` : ""}</td>
-      <td>${statusBadge(p.status)}</td>
+      <td>${statusBadge(p.status)}${p.synced_at && p.status !== "synced" ? `<span class="on-prom-note" title="Товар уже есть на Prom; изменения уйдут при следующей отправке">● есть на Prom</span>` : ""}</td>
       <td class="hide-sm small muted">${esc(formatDate(p.updated_at))}</td>
     </tr>`;
   }).join("");
@@ -116,6 +116,12 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () =>
     } else if (action === "ai") {
       openAiModal(ids);
       return;
+    } else if (action === "prices") {
+      openPricesModal(ids);
+      return;
+    } else if (action === "synced") {
+      const res = await api("/api/products/status", { method: "POST", json: { ids, status: "synced" } });
+      toast(res.changed ? `Снова «На Prom»: ${res.changed}` : "Эти товары ещё не выгружались на Prom", res.changed ? "ok" : "error");
     } else if (action === "delete") {
       if (!confirm(`Удалить товаров: ${ids.length}? Это нельзя отменить.`)) return;
       await api("/api/products/delete", { method: "POST", json: { ids } });
@@ -355,3 +361,31 @@ $("#prom-catalog").addEventListener("click", async () => {
   await loadProducts();
   loadJobs();
 })();
+
+// ---------- 💲 цены ----------
+let pricesIds = [];
+async function openPricesModal(ids) {
+  pricesIds = ids;
+  $("#prices-count").textContent = ids.length;
+  $("#prices-modal").classList.remove("hidden");
+  try {
+    const r = (await api("/api/rates")).current.USD;
+    $("#prices-rate").innerHTML = r && r.rate
+      ? `Курс сейчас: 1 $ = ${r.rate.toFixed(2)} грн. Курс и правила наценки — на странице <a href="/pricing">«Наценка»</a>.`
+      : `Курс не настроен — <a href="/pricing">настройте на странице «Наценка»</a>.`;
+  } catch { $("#prices-rate").textContent = ""; }
+}
+$("#prices-cancel").onclick = () => $("#prices-modal").classList.add("hidden");
+$("#prices-apply").onclick = async () => {
+  const action = $("input[name=price-action]:checked").value;
+  const value = Number(String($("#prices-percent").value).replace(",", ".")) || 0;
+  $("#prices-apply").disabled = true;
+  try {
+    const res = await api("/api/products/prices", { method: "POST", json: { ids: pricesIds, action, value } });
+    $("#prices-modal").classList.add("hidden");
+    toast(`Цен изменено: ${res.changed}` + (res.queued ? `, отправлено на Prom: ${res.queued}` : ""), "ok");
+    res.warnings.forEach((w) => toast(w, "error"));
+    loadProducts();
+  } catch (err) { toast(err.message, "error"); }
+  $("#prices-apply").disabled = false;
+};

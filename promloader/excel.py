@@ -268,18 +268,20 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
     return mapping
 
 
-MONEY_FIELDS = ("price", "old_price", "cost_price", "rrp")
+def money_currency(data: dict) -> None:
+    """Закупка/РРЦ остаются в валюте прайса (переводит в гривны наценка по текущему курсу — и пересчитывает,
+    когда курс меняется). Если в прайсе только розничная цена в $/€ — считаем её РРЦ в этой валюте."""
+    from . import rates
 
-
-def convert_money(data: dict, converter) -> None:
-    """Цены прайса в валюте поставщика -> гривны (до наценки: правила наценки считают уже в гривнах)."""
-    rate = converter(data.get("currency"))
-    if not rate:
+    currency = (data.get("currency") or "UAH").upper()
+    if currency in rates.LOCAL:
+        if data.get("cost_price") is not None or data.get("rrp") is not None:
+            data["cost_currency"] = "UAH"
         return
-    for key in MONEY_FIELDS:
-        if data.get(key) is not None:
-            data[key] = round(data[key] * rate, 2)
-    data["currency"] = "UAH"
+    if data.get("cost_price") is None and data.get("rrp") is None and data.get("price") is not None:
+        data["rrp"] = data.pop("price")
+    if data.get("cost_price") is not None or data.get("rrp") is not None:
+        data["cost_currency"] = currency
 
 
 # ---------- очистка названий от оптовых пометок поставщика ----------
@@ -364,7 +366,6 @@ def build_products(
     embedded_images: dict[int, list[bytes]] | None = None,
     pricer=None,
     supplier_id: int | None = None,
-    converter=None,
 ) -> list[dict]:
     """Строки -> товары. Для каждой строки: данные, фото, ошибки и предупреждения."""
     defaults = {k: v for k, v in (defaults or {}).items() if v not in (None, "")}
@@ -415,8 +416,7 @@ def build_products(
         # наличие по количеству, если колонки «наличие» нет
         if "presence" not in raw and data.get("quantity") is not None:
             data["presence"] = "available" if data["quantity"] > 0 else "not_available"
-        if converter:
-            convert_money(data, converter)
+        money_currency(data)
         price_warnings = pricer.apply(data, supplier_id) if pricer else []
         files = (embedded_images or {}).get(number, [])
         check = products.validate({**data, "params": params}, image_count=len(urls) + len(files))

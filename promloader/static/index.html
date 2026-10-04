@@ -42,6 +42,25 @@
       <div class="jobs" id="ai-jobs"></div>
     </div>
 
+    <div class="modal hidden" id="prices-modal">
+      <div class="modal-box">
+        <h2>💲 Цены выбранных товаров: <span id="prices-count"></span></h2>
+        <label class="price-choice"><input type="radio" name="price-action" value="as_cost" checked>
+          <span><b>Текущая цена — это опт (закупка)</b><br><span class="small muted">Например, загрузили прайс с оптовыми ценами в $.
+          Цена станет закупкой в своей валюте, а розничная посчитается по наценке и курсу — и будет меняться вместе с курсом.</span></span></label>
+        <label class="price-choice"><input type="radio" name="price-action" value="recalc">
+          <span><b>Пересчитать по наценке и курсу</b><br><span class="small muted">В том числе цены, которые меняли руками.</span></span></label>
+        <label class="price-choice"><input type="radio" name="price-action" value="percent">
+          <span><b>Поднять или снизить цену на</b> <input id="prices-percent" inputmode="decimal" value="10" style="width:70px"> %
+          <br><span class="small muted">Например 10 — на 10% дороже, -5 — на 5% дешевле. Такие цены не пересчитываются по курсу.</span></span></label>
+        <p class="small muted" id="prices-rate"></p>
+        <div class="toolbar" style="margin:0;justify-content:flex-end">
+          <button class="btn" id="prices-cancel">Отмена</button>
+          <button class="btn primary" id="prices-apply">Применить</button>
+        </div>
+      </div>
+    </div>
+
     <div class="modal hidden" id="ai-modal">
       <div class="modal-box">
         <h2>✨ ИИ для выбранных товаров: <span id="ai-count"></span></h2>
@@ -72,7 +91,9 @@
         <span class="spacer"></span>
         <button class="btn primary" data-action="send" disabled>Отправить на Prom</button>
         <button class="btn" data-action="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
+        <button class="btn" data-action="prices" disabled title="Опт → закупка, наценка, курс, ±%">💲 Цены</button>
         <button class="btn" data-action="ready" disabled>Пометить «готов»</button>
+        <button class="btn" data-action="synced" disabled title="Для уже выгруженных товаров: снова считать их «На Prom»">Вернуть «На Prom»</button>
         <button class="btn" data-action="draft" disabled>В черновики</button>
         <button class="btn danger" data-action="delete" disabled>Удалить</button>
       </div>

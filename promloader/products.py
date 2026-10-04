@@ -26,7 +26,7 @@ STATUSES = {
 TEXT_FIELDS = (
     "external_id", "name", "name_ua", "description", "description_ua", "currency",
     "unit", "presence", "group_name", "vendor", "country", "keywords", "barcode",
-    "vendor_code",
+    "vendor_code", "cost_currency",
 )
 NUMBER_FIELDS = ("price", "old_price", "cost_price", "rrp")
 INT_FIELDS = ("quantity",)
@@ -158,6 +158,10 @@ def normalize(data: dict) -> dict:
         out["presence"] = parse_presence(out["presence"]) or "available"
     if "currency" in out:
         out["currency"] = (out["currency"] or "UAH").upper()
+    if "cost_currency" in out:
+        out["cost_currency"] = (out["cost_currency"] or "").upper()
+        if out["cost_currency"] not in ("", "UAH", "USD", "EUR", "PLN", "GBP"):
+            raise ProductError("Валюта закупки: UAH, USD, EUR, PLN или GBP", "cost_currency")
     if out.get("external_id") == "":
         out.pop("external_id")
     return out
@@ -192,6 +196,14 @@ def get(product_id: int) -> dict:
     p["images"] = [{"id": i["id"], "src": image_src(i), "external": bool(i["url"])} for i in image_rows(product_id)]
     p["check"] = validate(p)
     p["offers"] = offers(product_id)
+    p["cost_uah"] = None
+    if p["cost_price"] is not None and (p["cost_currency"] or "UAH") != "UAH":
+        from . import rates
+        try:
+            rate = rates.Table().rate(p["cost_currency"], p["supplier_id"])
+            p["cost_uah"] = round(p["cost_price"] * rate, 2) if rate else None
+        except rates.RateError:
+            pass
     p["supplier"] = None
     if p["supplier_id"]:
         s = db.query_one("SELECT id, name FROM suppliers WHERE id = ?", (p["supplier_id"],))
@@ -201,7 +213,7 @@ def get(product_id: int) -> dict:
     return p
 
 
-COMMERCIAL = ("price", "old_price", "cost_price", "rrp", "presence", "quantity", "currency")
+COMMERCIAL = ("price", "old_price", "cost_price", "rrp", "presence", "quantity", "currency", "cost_currency")
 
 
 def choose_offer(items: list[dict]) -> dict | None:
@@ -352,8 +364,28 @@ def update(product_id: int, data: dict, lock: bool = True) -> dict:
                 raise ProductError(f"Артикул {fields['external_id']} уже занят другим товаром")
         if lock:
             _lock(c, product_id, [f for f in fields if f in LOCKABLE])
+        if {"cost_price", "rrp", "cost_currency"} & set(fields) and "price" not in fields:
+            fields.update(_priced(c, product_id, fields))
         _touch(c, product_id, fields, row["status"])
     return get(product_id)
+
+
+def _priced(c, product_id: int, fields: dict) -> dict:
+    """Закупку поменяли руками — розничная цена сразу по наценке и курсу (если цена не закреплена вручную)."""
+    from . import pricing
+
+    row = dict(c.execute("SELECT cost_price, rrp, cost_currency, currency, price, group_name, supplier_id, locked_fields "
+                         "FROM products WHERE id = ?", (product_id,)).fetchone())
+    if "price" in json.loads(row.pop("locked_fields") or "[]"):
+        return {}
+    data = {**row, **fields}
+    if not data.get("cost_currency"):
+        data["cost_currency"] = data.get("currency") or "UAH"
+    pricing.Pricer().apply(data, row["supplier_id"])
+    out = {"cost_currency": data["cost_currency"]}
+    if data.get("price") is not None and data["price"] != row["price"]:
+        out.update(price=data["price"], currency=data["currency"])
+    return out
 
 
 def _lock(c, product_id: int, names: list[str]) -> None:
@@ -422,7 +454,15 @@ def delete(ids: list[int]) -> int:
     return len(ids)
 
 
-def set_status(ids: list[int], status: str) -> None:
+def set_status(ids: list[int], status: str) -> int:
+    """draft / ready — как раньше; synced — «Вернуть «На Prom»»: только товарам, которые уже выгружались.
+    Неотправленные изменения при этом не теряются — уйдут со следующей отправкой."""
+    if status == "synced":
+        with db.tx() as c:
+            marks = ",".join("?" * len(ids))
+            return c.execute(f"UPDATE products SET status = 'synced', last_error = '', updated_at = ? "
+                             f"WHERE id IN ({marks}) AND synced_at IS NOT NULL AND status != 'sending'",
+                             [db.now(), *ids]).rowcount if ids else 0
     if status not in ("draft", "ready"):
         raise ProductError("Вручную можно ставить только «черновик» или «готов»")
     with db.tx() as c:
@@ -431,6 +471,7 @@ def set_status(ids: list[int], status: str) -> None:
                 "UPDATE products SET status = ?, updated_at = ? WHERE id = ? AND status != 'sending'",
                 (status, db.now(), pid),
             )
+    return len(ids)
 
 
 # ---------- фото ----------

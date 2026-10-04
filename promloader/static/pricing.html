@@ -22,7 +22,31 @@
   </header>
 
   <main>
-    <h1>Правила наценки</h1>
+    <h1>Курс и наценка</h1>
+
+    <div class="panel" id="rates-panel">
+      <h2>💱 Курс валют</h2>
+      <p class="small muted" style="margin-top:-6px">Закупка в долларах или евро хранится как есть (например, 2,50 $), а розничная цена
+        считается в гривнах по этому курсу и правилам наценки ниже. Курс поменялся — программа сама пересчитает цены.</p>
+      <div id="rate-now" class="rate-now"></div>
+      <div class="row" style="align-items:flex-end">
+        <label class="field"><span>Курс</span>
+          <select id="rate-mode"><option value="nbu">по НБУ — обновляется сам раз в день</option><option value="manual">свой</option></select></label>
+        <label class="field rate-nbu"><span>Надбавка к курсу НБУ, %</span><input id="rate-add" inputmode="decimal" placeholder="0"></label>
+        <label class="field rate-manual"><span>Свой курс, грн за 1 $</span><input id="rate-usd" inputmode="decimal" placeholder="например 42"></label>
+        <label class="field rate-manual"><span>грн за 1 €</span><input id="rate-eur" inputmode="decimal" placeholder="если есть товары в евро"></label>
+      </div>
+      <label class="small" style="display:block;margin-bottom:10px"><input type="checkbox" id="rate-auto-send">
+        <b>Сразу отправлять новые цены на Prom</b> <span class="muted">— у товаров, которые уже на Prom (быстрое обновление, за секунды)</span></label>
+      <div class="toolbar" style="margin:0">
+        <button class="btn primary" id="rate-save">Сохранить и пересчитать цены</button>
+        <span class="small" id="rate-result"></span>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Свой курс конкретного поставщика («по курсу 41,8») задаётся в его настройках.
+        Цены, которые вы поменяли руками, не пересчитываются.</p>
+    </div>
+
+    <h2 style="margin-top:22px">Правила наценки</h2>
     <p class="muted" style="margin-top:-8px">
       Розничная цена считается от закупочной: <b>закупка × (1 + %) + грн</b>, затем округление.
       Правила проверяются сверху вниз — срабатывает первое подходящее, поэтому частные правила ставьте выше общих.
@@ -51,6 +75,7 @@
       <h2>Проверить расчёт</h2>
       <div class="row" style="align-items:flex-end">
         <label class="field" style="margin:0"><span>Закупка</span><input id="t-cost" inputmode="decimal" value="100"></label>
+        <label class="field narrow" style="margin:0"><span>Валюта</span><select id="t-currency"><option>UAH</option><option>USD</option><option>EUR</option></select></label>
         <label class="field" style="margin:0"><span>РРЦ (если есть)</span><input id="t-rrp" inputmode="decimal"></label>
         <label class="field" style="margin:0"><span>Поставщик</span><select id="t-supplier"></select></label>
         <label class="field" style="margin:0"><span>Группа</span><input id="t-category"></label>
@@ -142,13 +167,50 @@
     async function test() {
       const res = await api("/api/pricing/test", { method: "POST", json: {
         cost: $("#t-cost").value, rrp: $("#t-rrp").value, supplier_id: $("#t-supplier").value, category: $("#t-category").value,
+        currency: $("#t-currency").value,
       } }).catch((err) => ({ error: err.message }));
       if (res.error) { $("#t-result").textContent = res.error; return; }
       $("#t-result").innerHTML = res.price === null
         ? `<span class="muted">Ни одно правило не подошло — цена будет равна закупочной (или РРЦ)</span>`
         : `Розничная цена: <b>${esc(formatPrice(res.price))}</b> <span class="small muted">— правило №${rules.findIndex((r) => r.id === res.rule.id) + 1}</span>`;
     }
-    ["#t-cost", "#t-rrp", "#t-supplier", "#t-category"].forEach((s) =>
+    // ---------- курс ----------
+    function showRateMode() {
+      const manual = $("#rate-mode").value === "manual";
+      $$(".rate-nbu").forEach((el) => el.classList.toggle("hidden", manual));
+      $$(".rate-manual").forEach((el) => el.classList.toggle("hidden", !manual));
+    }
+    function fillRates(data) {
+      const s = data.settings;
+      $("#rate-mode").value = s.mode;
+      $("#rate-add").value = s.add || "";
+      $("#rate-usd").value = s.manual.USD || "";
+      $("#rate-eur").value = s.manual.EUR || "";
+      $("#rate-auto-send").checked = s.auto_send;
+      $("#rate-now").innerHTML = Object.values(data.current).map((r) => r.error
+        ? `<div class="err-text">1 ${esc(r.sign)}: ${esc(r.error)}</div>`
+        : `<div><span class="rate-big">1 ${esc(r.sign)} = ${r.rate.toFixed(2)} грн</span>
+             ${r.nbu ? `<span class="small muted">НБУ ${r.nbu} на ${esc(r.date)}${s.add ? ` + ${s.add}%` : ""}${r.stale ? " — НБУ сейчас недоступен, последний известный" : ""}</span>` : `<span class="small muted">свой курс</span>`}</div>`).join("");
+      showRateMode();
+    }
+    $("#rate-mode").addEventListener("change", showRateMode);
+    $("#rate-save").onclick = async () => {
+      $("#rate-result").textContent = "Пересчитываю…";
+      $("#rate-result").style.color = "";
+      try {
+        const data = await api("/api/rates", { method: "PUT", json: {
+          mode: $("#rate-mode").value, add: $("#rate-add").value || 0, auto_send: $("#rate-auto-send").checked,
+          manual: { USD: $("#rate-usd").value || 0, EUR: $("#rate-eur").value || 0 } } });
+        fillRates(data);
+        const r = data.result;
+        $("#rate-result").textContent = `Сохранено. Цен изменено: ${r.changed}` + (r.queued ? `, отправлено на Prom: ${r.queued}` : "") +
+          (r.warnings.length ? ` · ${r.warnings.join("; ")}` : "");
+        $("#rate-result").style.color = r.warnings.length ? "var(--err)" : "var(--ok)";
+        test();
+      } catch (err) { $("#rate-result").textContent = err.message; $("#rate-result").style.color = "var(--err)"; }
+    };
+
+    ["#t-cost", "#t-rrp", "#t-supplier", "#t-category", "#t-currency"].forEach((s) =>
       $(s).addEventListener("input", () => { clearTimeout(testTimer); testTimer = setTimeout(test, 250); }));
 
     (async () => {
@@ -159,6 +221,7 @@
       $("#t-supplier").innerHTML = supplierOptions("");
       render();
       test();
+      fillRates(await api("/api/rates"));
     })();
   </script>
 </body>

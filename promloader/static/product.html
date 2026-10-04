@@ -92,6 +92,12 @@
               </label>
             </div>
             <div class="row">
+              <label class="field"><span>Закупка <span class="muted">— от неё цена по наценке и курсу</span></span><input name="cost_price" inputmode="decimal" placeholder="не задана"></label>
+              <label class="field narrow"><span>Валюта закупки</span>
+                <select name="cost_currency"><option value="">как у цены</option><option>UAH</option><option>USD</option><option>EUR</option></select>
+              </label>
+            </div>
+            <div class="row">
               <label class="field"><span>Наличие</span><select name="presence" id="presence"></select></label>
               <label class="field"><span>Количество</span><input name="quantity" inputmode="numeric"></label>
               <label class="field narrow"><span>Ед. изм.</span><input name="unit" list="units"></label>

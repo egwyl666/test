@@ -426,3 +426,14 @@ main { padding-bottom: 70px; }
 .photo-mode input { margin-top: 4px; }
 .r2-guide { background: var(--bg); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
 .r2-guide summary { cursor: pointer; }
+
+/* ---------- курс ---------- */
+.rate-now { display: grid; gap: 4px; margin: 4px 0 12px; }
+.rate-now > div { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.rate-big { font-size: 20px; font-weight: 600; }
+
+.price-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
+.price-choice:has(input[type=radio]:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.price-choice input[type=radio] { margin-top: 4px; }
+.on-prom-note { display: block; font-size: 11px; color: var(--ok); margin-top: 3px; }

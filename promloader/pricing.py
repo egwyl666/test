@@ -85,10 +85,17 @@ def _matches(rule: dict, cost: float, supplier_id: int | None, category: str) ->
 
 
 class Pricer:
-    """Загружает правила один раз — удобно для обработки тысяч товаров подряд."""
+    """Загружает правила и курсы один раз — удобно для обработки тысяч товаров подряд.
 
-    def __init__(self, rules: list[dict] | None = None):
+    Закупка и РРЦ могут быть в валюте поставщика (cost_currency): сначала переводим в гривны по курсу,
+    потом применяем наценку. Розничная цена — в гривнах.
+    """
+
+    def __init__(self, rules: list[dict] | None = None, table=None):
+        from . import rates
+
         self.rules = list_rules() if rules is None else rules
+        self.rates = table if table is not None else rates.Table()
 
     def rule_for(self, cost: float, supplier_id: int | None, category: str) -> dict | None:
         for rule in self.rules:
@@ -96,11 +103,19 @@ class Pricer:
                 return rule
         return None
 
+    def to_uah(self, value: float | None, currency: str | None, supplier_id: int | None = None) -> float | None:
+        """Сумма в гривнах. RateError — курса нет."""
+        if value is None:
+            return None
+        rate = self.rates.rate(currency, supplier_id)
+        return value if rate is None else round(value * rate, 2)
+
     def price(self, cost: float | None, rrp: float | None = None, supplier_id: int | None = None,
-              category: str = "") -> tuple[float | None, dict | None]:
-        """Розничная цена и сработавшее правило. (None, None) — правило не нашлось."""
+              category: str = "", currency: str = "UAH") -> tuple[float | None, dict | None]:
+        """Розничная цена в гривнах и сработавшее правило. (None, None) — правило не нашлось."""
         if cost is None:
             return None, None
+        cost, rrp = self.to_uah(cost, currency, supplier_id), self.to_uah(rrp, currency, supplier_id)
         rule = self.rule_for(cost, supplier_id, category)
         if rule is None:
             return None, None
@@ -110,21 +125,27 @@ class Pricer:
         return round_price(max(value, cost), rule["rounding"]), rule
 
     def apply(self, data: dict, supplier_id: int | None = None) -> list[str]:
-        """Проставляет data['price'] по закупке/РРЦ. Возвращает предупреждения."""
+        """Проставляет data['price'] (в гривнах) по закупке/РРЦ. Возвращает предупреждения."""
+        from . import rates
+
         cost, rrp = data.get("cost_price"), data.get("rrp")
         # «0» в прайсе поставщика — это «цены нет», а не бесплатный товар: иначе наценка с округлением даст 9 грн
         cost = cost if cost and cost > 0 else None
         rrp = rrp if rrp and rrp > 0 else None
         if cost is None and rrp is None:
             return []
-        price, rule = self.price(cost, rrp, supplier_id, data.get("group_name", ""))
-        if price is not None:
-            data["price"] = price
-            return []
-        if data.get("price") is not None:
-            return []
-        if rrp is not None:
-            data["price"] = rrp
-            return ["Нет правила наценки — стоит РРЦ"]
-        data["price"] = cost
-        return ["Нет правила наценки — цена равна закупочной"]
+        currency = data.get("cost_currency") or data.get("currency") or "UAH"
+        try:
+            price, rule = self.price(cost, rrp, supplier_id, data.get("group_name", ""), currency)
+            if price is not None:
+                data["price"], data["currency"] = price, "UAH"
+                return []
+            if data.get("price") is not None and (data.get("currency") or "UAH").upper() in rates.LOCAL:
+                return []
+            if rrp is not None:
+                data["price"], data["currency"] = self.to_uah(rrp, currency, supplier_id), "UAH"
+                return ["Нет правила наценки — стоит РРЦ"]
+            data["price"], data["currency"] = self.to_uah(cost, currency, supplier_id), "UAH"
+            return ["Нет правила наценки — цена равна закупочной"]
+        except rates.RateError as exc:
+            return [f"Цена не пересчитана: {exc}"]

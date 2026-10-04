@@ -208,6 +208,7 @@ MIGRATIONS = {
         "pending_fields": "TEXT NOT NULL DEFAULT '[]'",
         "barcode": "TEXT NOT NULL DEFAULT ''",
         "vendor_code": "TEXT NOT NULL DEFAULT ''",
+        "cost_currency": "TEXT NOT NULL DEFAULT ''",
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",
@@ -272,6 +273,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for name, ddl in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                if (table, name) == ("products", "cost_currency"):
+                    # раньше закупка была в той же валюте, что и цена
+                    conn.execute("UPDATE products SET cost_currency = currency "
+                                 "WHERE cost_price IS NOT NULL OR rrp IS NOT NULL")
                 if (table, name) == ("products", "pending_fields"):
                     # что именно меняли до обновления программы, неизвестно — такие товары отправим полным импортом
                     conn.execute("""UPDATE products SET pending_fields = '["*"]'
