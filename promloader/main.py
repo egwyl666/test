@@ -957,11 +957,27 @@ async def test_pricing(body: dict = Body(...)):
     return {"price": price, "rule": rule}
 
 
+@app.post("/api/products/currencies")
+async def products_currencies(ids: list[int] = Body(..., embed=True)):
+    """В какой валюте сейчас цена у выбранных товаров (закупка/РРЦ — в своей валюте, иначе — валюта цены)."""
+    if not ids:
+        return {}
+    marks = ",".join("?" * len(ids))
+    rows = db.query(f"""SELECT UPPER(CASE WHEN (cost_price IS NOT NULL OR rrp IS NOT NULL) AND cost_currency != ''
+                        THEN cost_currency ELSE COALESCE(NULLIF(currency, ''), 'UAH') END) AS c, COUNT(*) AS n
+                        FROM products WHERE id IN ({marks}) GROUP BY c""", [int(i) for i in ids])
+    return {("UAH" if r["c"] == "ГРН" else r["c"]): r["n"] for r in rows}
+
+
 @app.post("/api/products/prices")
-async def products_prices(ids: list[int] = Body(...), action: str = Body(...), value: float = Body(0)):
+async def products_prices(ids: list[int] = Body(...), action: str = Body(...), value: float = Body(0),
+                          currency: str = Body("")):
     label = {"as_cost": "опт → закупка", "percent": f"{value:+g}%", "recalc": "пересчёт по наценке"}.get(action, "")
     with changes.source(f"Массово «💲 Цены»: {label}" if label else "Вручную"):
-        return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value)
+        try:
+            return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value, currency)
+        except suppliers.SupplierError as exc:
+            raise HTTPException(400, str(exc))
 
 
 @app.post("/api/pricing/apply")

@@ -654,10 +654,11 @@ def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dic
 PRICE_ACTIONS = ("as_cost", "percent", "recalc")
 
 
-def bulk_prices(ids: list[int], action: str, value: float = 0) -> dict:
+def bulk_prices(ids: list[int], action: str, value: float = 0, currency: str = "") -> dict:
     """«💲 Цены» для выделенных товаров.
 
-    as_cost — текущая цена это опт: переносим её в закупку (в её валюте) и считаем розничную по наценке и курсу;
+    as_cost — текущая цена это опт: переносим её в закупку (в её валюте или в currency, если цену загрузили
+              с неверной валютой — например, доллары как гривны) и считаем розничную по наценке и курсу;
     percent — поднять/снизить цену на value % (цена закрепляется как ручная);
     recalc  — снять ручное закрепление цены и пересчитать по наценке и курсу.
     Изменённые цены товаров, которые уже на Prom, отправляются сразу, если так настроено на странице «Наценка».
@@ -666,6 +667,9 @@ def bulk_prices(ids: list[int], action: str, value: float = 0) -> dict:
 
     if action not in PRICE_ACTIONS:
         raise SupplierError("Неизвестное действие с ценами")
+    currency = (currency or "").upper()
+    if currency and currency != "UAH" and currency not in rates.CURRENCIES:
+        raise SupplierError(f"Неизвестная валюта {currency}")
     ids = [int(i) for i in ids]
     if not ids:
         return {"changed": 0, "queued": 0, "warnings": []}
@@ -694,10 +698,16 @@ def bulk_prices(ids: list[int], action: str, value: float = 0) -> dict:
             locked = [f for f in json.loads(p["locked_fields"] or "[]") if f != "price"]
             fields = {"locked_fields": json.dumps(locked)}
             if action == "as_cost":
-                if p["rrp"] is not None and p["cost_price"] is None:   # из прайса в $ пришла только цена — она в РРЦ
-                    fields.update(cost_price=p["rrp"], cost_currency=p["cost_currency"] or p["currency"], rrp=None)
+                if p["cost_price"] is not None:
+                    # закупка уже есть (кнопку нажали второй раз) — розничную цену в закупку не превращаем,
+                    # только поправляем валюту, если её выбрали
+                    if not currency or currency == (p["cost_currency"] or "UAH").upper():
+                        continue
+                    fields.update(cost_currency=currency)
+                elif p["rrp"] is not None:   # из прайса в $ пришла только цена — она в РРЦ
+                    fields.update(cost_price=p["rrp"], cost_currency=currency or p["cost_currency"] or p["currency"], rrp=None)
                 elif p["price"]:
-                    fields.update(cost_price=p["price"], cost_currency=p["currency"] or "UAH")
+                    fields.update(cost_price=p["price"], cost_currency=currency or p["currency"] or "UAH")
                 else:
                     continue
             changes.record_diff(c, p["id"], p, {k: v for k, v in fields.items() if k != "locked_fields"})

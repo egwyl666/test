@@ -168,3 +168,28 @@ def test_rate_coverage_explains_zero_changes(client):
     products.create({"name": "Ложка", "cost_price": 50, "price": 70})       # закупка в гривнах
     c = client.get("/api/rates").json()["coverage"]
     assert c == {"total": 5, "foreign_cost": 2, "foreign_locked": 1, "uah_cost": 1, "no_cost": 2, "no_cost_foreign": 1}
+
+
+def test_wholesale_loaded_with_wrong_currency(client):
+    pricing.save_rules([{"markup_percent": 50, "rounding": "int"}])
+    a = products.create({"name": "Гачок", "price": 2.5})                       # доллары загрузили как гривны
+    b = products.create({"name": "Ліхтар", "price": 3, "currency": "USD"})
+    assert client.post("/api/products/currencies", json={"ids": [a, b]}).json() == {"UAH": 1, "USD": 1}
+    client.post("/api/products/prices", json={"ids": [a, b], "action": "as_cost", "currency": "USD"})
+    pa = products.get(a)
+    assert pa["cost_price"] == 2.5 and pa["cost_currency"] == "USD" and pa["price"] == 150  # 2.5 × 40 × 1.5
+    assert products.get(b)["price"] == 180
+    r = client.post("/api/products/prices", json={"ids": [a], "action": "as_cost", "currency": "XYZ"})
+    assert r.status_code == 400
+
+
+def test_wholesale_button_twice_does_not_inflate(client):
+    pricing.save_rules([{"markup_percent": 50, "rounding": "int"}])
+    a = products.create({"name": "Гачок", "price": 2.5})
+    client.post("/api/products/prices", json={"ids": [a], "action": "as_cost"})       # забыли выбрать доллары
+    assert products.get(a)["price"] == 4                                               # 2.5 грн × 1.5
+    client.post("/api/products/prices", json={"ids": [a], "action": "as_cost"})       # второй раз — без изменений
+    assert products.get(a)["cost_price"] == 2.5 and products.get(a)["price"] == 4
+    client.post("/api/products/prices", json={"ids": [a], "action": "as_cost", "currency": "USD"})  # исправили валюту
+    p = products.get(a)
+    assert p["cost_price"] == 2.5 and p["cost_currency"] == "USD" and p["price"] == 150

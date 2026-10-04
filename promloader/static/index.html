@@ -48,7 +48,15 @@
         <h2>💲 Цены выбранных товаров: <span id="prices-count"></span></h2>
         <label class="price-choice"><input type="radio" name="price-action" value="as_cost" checked>
           <span><b>Текущая цена — это опт (закупка)</b><br><span class="small muted">Например, загрузили прайс с оптовыми ценами в $.
-          Цена станет закупкой в своей валюте, а розничная посчитается по наценке и курсу — и будет меняться вместе с курсом.</span></span></label>
+          Цена станет закупкой, а розничная посчитается по наценке и курсу — и будет меняться вместе с курсом.</span>
+          <span class="small" style="display:block;margin-top:6px">Опт в валюте:
+            <select id="prices-currency">
+              <option value="">как указано у товара</option>
+              <option value="USD">доллары $</option>
+              <option value="EUR">евро €</option>
+              <option value="UAH">гривны</option>
+            </select></span>
+          <span class="small muted" id="prices-currency-hint" style="display:block"></span></span></label>
         <label class="price-choice"><input type="radio" name="price-action" value="recalc">
           <span><b>Пересчитать по наценке и курсу</b><br><span class="small muted">В том числе цены, которые меняли руками.</span></span></label>
         <label class="price-choice"><input type="radio" name="price-action" value="percent">

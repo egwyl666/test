@@ -368,6 +368,13 @@ async function openPricesModal(ids) {
   pricesIds = ids;
   $("#prices-count").textContent = ids.length;
   $("#prices-modal").classList.remove("hidden");
+  $("#prices-currency").value = "";
+  try {
+    const sum = await api("/api/products/currencies", { method: "POST", json: { ids } });
+    const parts = Object.entries(sum).map(([c, n]) => `${c === "UAH" ? "в гривнах" : "в " + c} — ${n}`);
+    $("#prices-currency-hint").textContent = parts.length ? `Сейчас у выбранных товаров цена ${parts.join(", ")}. ` +
+      (sum.UAH ? "Если на самом деле это доллары — выберите «доллары $»." : "") : "";
+  } catch { $("#prices-currency-hint").textContent = ""; }
   try {
     const r = (await api("/api/rates")).current.USD;
     $("#prices-rate").innerHTML = r && r.rate
@@ -379,9 +386,10 @@ $("#prices-cancel").onclick = () => $("#prices-modal").classList.add("hidden");
 $("#prices-apply").onclick = async () => {
   const action = $("input[name=price-action]:checked").value;
   const value = Number(String($("#prices-percent").value).replace(",", ".")) || 0;
+  const currency = action === "as_cost" ? $("#prices-currency").value : "";
   $("#prices-apply").disabled = true;
   try {
-    const res = await api("/api/products/prices", { method: "POST", json: { ids: pricesIds, action, value } });
+    const res = await api("/api/products/prices", { method: "POST", json: { ids: pricesIds, action, value, currency } });
     $("#prices-modal").classList.add("hidden");
     toast(`Цен изменено: ${res.changed}` + (res.queued ? `, отправлено на Prom: ${res.queued}` : ""), "ok");
     res.warnings.forEach((w) => toast(w, "error"));
