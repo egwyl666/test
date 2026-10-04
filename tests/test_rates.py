@@ -157,3 +157,14 @@ def test_return_to_prom_status(client):
         c.execute("UPDATE products SET synced_at = ?, status = 'ready' WHERE id = ?", (db.now(), on))
     res = client.post("/api/products/status", json={"ids": [on, never], "status": "synced"}).json()
     assert res["changed"] == 1 and products.get(on)["status"] == "synced" and products.get(never)["status"] == "draft"
+
+
+def test_rate_coverage_explains_zero_changes(client):
+    products.create({"name": "Гачок", "cost_price": 1, "cost_currency": "USD", "price": 40})
+    b = products.create({"name": "Ліхтар", "cost_price": 2, "cost_currency": "USD", "price": 99})
+    client.patch(f"/api/products/{b}", json={"price": "120"})  # руками
+    products.create({"name": "Тарілка", "price": 100})                      # опт загрузили как цену
+    products.create({"name": "Чашка", "price": 3, "currency": "USD"})
+    products.create({"name": "Ложка", "cost_price": 50, "price": 70})       # закупка в гривнах
+    c = client.get("/api/rates").json()["coverage"]
+    assert c == {"total": 5, "foreign_cost": 2, "foreign_locked": 1, "uah_cost": 1, "no_cost": 2, "no_cost_foreign": 1}

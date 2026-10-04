@@ -469,3 +469,5 @@ main { padding-bottom: 70px; }
   .changes-table .ch-new { grid-row: 3; grid-column: 3; }
   .changes-table .ch-old::after { content: " →"; display: inline-block; text-decoration: none; margin-left: 4px; }
 }
+.rate-cover { background: var(--bg); border-radius: 8px; padding: 8px 12px; margin: 6px 0 12px; line-height: 1.6; }
+.rate-cover:empty { display: none; }

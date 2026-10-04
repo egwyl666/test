@@ -478,7 +478,8 @@ async def diagnose_state(run_id: str):
 
 @app.get("/api/rates")
 async def rates_view():
-    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current)}
+    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current),
+            "coverage": await asyncio.to_thread(rates.coverage)}
 
 
 @app.put("/api/rates")
@@ -491,7 +492,8 @@ async def rates_save(data: dict = Body(...)):
     with changes.source("Курс валют (изменён вручную)"):
         result = await asyncio.to_thread(suppliers.recalc_prices)
     await asyncio.to_thread(rates.mark_applied)
-    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current), "result": result}
+    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current), "result": result,
+            "coverage": await asyncio.to_thread(rates.coverage)}
 
 
 @app.get("/api/changes")

@@ -163,6 +163,22 @@ def current(transport=None) -> dict:
     return out
 
 
+def coverage() -> dict:
+    """На какие товары курс действует, а на какие нет — чтобы «Цен изменено: 0» было понятно почему."""
+    local = ",".join(f"'{c}'" for c in LOCAL)
+    has_cost = "(cost_price IS NOT NULL OR rrp IS NOT NULL)"
+    locked = "locked_fields LIKE '%\"price\"%'"
+    row = db.query_one(f"""
+        SELECT COUNT(*) AS total,
+          SUM({has_cost} AND UPPER(cost_currency) NOT IN ({local})) AS foreign_cost,
+          SUM({has_cost} AND UPPER(cost_currency) NOT IN ({local}) AND {locked}) AS foreign_locked,
+          SUM({has_cost} AND UPPER(cost_currency) IN ({local})) AS uah_cost,
+          SUM(NOT {has_cost}) AS no_cost,
+          SUM(NOT {has_cost} AND UPPER(currency) NOT IN ({local})) AS no_cost_foreign
+        FROM products""")
+    return {k: int(row[k] or 0) for k in row.keys()}
+
+
 def check_changed(transport=None) -> dict | None:
     """Курс изменился с прошлого пересчёта? Тогда пересчитать цены. Вызывается фоновой задачей раз в час."""
     from . import suppliers

@@ -30,6 +30,7 @@
       <p class="small muted" style="margin-top:-6px">Закупка в долларах или евро хранится как есть (например, 2,50 $), а розничная цена
         считается в гривнах по этому курсу и правилам наценки ниже. Курс поменялся — программа сама пересчитает цены.</p>
       <div id="rate-now" class="rate-now"></div>
+      <div id="rate-cover" class="rate-cover small"></div>
       <div class="row" style="align-items:flex-end">
         <label class="field"><span>Курс</span>
           <select id="rate-mode"><option value="nbu">по НБУ — обновляется сам раз в день</option><option value="manual">свой</option></select></label>
@@ -193,6 +194,23 @@
         : `<div><span class="rate-big">1 ${esc(r.sign)} = ${r.rate.toFixed(2)} грн</span>
              ${r.nbu ? `<span class="small muted">НБУ ${r.nbu} на ${esc(r.date)}${s.add ? ` + ${s.add}%` : ""}${r.stale ? " — НБУ сейчас недоступен, последний известный" : ""}</span>` : `<span class="small muted">свой курс</span>`}</div>`).join("");
       showRateMode();
+      showCoverage(data.coverage);
+    }
+
+    // На какие товары действует курс — иначе непонятно, почему «Цен изменено: 0»
+    function showCoverage(c) {
+      if (!c || !c.total) { $("#rate-cover").innerHTML = ""; return; }
+      const lines = [];
+      const active = c.foreign_cost - c.foreign_locked;
+      lines.push(active
+        ? `✅ Курс действует на <b>${active}</b> из ${c.total} товаров — у них закупка или РРЦ в валюте.`
+        : `⚠️ Курс сейчас не действует ни на один товар: у товаров нет закупки в $ или €.`);
+      if (c.no_cost) lines.push(`<b>${c.no_cost}</b> — только цена, без закупки${c.no_cost_foreign ? ` (из них ${c.no_cost_foreign} в валюте)` : ""}: ни курс, ни наценка на них не действуют.
+        Если это оптовые цены — <a href="/">«Товары»</a> → отметьте → «💲 Цены» → «Текущая цена — это опт».`);
+      if (c.uah_cost) lines.push(`<b>${c.uah_cost}</b> — закупка в гривнах: на них действует наценка, курс не нужен.`);
+      if (c.foreign_locked) lines.push(`<b>${c.foreign_locked}</b> — цену поставили руками, по курсу не пересчитываются
+        (вернуть: «💲 Цены» → «Пересчитать по наценке и курсу»).`);
+      $("#rate-cover").innerHTML = lines.map((l) => `<div>${l}</div>`).join("");
     }
     $("#rate-mode").addEventListener("change", showRateMode);
     $("#rate-save").onclick = async () => {
