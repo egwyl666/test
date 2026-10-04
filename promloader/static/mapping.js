@@ -43,7 +43,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
   const el = (name) => container.querySelector(`[data-el=${name}]`);
   const g = {
     token: null, sheet: "", rows: [], totalRows: 0, letters: [], headers: [], mapping: {},
-    mappingTouched: false, specTouched: false, selected: new Set(), imageRows: {}, lastClicked: null,
+    mappingTouched: false, specTouched: false, selected: new Set(), imageRows: {}, lastClicked: null, shown: 200,
   };
 
   const headerRow = () => Number(el("header").value) || 0;
@@ -74,6 +74,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
     g.letters = data.letters;
     g.headers = data.headers;
     g.imageRows = data.image_rows;
+    g.shown = 200;
     if (!g.mappingTouched) g.mapping = data.mapping;
     if (!g.specTouched) el("spec").value = defaultSpec();
     syncSelection();
@@ -97,16 +98,24 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
     let html = `<thead><tr><th class="rn">№</th>${g.letters.map((l) => `<th>${l}</th>`).join("")}</tr>
       <tr class="map"><th class="rn"></th>${g.letters.map((l, i) =>
         `<th><select data-col="${l}" class="${g.mapping[l] ? "mapped" : ""}">${targetOptions(l, i)}</select></th>`).join("")}</tr></thead><tbody>`;
-    g.rows.forEach((row, i) => {
+    // на большом прайсе таблица в тысячи строк тормозит: показываем частями, диапазон строк работает для всех
+    const cell = (v) => (v.length > 120 ? v.slice(0, 120) + "…" : v);
+    g.rows.slice(0, g.shown).forEach((row, i) => {
       const n = i + 1;
       const isHeader = n === h;
       const on = g.selected.has(n);
       const pics = g.imageRows[String(n)];
       html += `<tr class="${isHeader ? "header" : on ? "on" : "off"}" data-row="${n}">
         <td class="rn">${isHeader ? `заголовок ${n}` : `<label>${pics ? `<span title="картинок в строке: ${pics}">📷</span>` : ""}${n}<input type="checkbox" ${on ? "checked" : ""}></label>`}</td>
-        ${row.map((v, ci) => `<td class="${mappedIdx.has(ci) ? "mapped-col" : ""}" title="${esc(v)}">${esc(v)}</td>`).join("")}
+        ${row.map((v, ci) => `<td class="${mappedIdx.has(ci) ? "mapped-col" : ""}" title="${esc(v.slice(0, 500))}">${esc(cell(v))}</td>`).join("")}
       </tr>`;
     });
+    const rest = g.rows.length - g.shown;
+    if (rest > 0) {
+      html += `<tr><td class="rn"></td><td colspan="${g.letters.length}">
+        <button type="button" class="btn small" data-more="1">Показать ещё ${Math.min(rest, 300)} строк</button>
+        <span class="small muted">показано ${g.shown} из ${g.totalRows} — галочки и диапазон выше работают для всех строк</span></td></tr>`;
+    }
     el("grid").innerHTML = html + "</tbody>";
     const mapped = Object.values(g.mapping).filter(Boolean);
     const missing = required
@@ -131,6 +140,11 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
   });
 
   el("grid").addEventListener("click", (e) => {
+    if (e.target.closest("[data-more]")) {
+      g.shown += 300;
+      render();
+      return;
+    }
     const box = e.target.closest("td.rn input[type=checkbox]");
     if (!box) return;
     const n = Number(box.closest("tr").dataset.row);
@@ -148,9 +162,11 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
     onChange();
   });
 
+  let specTimer = null;
   el("spec").addEventListener("input", () => {
     g.specTouched = true;
-    if (syncSelection()) { render(); onChange(); }
+    clearTimeout(specTimer);
+    specTimer = setTimeout(() => { if (syncSelection()) { render(); onChange(); } }, 300);
   });
   el("header").addEventListener("change", () => loadSheet(g.sheet).catch((err) => toast(err.message, "error")));
   el("sheet").addEventListener("change", (e) => {
@@ -193,8 +209,12 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
 }
 
 // Плитки предпросмотра с ошибками и предупреждениями по строкам.
-function renderItemsPreview(box, items, { token, sheet, onlyBad = false } = {}) {
-  box.innerHTML = items.filter((i) => !onlyBad || i.errors.length).map((i) => {
+function renderItemsPreview(box, items, { token, sheet, onlyBad = false, limit = 60 } = {}) {
+  // на большом прайсе сотни карточек с фото поставщика тормозят: сначала ошибки, дальше — частями
+  const list = items.filter((i) => !onlyBad || i.errors.length)
+    .sort((a, b) => (b.errors.length > 0) - (a.errors.length > 0));
+  const shown = list.slice(0, limit);
+  box.innerHTML = shown.map((i) => {
     const embedded = Array.from({ length: i.embedded_images }, (_, n) => ({
       src: `/api/import/${token}/image?${new URLSearchParams({ sheet, row: i.row, n })}`,
     }));
@@ -210,5 +230,10 @@ function renderItemsPreview(box, items, { token, sheet, onlyBad = false } = {}) 
       <div class="${i.errors.length ? "bad" : ""}" style="border-radius:10px">${renderTile(p)}</div>
       ${checks ? `<ul class="check-list" style="margin-top:6px">${checks}</ul>` : ""}
     </div>`;
-  }).join("");
+  }).join("") + (list.length > shown.length
+    ? `<div style="grid-column:1/-1;text-align:center"><button type="button" class="btn" data-more-cards>
+         Показать ещё ${Math.min(60, list.length - shown.length)} из ${list.length - shown.length}</button></div>` : "");
+  const more = box.querySelector("[data-more-cards]");
+  if (more) more.onclick = () => renderItemsPreview(box, items, { token, sheet, onlyBad, limit: limit + 60 });
+  box.querySelectorAll("img").forEach((img) => { img.loading = "lazy"; });
 }

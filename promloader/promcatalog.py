@@ -123,8 +123,8 @@ async def load(client) -> dict:
         await asyncio.to_thread(_upsert_page, page, counts)  # база — в отдельном потоке, интерфейс не подвисает
         counts["seen"] += len(page)
         _set_state(running=True, **counts)
-        if len(page) < PAGE:
-            break
+        if not page:
+            break  # неполная страница — ещё не конец: Prom пропускает в ней удалённые/скрытые товары
         next_id = page[-1].get("id")
         if not next_id or next_id == last_id:
             break

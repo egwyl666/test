@@ -106,3 +106,21 @@ def test_synced_after_load_has_no_pending():
     counts = asyncio.run(promcatalog.run(serve([[prom_product(1)]])[0]))
     p = products.get(by_ext()["EXT-1"]["id"])
     assert counts["created"] == 1 and p["pending_fields"] == "[]"
+
+
+def test_short_page_in_the_middle_is_not_the_end(monkeypatch):
+    """Живой Prom: страница с удалёнными товарами приходит неполной (99 из 100), а дальше товары ещё есть."""
+    monkeypatch.setattr(promcatalog, "PAGE", 3)
+    calls = []
+
+    def handler(request):
+        last_id = request.url.params.get("last_id")
+        calls.append(last_id)
+        pages = {None: [prom_product(1), prom_product(2)],          # 2 из 3 — удалённый пропущен
+                 "1002": [prom_product(3), prom_product(4), prom_product(5)],
+                 "1005": []}
+        return httpx.Response(200, json={"products": pages[last_id]})
+
+    factory = lambda: PromClient("t", "https://my.prom.ua/api/v1", transport=httpx.MockTransport(handler))  # noqa: E731
+    counts = asyncio.run(promcatalog.run(factory))
+    assert counts["seen"] == 5 and calls == [None, "1002", "1005"]
