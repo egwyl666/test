@@ -342,6 +342,8 @@ def create(data: dict) -> int:
             [ts, ts] + list(fields.values()),
         )
         product_id = cur.lastrowid
+        from . import changes
+        changes.record(c, product_id, "created", "", fields.get("name") or "")
         c.execute(
             "UPDATE products SET external_id = ? WHERE id = ?",
             (external_id or f"PL-{product_id:06d}", product_id),
@@ -419,7 +421,10 @@ def _touch(c, product_id: int, fields: dict, status: str) -> None:
     Запоминаем, какие поля поменялись с последней отправки: если только цена/наличие —
     хватит быстрого обновления вместо полного импорта. Пустой fields — это изменение фото.
     """
+    from . import changes
+
     fields = dict(fields)
+    changes.record_diff(c, product_id, c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone(), fields)
     changed = [f for f in fields if f not in NOT_TRACKED] or (["images"] if not fields else [])
     if changed:
         row = c.execute("SELECT pending_fields FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -446,8 +451,12 @@ def mark_pending(c, product_id: int, names: list[str]) -> None:
 def delete(ids: list[int]) -> int:
     files = []
     with db.tx() as c:
+        from . import changes
         for pid in ids:
             files += [r["file"] for r in c.execute("SELECT file FROM images WHERE product_id = ? AND file IS NOT NULL", (pid,))]
+            row = c.execute("SELECT name, external_id FROM products WHERE id = ?", (pid,)).fetchone()
+            if row:
+                changes.record(c, pid, "deleted", "", f"{row['name']} ({row['external_id']})")
             c.execute("DELETE FROM products WHERE id = ?", (pid,))
     for name in files:
         (db.uploads_dir() / name).unlink(missing_ok=True)

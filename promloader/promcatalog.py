@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 
-from . import db, products
+from . import changes, db, products
 from .prom_api import PromError
 
 log = logging.getLogger("promloader.promcatalog")
@@ -133,6 +133,11 @@ async def load(client) -> dict:
 
 
 async def run(client_factory) -> dict:
+    with changes.source("Каталог с Prom"):
+        return await _run(client_factory)
+
+
+async def _run(client_factory) -> dict:
     if not _lock.acquire(blocking=False):
         raise PromError("Каталог уже загружается")
     try:

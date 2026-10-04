@@ -10,8 +10,10 @@ import json
 import time
 
 from . import ai, db, products
+from . import changes as changes_log
 
 BULK_ACTIONS = ("improve", "shorten", "translate_ua", "name", "keywords", "custom")
+ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",)}
 DEFAULT_RATE = {"gemini": 8, "claude": 30}
@@ -89,7 +91,8 @@ def revert(job_id: int) -> int:
     restored = 0
     for r in rows:
         try:
-            products.update(r["product_id"], json.loads(r["old"]), lock=False)
+            with changes_log.source("ИИ: откат"):
+                products.update(r["product_id"], json.loads(r["old"]), lock=False)
             restored += 1
         except KeyError:
             continue
@@ -146,7 +149,8 @@ def process_one(runner=ai.run) -> str:
         changes = {k: v for k, v in changes.items() if k not in fields or not (p.get(k) or "").strip()}
     old = {k: p.get(k) for k in changes}
     if changes:
-        products.update(p["id"], changes)
+        with changes_log.source(f"ИИ: {ACTION_LABEL.get(item['action'], item['action'])}"):
+            products.update(p["id"], changes)
     _mark(item["id"], "done", old=old, new=changes)
     return "done"
 

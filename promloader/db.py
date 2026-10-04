@@ -183,6 +183,18 @@ CREATE TABLE IF NOT EXISTS r2_objects (
     PRIMARY KEY (target, file)
 );
 
+CREATE TABLE IF NOT EXISTS product_changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id  INTEGER NOT NULL,
+    at          TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    field       TEXT NOT NULL,
+    old         TEXT NOT NULL DEFAULT '',
+    new         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS product_changes_product ON product_changes(product_id, id);
+CREATE INDEX IF NOT EXISTS product_changes_at ON product_changes(at);
+
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     position        INTEGER NOT NULL DEFAULT 0,

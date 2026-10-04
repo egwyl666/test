@@ -16,7 +16,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, config, db, diagnose, excel, feed, rates, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, autostart, backup, changes, config, db, diagnose, excel, feed, rates, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -25,7 +25,7 @@ MAX_UPLOAD = 25 * 1024 * 1024
 PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
-    "/support": "support.html", "/diagnose": "diagnose.html",
+    "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -177,6 +177,7 @@ async def maintenance_worker(stop: asyncio.Event) -> None:
         try:
             if backup.due():
                 await asyncio.to_thread(backup.create, "daily")
+                await asyncio.to_thread(changes.cleanup)  # журнал изменений — за полгода
         except Exception:
             log.exception("Не удалось сделать резервную копию")
         now = asyncio.get_running_loop().time()
@@ -487,9 +488,30 @@ async def rates_save(data: dict = Body(...)):
         rates.save_settings(data)
     except rates.RateError as exc:
         raise HTTPException(400, str(exc))
-    result = await asyncio.to_thread(suppliers.recalc_prices)
+    with changes.source("Курс валют (изменён вручную)"):
+        result = await asyncio.to_thread(suppliers.recalc_prices)
     await asyncio.to_thread(rates.mark_applied)
     return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current), "result": result}
+
+
+@app.get("/api/changes")
+async def changes_list(period: str = "7d", who: str = "", field: str = "", q: str = "", limit: int = 200,
+                       offset: int = 0):
+    """Журнал изменений товаров: что, было -> стало, кто и когда."""
+    return await asyncio.to_thread(changes.search, period, who, field, q, None, min(max(limit, 1), 1000),
+                                   max(offset, 0))
+
+
+@app.get("/api/changes.csv")
+async def changes_csv(period: str = "7d", who: str = "", field: str = "", q: str = ""):
+    content = await asyncio.to_thread(changes.to_csv, period=period, who=who, field=field, q=q)
+    return Response(content, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="promloader-izmeneniya.csv"'})
+
+
+@app.get("/api/products/{product_id}/changes")
+async def product_changes(product_id: int, limit: int = 100):
+    return await asyncio.to_thread(changes.search, "all", "", "", "", product_id, min(max(limit, 1), 1000), 0)
 
 
 @app.get("/api/rates/{code}")
@@ -800,6 +822,11 @@ async def import_commit(token: str, body: dict = Body(...)):
 
 
 def _import_commit(token: str, body: dict) -> dict:
+    with changes.source("Импорт файла"):
+        return _import_commit_inner(token, body)
+
+
+def _import_commit_inner(token: str, body: dict) -> dict:
     items, images = _build(token, body)
     embedded = images if body.get("use_embedded_images", True) else {}
     status = body.get("status") if body.get("status") in ("draft", "ready") else "draft"
@@ -930,12 +957,15 @@ async def test_pricing(body: dict = Body(...)):
 
 @app.post("/api/products/prices")
 async def products_prices(ids: list[int] = Body(...), action: str = Body(...), value: float = Body(0)):
-    return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value)
+    label = {"as_cost": "опт → закупка", "percent": f"{value:+g}%", "recalc": "пересчёт по наценке"}.get(action, "")
+    with changes.source(f"Массово «💲 Цены»: {label}" if label else "Вручную"):
+        return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value)
 
 
 @app.post("/api/pricing/apply")
 async def apply_pricing():
-    result = await asyncio.to_thread(suppliers.recalc_prices)
+    with changes.source("Пересчёт по наценке"):
+        result = await asyncio.to_thread(suppliers.recalc_prices)
     await asyncio.to_thread(rates.mark_applied)
     return result
 

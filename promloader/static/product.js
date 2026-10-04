@@ -224,6 +224,26 @@ function applyServer(product) {
   renderPhotos();
   renderPreview();
   if (product.status === "sending") pollStatus();
+  $("#history").hidden = false;
+  if ($("#history").open) { clearTimeout(historyTimer); historyTimer = setTimeout(loadHistory, 800); }
+}
+
+// ---------- история изменений ----------
+
+let historyTimer;
+
+async function loadHistory() {
+  if (!state.id) return;
+  let data;
+  try { data = await api(`/api/products/${state.id}/changes?limit=100`); }
+  catch (err) { $("#history-list").textContent = err.message; return; }
+  $("#history-list").innerHTML = data.items.length ? data.items.map((r) => {
+    const what = esc(data.labels[r.field] || r.field);
+    const change = r.field === "created" || r.field === "deleted" || r.field === "prom"
+      ? esc(r.new) : `<s>${esc(r.old || "—")}</s> → ${esc(r.new || "—")}`;
+    return `<div class="history-row"><span class="muted">${esc(formatDate(r.at))}</span> <b>${what}</b>: ${change}` +
+      ` <span class="muted">· ${esc(r.source)}</span></div>`;
+  }).join("") : "Изменений пока нет";
 }
 
 // ---------- поставщик и закреплённые поля ----------
@@ -695,5 +715,7 @@ async function init() {
   renderPreview();
   if (!state.id) form.elements.name.focus();
 }
+
+$("#history").addEventListener("toggle", () => { if ($("#history").open) loadHistory(); });
 
 init();

@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import config, db, feed, notify, phototunnel, products, r2, updater
+from . import changes, config, db, feed, notify, phototunnel, products, r2, updater
 from .prom_api import BUSY_MARKERS, DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
@@ -139,6 +139,8 @@ def _finish_products(job_products: dict, ok: bool, message: str = "", per_produc
                 c.execute("UPDATE products SET status = 'ready' WHERE id = ? AND status = 'sending'", (int(pid),))
                 continue
             own_error = per_product.get(row["external_id"])
+            changes.record(c, int(pid), "prom", "", "выгружен на Prom" if ok and not own_error
+                           else f"ошибка: {own_error or message}", who="Prom")
             if ok and not own_error:
                 c.execute(
                     "UPDATE products SET status = 'synced', last_error = '', synced_at = ?, pending_fields = '[]' "

@@ -186,7 +186,11 @@ def check_changed(transport=None) -> dict | None:
     applied = json.loads(raw)
     if not now or all(applied.get(k) == v for k, v in now.items()):
         return None
-    result = suppliers.recalc_prices()
+    from . import changes
+
+    label = ", ".join(f"1 {SIGN.get(k, k)} = {v:.2f} грн" for k, v in sorted(now.items()))
+    with changes.source(f"Курс валют ({label})"):
+        result = suppliers.recalc_prices()
     db.set_setting("rate_applied", json.dumps({**applied, **now}))
     log.info("Курс изменился (%s) — пересчитано цен: %s, отправлено на Prom: %s", now, result["changed"], result["queued"])
     return {"rates": now, **result}

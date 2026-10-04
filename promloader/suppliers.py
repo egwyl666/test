@@ -19,7 +19,7 @@ from pathlib import Path
 
 import httpx
 
-from . import db, excel, notify, pricing, products, rates
+from . import changes, db, excel, notify, pricing, products, rates
 
 log = logging.getLogger("promloader.suppliers")
 
@@ -356,6 +356,7 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
             [s["prefix"] + sku, s["id"], s["new_status"], ts, ts] + list(fields.values()),
         )
         product_id = cur.lastrowid
+        changes.record(c, product_id, "created", "", fields.get("name") or "")
         if urls or files:
             _replace_images(c, product_id, urls, files, trash)
         stats["created"] += 1
@@ -510,42 +511,48 @@ def run(supplier_id: int, trigger: str = "manual", force: bool = False, transpor
         _running.add(supplier_id)
     try:
         s = _parse(_row(supplier_id))
-        with db.tx() as c:
-            run_id = c.execute(
-                "INSERT INTO supplier_runs (supplier_id, status, trigger, started_at) VALUES (?, 'running', ?, ?)",
-                (supplier_id, trigger, db.now())).lastrowid
-        status, stats, message = "ok", {}, ""
-        try:
-            if not any(t == "external_id" for t in s["mapping"].values()):
-                raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
-            path = source_path(supplier_id, refetch=True, transport=transport)
-            sheets = excel.sheet_names(path)
-            sheet = s["sheet"] if s["sheet"] in sheets else sheets[0]
-            rows, embedded = excel.read_sheet(path, sheet)
-            spec = s["rows"] or f"{s['header_row'] + 1}-"
-            numbers = excel.parse_row_spec(spec, len(rows))
-            items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
-                                         pricing.Pricer(), supplier_id)
-            if s["clean_names"]:
-                excel.clean_names(items)
-            stats, changed = apply_items(s, items, embedded, run_id, force)
-            if s["auto_sync"]:
-                stats["queued"] = _queue_changed(changed)
-        except (SupplierError, excel.ImportError_, rates.RateError) as exc:
-            status, message = "failed", str(exc)
-        except Exception as exc:
-            log.exception("Поставщик %s: сбой обновления", supplier_id)
-            status, message = "failed", f"Внутренняя ошибка: {exc}"
-        if status == "failed":
-            notify.send("supplier_failed", f"⚠️ <b>Поставщик «{notify.esc(s['name'])}» не обновился</b>\n{notify.esc(message)}")
-        with db.tx() as c:
-            c.execute("UPDATE supplier_runs SET status = ?, stats = ?, message = ?, finished_at = ? WHERE id = ?",
-                      (status, json.dumps(stats, ensure_ascii=False), message, db.now(), run_id))
-            c.execute("UPDATE suppliers SET next_run_at = ? WHERE id = ?", (_next_run(s["interval_hours"]), supplier_id))
-        return _run_dict(db.query_one("SELECT * FROM supplier_runs WHERE id = ?", (run_id,)))
+        with changes.source(f"Поставщик «{s['name']}»"):  # в журнале изменений — кто поменял товары
+            return _run(s, trigger, force, transport)
     finally:
         with _running_lock:
             _running.discard(supplier_id)
+
+
+def _run(s: dict, trigger: str, force: bool, transport) -> dict:
+    supplier_id = s["id"]
+    with db.tx() as c:
+        run_id = c.execute(
+            "INSERT INTO supplier_runs (supplier_id, status, trigger, started_at) VALUES (?, 'running', ?, ?)",
+            (supplier_id, trigger, db.now())).lastrowid
+    status, stats, message = "ok", {}, ""
+    try:
+        if not any(t == "external_id" for t in s["mapping"].values()):
+            raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
+        path = source_path(supplier_id, refetch=True, transport=transport)
+        sheets = excel.sheet_names(path)
+        sheet = s["sheet"] if s["sheet"] in sheets else sheets[0]
+        rows, embedded = excel.read_sheet(path, sheet)
+        spec = s["rows"] or f"{s['header_row'] + 1}-"
+        numbers = excel.parse_row_spec(spec, len(rows))
+        items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
+                                     pricing.Pricer(), supplier_id)
+        if s["clean_names"]:
+            excel.clean_names(items)
+        stats, changed = apply_items(s, items, embedded, run_id, force)
+        if s["auto_sync"]:
+            stats["queued"] = _queue_changed(changed)
+    except (SupplierError, excel.ImportError_, rates.RateError) as exc:
+        status, message = "failed", str(exc)
+    except Exception as exc:
+        log.exception("Поставщик %s: сбой обновления", supplier_id)
+        status, message = "failed", f"Внутренняя ошибка: {exc}"
+    if status == "failed":
+        notify.send("supplier_failed", f"⚠️ <b>Поставщик «{notify.esc(s['name'])}» не обновился</b>\n{notify.esc(message)}")
+    with db.tx() as c:
+        c.execute("UPDATE supplier_runs SET status = ?, stats = ?, message = ?, finished_at = ? WHERE id = ?",
+                  (status, json.dumps(stats, ensure_ascii=False), message, db.now(), run_id))
+        c.execute("UPDATE suppliers SET next_run_at = ? WHERE id = ?", (_next_run(s["interval_hours"]), supplier_id))
+    return _run_dict(db.query_one("SELECT * FROM supplier_runs WHERE id = ?", (run_id,)))
 
 
 def due() -> list[int]:
@@ -693,6 +700,7 @@ def bulk_prices(ids: list[int], action: str, value: float = 0) -> dict:
                     fields.update(cost_price=p["price"], cost_currency=p["currency"] or "UAH")
                 else:
                     continue
+            changes.record_diff(c, p["id"], p, {k: v for k, v in fields.items() if k != "locked_fields"})
             sets = ", ".join(f"{k} = ?" for k in fields)
             c.execute(f"UPDATE products SET {sets} WHERE id = ?", list(fields.values()) + [p["id"]])
     if not pricing.list_rules():
