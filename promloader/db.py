@@ -306,9 +306,15 @@ def suppliers_dir() -> Path:
 
 @contextmanager
 def tx():
-    """Транзакция: либо всё записано, либо ничего."""
+    """Транзакция: либо всё записано, либо ничего.
+
+    Вложенный вызов (например, запомнить курс НБУ посреди пересчёта цен) становится частью внешней транзакции.
+    """
     with _lock:
         assert _conn is not None, "db.init() не вызван"
+        if _conn.in_transaction:
+            yield _conn
+            return
         _conn.execute("BEGIN IMMEDIATE")
         try:
             yield _conn

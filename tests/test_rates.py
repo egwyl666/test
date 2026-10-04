@@ -193,3 +193,32 @@ def test_wholesale_button_twice_does_not_inflate(client):
     client.post("/api/products/prices", json={"ids": [a], "action": "as_cost", "currency": "USD"})  # исправили валюту
     p = products.get(a)
     assert p["cost_price"] == 2.5 and p["cost_currency"] == "USD" and p["price"] == 150
+
+
+def test_list_shows_cost_in_uah_and_previous_price(client):
+    pricing.save_rules([{"markup_percent": 50, "rounding": "int"}])
+    a = products.create({"name": "Гачок", "price": 2.5, "currency": "USD"})
+    client.post("/api/products/prices", json={"ids": [a], "action": "as_cost"})
+    item = client.get("/api/products").json()["items"][0]
+    assert item["cost_price"] == 2.5 and item["cost_currency"] == "USD" and item["cost_uah"] == 100
+    ch = item["price_change"]
+    assert ch["old"] == "2.5" and ch["new"] == "150" and ch["old_currency"] == "USD"
+
+
+def test_first_nbu_request_of_the_day_inside_price_recalc(client, monkeypatch):
+    """Курс НБУ запрашивается впервые за день прямо во время пересчёта (внутри транзакции) — не падает."""
+    monkeypatch.setattr(rates, "nbu", lambda code, transport=None: REAL_NBU(code, nbu_ok(40.0)))
+    pricing.save_rules([{"markup_percent": 50, "rounding": "int"}])
+    a = products.create({"name": "Гачок", "price": 2.5, "currency": "USD"})
+    r = client.post("/api/products/prices", json={"ids": [a], "action": "as_cost"})
+    assert r.status_code == 200 and products.get(a)["price"] == 150
+    assert json.loads(db.get_setting("nbu_rate_USD"))["rate"] == 40.0
+
+
+def test_previous_price_currency_not_taken_from_other_action(client):
+    pricing.save_rules([{"markup_percent": 50, "rounding": "int"}])
+    a = products.create({"name": "Гачок", "price": 2.5, "currency": "USD"})
+    client.post("/api/products/prices", json={"ids": [a], "action": "as_cost"})
+    client.patch(f"/api/products/{a}", json={"price": "199"})  # в ту же секунду, руками
+    ch = client.get("/api/products").json()["items"][0]["price_change"]
+    assert ch["old"] == "150" and ch["old_currency"] is None

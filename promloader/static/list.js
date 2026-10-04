@@ -36,6 +36,34 @@ function renderChips(counts) {
   }));
 }
 
+// Закупка в своей валюте и в гривнах по курсу. Нет закупки — курс и наценка на цену не действуют.
+function costCell(p) {
+  const cur = p.cost_currency || "UAH";
+  const uah = (v) => cur !== "UAH" && v !== null ? `<div class="small muted">≈ ${esc(formatPrice(v, "UAH"))}</div>` : "";
+  if (p.cost_price !== null) return `${esc(formatPrice(p.cost_price, cur))}${uah(p.cost_uah)}`;
+  if (p.rrp !== null) return `<span class="small muted">РРЦ</span> ${esc(formatPrice(p.rrp, cur))}${uah(p.rrp_uah)}`;
+  return `<span class="muted" title="Закупки нет: курс и наценка на эту цену не действуют. Если цена — это опт: отметьте товар → «💲 Цены»">—</span>`;
+}
+
+// Цена + наценка к закупке, «вручную», если цену меняли руками, и прежняя цена из журнала
+function priceCell(p) {
+  const notes = [];
+  const base = p.cost_price !== null ? p.cost_uah ?? p.cost_price : null;
+  if (base && p.price && (p.currency || "UAH") === "UAH") {
+    const pct = Math.round((p.price / base - 1) * 100);
+    notes.push(`<span title="Наценка к закупке по текущему курсу">${pct >= 0 ? "+" : ""}${pct}%</span>`);
+  }
+  if (p.locked_fields.includes("price")) notes.push(`<span title="Цену поменяли руками — по курсу и наценке не пересчитывается">🔒 вручную</span>`);
+  const ch = p.price_change;
+  if (ch && ch.old && ch.old !== ch.new) {
+    const up = Number(ch.new) > Number(ch.old);
+    notes.push(`<span class="${up ? "price-up" : "price-down"}" title="${esc(formatDate(ch.at))} · ${esc(ch.source)}">было ${esc(formatPrice(ch.old, ch.old_currency || p.currency))}</span>`);
+  }
+  const costSm = p.cost_price !== null
+    ? `<div class="small muted show-sm">закупка ${esc(formatPrice(p.cost_price, p.cost_currency || "UAH"))}</div>` : "";
+  return `${esc(formatPrice(p.price, p.currency))}${notes.length ? `<div class="small price-notes">${notes.join(" · ")}</div>` : ""}${costSm}`;
+}
+
 function renderRows() {
   const tbody = $("#rows");
   $("#empty").classList.toggle("hidden", list.items.length > 0 || list.status !== "" || list.q !== "" || list.supplier !== "");
@@ -52,7 +80,8 @@ function renderRows() {
         ${problems}${promError}
       </td>
       <td class="hide-sm">${esc(p.group_name)}</td>
-      <td class="price">${esc(formatPrice(p.price, p.currency))}${p.cost_price !== null ? `<div class="small muted" style="font-weight:400">закупка ${esc(formatPrice(p.cost_price, p.currency))}</div>` : ""}</td>
+      <td class="hide-sm cost">${costCell(p)}</td>
+      <td class="price">${priceCell(p)}</td>
       <td class="hide-sm small">${esc(META.presence[p.presence] || "")}${p.quantity !== null ? ` · ${p.quantity}` : ""}</td>
       <td>${statusBadge(p.status)}${p.synced_at && p.status !== "synced" ? `<span class="on-prom-note" title="Товар уже есть на Prom; изменения уйдут при следующей отправке">● есть на Prom</span>` : ""}</td>
       <td class="hide-sm small muted">${esc(formatDate(p.updated_at))}</td>

@@ -471,3 +471,9 @@ main { padding-bottom: 70px; }
 }
 .rate-cover { background: var(--bg); border-radius: 8px; padding: 8px 12px; margin: 6px 0 12px; line-height: 1.6; }
 .rate-cover:empty { display: none; }
+table.list td.cost { white-space: nowrap; }
+table.list .price-notes { font-weight: 400; color: var(--muted); }
+table.list .price-up { color: var(--ok); }
+table.list .price-down { color: var(--err); }
+table.list .show-sm { display: none; }
+@media (max-width: 640px) { table.list .show-sm { display: block; } }

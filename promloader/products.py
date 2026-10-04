@@ -272,12 +272,44 @@ def list_products(status: str = "", q: str = "", limit: int = 200, offset: int =
         args + [limit, offset],
     )
     counts = {r["status"]: r["n"] for r in db.query("SELECT status, COUNT(*) AS n FROM products GROUP BY status")}
+    from . import rates
+
+    ids = [r["id"] for r in rows]
+    last_price = {}
+    if ids:
+        # последнее изменение цены по журналу — чтобы в списке было видно «было 120 ₴»
+        marks = ",".join("?" * len(ids))
+        last_price = {r["product_id"]: dict(r) for r in db.query(
+            f"""SELECT product_id, old, new, at, source,
+                  (SELECT c2.old FROM product_changes c2 WHERE c2.product_id = pc.product_id AND c2.field = 'currency'
+                     AND c2.at = pc.at AND c2.source = pc.source AND ABS(c2.id - pc.id) <= 30
+                     ORDER BY c2.id DESC LIMIT 1) AS old_currency
+                FROM product_changes pc WHERE id IN (
+                  SELECT MAX(id) FROM product_changes WHERE field = 'price' AND product_id IN ({marks})
+                  GROUP BY product_id)""", ids)}
+    table = rates.Table()
     items = []
     for r in rows:
         p = _row_to_dict(r)
         p["check"] = validate(p, image_count=p["image_count"])
+        p["cost_uah"] = _in_uah(table, p["cost_price"], p["cost_currency"], p["supplier_id"])
+        p["rrp_uah"] = _in_uah(table, p["rrp"], p["cost_currency"], p["supplier_id"])
+        p["price_change"] = last_price.get(p["id"])
         items.append(p)
     return {"items": items, "total": total, "counts": counts}
+
+
+def _in_uah(table, value, currency, supplier_id):
+    """Закупка/РРЦ в гривнах по текущему курсу (None — нет суммы или курса)."""
+    from . import rates
+
+    if value is None:
+        return None
+    try:
+        rate = table.rate(currency, supplier_id)
+    except rates.RateError:
+        return None
+    return round(value * rate, 2) if rate else value
 
 
 def find_by_external_id(external_id: str) -> int | None:
