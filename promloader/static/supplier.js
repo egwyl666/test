@@ -55,10 +55,19 @@ function fill(s) {
   $("#products-link").href = `/?supplier=${s.id}`;
   $("#source-info").innerHTML = s.source_name
     ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
-      (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`)
+      (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`) +
+      (s.items_deleted ? ` · удалено вами: ${s.items_deleted} (при обновлении не создаются) — <a href="#" id="restore-deleted">вернуть</a>` : "")
     : "";
   const open = $("#open-current");
   if (open) open.onclick = (e) => { e.preventDefault(); openSource(false); };
+  const restore = $("#restore-deleted");
+  if (restore) restore.onclick = async (e) => {
+    e.preventDefault();
+    if (!confirm(`Вернуть ${s.items_deleted} удалённых товаров? Они создадутся заново при следующем обновлении прайса.`)) return;
+    const r = await api(`/api/suppliers/${s.id}/restore-deleted`, { method: "POST" });
+    toast(`Вернётся при обновлении: ${r.count}`, "ok");
+    restore.parentElement && restore.remove();
+  };
   renderRuns(s);
 }
 

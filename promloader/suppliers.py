@@ -99,7 +99,18 @@ def get(supplier_id: int) -> dict:
         "SELECT COUNT(*) AS total, SUM(missing = 0) AS active FROM supplier_items WHERE supplier_id = ?", (supplier_id,))
     s["items_total"] = counts["total"] or 0
     s["items_active"] = counts["active"] or 0
+    s["items_deleted"] = db.query_one(
+        "SELECT COUNT(*) AS n FROM supplier_items WHERE supplier_id = ? AND ignored = 1 AND product_id IS NULL",
+        (supplier_id,))["n"]
     return s
+
+
+def restore_deleted(supplier_id: int) -> int:
+    """Товары поставщика, удалённые вручную, снова создаются при следующем обновлении прайса."""
+    _row(supplier_id)
+    with db.tx() as c:
+        return c.execute("UPDATE supplier_items SET ignored = 0 WHERE supplier_id = ? AND ignored = 1 AND product_id IS NULL",
+                         (supplier_id,)).rowcount
 
 
 # ---------- настройки ----------
@@ -327,6 +338,13 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
     urls = item["image_urls"]
     img_hash = _images_hash(urls, files)
     existing = c.execute("SELECT * FROM supplier_items WHERE supplier_id = ? AND sku = ?", (s["id"], sku)).fetchone()
+    if existing is not None and existing["ignored"]:
+        # товар удалили вы — не создаём его заново (вернуть: страница поставщика → «Вернуть удалённые»)
+        payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": urls}, ensure_ascii=False)
+        c.execute("UPDATE supplier_items SET data = ?, images_hash = ?, missing = 0, seen_at = ?, seen_run = ? WHERE id = ?",
+                  (payload, img_hash, ts, run_id, existing["id"]))
+        stats["ignored"] = stats.get("ignored", 0) + 1
+        return
 
     product = None
     if existing and existing["product_id"]:

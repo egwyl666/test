@@ -20,6 +20,9 @@ async function loadProducts(append = false) {
   list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
   renderChips(data.counts);
   renderRows();
+  // пока товары удаляются с Prom — обновляем список, чтобы было видно, как они уходят
+  clearTimeout(list.deletingTimer);
+  if (data.counts.deleting) list.deletingTimer = setTimeout(() => loadProducts(), 5000);
 }
 
 function renderChips(counts) {
@@ -70,6 +73,10 @@ function renderRows() {
   tbody.innerHTML = list.items.map((p) => {
     const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.join(" · "))}</div>` : "";
     const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
+    const deleting = p.status === "deleting" ? `<div class="small deleting-note">${p.last_error
+      ? `<span class="err-text">${esc(p.last_error.slice(0, 160))}</span>` : "Ждём подтверждения от Prom…"}
+      <button class="btn small" data-del="retry">Повторить</button>
+      <button class="btn small" data-del="cancel">Отменить удаление</button></div>` : "";
     return `
     <tr class="item" data-id="${p.id}">
       <td><input type="checkbox" class="sel" ${list.selected.has(p.id) ? "checked" : ""}></td>
@@ -77,7 +84,7 @@ function renderRows() {
       <td>
         <div class="name">${esc(p.name) || '<span class="muted">Без названия</span>'}</div>
         <div class="small muted">${esc(p.external_id)} · фото: ${p.image_count}${p.supplier_name ? ` · ${esc(p.supplier_name)}` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
-        ${problems}${promError}
+        ${problems}${promError}${deleting}
       </td>
       <td class="hide-sm">${esc(p.group_name)}</td>
       <td class="hide-sm cost">${costCell(p)}</td>
@@ -90,8 +97,17 @@ function renderRows() {
 
   $$("#rows tr.item").forEach((tr) => {
     const id = Number(tr.dataset.id);
-    tr.addEventListener("click", (e) => {
+    tr.addEventListener("click", async (e) => {
       if (e.target.classList.contains("sel")) return;
+      const del = e.target.closest("[data-del]");
+      if (del) {
+        try {
+          await api(`/api/products/delete/${del.dataset.del}`, { method: "POST", json: { ids: [id] } });
+          toast(del.dataset.del === "retry" ? "Пробую удалить ещё раз" : "Удаление отменено", "ok");
+          loadProducts();
+        } catch (err) { toast(err.message, "error"); }
+        return;
+      }
       location.href = `/product?id=${id}`;
     });
     tr.querySelector(".sel").addEventListener("change", (e) => {
@@ -152,9 +168,8 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () =>
       const res = await api("/api/products/status", { method: "POST", json: { ids, status: "synced" } });
       toast(res.changed ? `Снова «На Prom»: ${res.changed}` : "Эти товары ещё не выгружались на Prom", res.changed ? "ok" : "error");
     } else if (action === "delete") {
-      if (!confirm(`Удалить товаров: ${ids.length}? Это нельзя отменить.`)) return;
-      await api("/api/products/delete", { method: "POST", json: { ids } });
-      list.selected.clear();
+      openDeleteModal(ids);
+      return;
     } else {
       await api("/api/products/status", { method: "POST", json: { ids, status: action } });
     }
@@ -366,7 +381,9 @@ async function showCatalogState(state) {
          из программы проверьте на одном таком товаре, что Prom обновил его, а не создал копию.</div>` : "";
     box.innerHTML = `<span class="badge synced">Каталог загружен</span> ${esc(formatDate(state.finished_at))}:
       новых ${state.created}, обновлено ${state.updated}${state.skipped ? `, пропущено (удалённые) ${state.skipped}` : ""}${
-        state.kept_local ? `, оставлены ваши неотправленные правки: ${state.kept_local}` : ""}${warn}`;
+        state.kept_local ? `, оставлены ваши неотправленные правки: ${state.kept_local}` : ""}${warn}${
+        state.missing_on_prom ? `<div class="err-text">${state.missing_on_prom} товаров считались выгруженными, но на Prom их нет —
+          они в фильтре «Ошибка»: отправьте заново или удалите из программы.</div>` : ""}`;
   }
 }
 
@@ -425,4 +442,42 @@ $("#prices-apply").onclick = async () => {
     loadProducts();
   } catch (err) { toast(err.message, "error"); }
   $("#prices-apply").disabled = false;
+};
+
+// ---------- удаление ----------
+let deleteIds = [];
+async function openDeleteModal(ids) {
+  deleteIds = ids;
+  let info;
+  try { info = await api("/api/products/delete/check", { method: "POST", json: { ids } }); }
+  catch (err) { toast(err.message, "error"); return; }
+  if (!info.on_prom) {
+    if (!confirm(`Удалить товаров: ${ids.length}? На Prom их нет. Это нельзя отменить.`)) return;
+    return doDelete(false);
+  }
+  $("#delete-count").textContent = ids.length;
+  $("#delete-on-prom").textContent = info.on_prom;
+  $("#delete-keep-count").textContent = info.on_prom;
+  $("#delete-sending").textContent = info.sending
+    ? `${info.sending} сейчас отправляются на Prom — их удалить не получится, пока отправка не закончится.` : "";
+  $("input[name=delete-mode][value=prom]").checked = true;
+  $("#delete-modal").classList.remove("hidden");
+}
+async function doDelete(fromProm) {
+  try {
+    const res = await api("/api/products/delete", { method: "POST", json: { ids: deleteIds, prom: fromProm } });
+    const parts = [];
+    if (res.deleted) parts.push(`удалено: ${res.deleted}`);
+    if (res.deleting) parts.push(`удаляются с Prom: ${res.deleting} — уйдут из списка, когда Prom подтвердит`);
+    if (res.kept_on_prom) parts.push(`на Prom остались: ${res.kept_on_prom}`);
+    if (parts.length) toast(parts.join(" · "), "ok");
+    if (res.rejected.length) toast(`Не удалено ${res.rejected.length}: ${res.rejected[0].reason}`, "error");
+    list.selected.clear();
+    loadProducts();
+  } catch (err) { toast(err.message, "error"); }
+}
+$("#delete-cancel").onclick = () => $("#delete-modal").classList.add("hidden");
+$("#delete-apply").onclick = () => {
+  $("#delete-modal").classList.add("hidden");
+  doDelete($("input[name=delete-mode]:checked").value === "prom");
 };

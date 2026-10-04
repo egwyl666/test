@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (ai, aibulk, autostart, backup, changes, config, db, diagnose, excel, feed, rates, notify, orders, phototunnel, pricing, products, r2,
-               promcatalog, runtime, schedule, suppliers, support, sync, updater)
+               promcatalog, promdelete, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -394,9 +394,30 @@ async def duplicate_product(product_id: int):
     return products.get(new_id)
 
 
+@app.post("/api/suppliers/{supplier_id}/restore-deleted")
+async def supplier_restore_deleted(supplier_id: int):
+    return {"count": suppliers.restore_deleted(supplier_id)}
+
+
 @app.post("/api/products/delete")
-async def delete_products(ids: list[int] = Body(..., embed=True)):
-    return {"deleted": products.delete(ids)}
+async def delete_products(ids: list[int] = Body(...), prom: bool = Body(True)):
+    """Удалить товары. prom=True — и на Prom (товар уйдёт из программы, когда Prom подтвердит удаление)."""
+    return await asyncio.to_thread(promdelete.request, ids, prom)
+
+
+@app.post("/api/products/delete/check")
+async def delete_check(ids: list[int] = Body(..., embed=True)):
+    return await asyncio.to_thread(promdelete.check, ids)
+
+
+@app.post("/api/products/delete/retry")
+async def delete_retry(ids: list[int] = Body(..., embed=True)):
+    return {"count": await asyncio.to_thread(promdelete.retry, ids)}
+
+
+@app.post("/api/products/delete/cancel")
+async def delete_cancel(ids: list[int] = Body(..., embed=True)):
+    return {"count": await asyncio.to_thread(promdelete.cancel, ids)}
 
 
 @app.post("/api/products/status")

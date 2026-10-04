@@ -85,7 +85,7 @@ def _upsert(p: dict, counts: dict) -> None:
         existing = row["id"] if row else None
     if existing:
         status = db.query_one("SELECT status FROM products WHERE id = ?", (existing,))["status"]
-        if status in ("ready", "error", "sending"):
+        if status in ("ready", "error", "sending", "deleting"):
             # в программе есть неотправленные правки — не затираем их данными с Prom, только связываем
             with db.tx() as c:
                 c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (prom_id, existing))
@@ -115,11 +115,14 @@ def _upsert_page(page: list[dict], counts: dict) -> None:
 
 async def load(client) -> dict:
     """Проходит весь каталог. client — PromClient."""
-    counts = {"seen": 0, "created": 0, "updated": 0, "skipped": 0, "no_external_id": 0, "kept_local": 0}
+    counts = {"seen": 0, "created": 0, "updated": 0, "skipped": 0, "no_external_id": 0, "kept_local": 0,
+              "missing_on_prom": 0}
+    seen: set[int] = set()
     last_id = None
     while True:
         body = await client.list_products(limit=PAGE, last_id=last_id)
         page = body.get("products") or []
+        seen |= {int(p["id"]) for p in page if p.get("id") and _text(p.get("status")) not in SKIP_STATUSES}
         await asyncio.to_thread(_upsert_page, page, counts)  # база — в отдельном потоке, интерфейс не подвисает
         counts["seen"] += len(page)
         _set_state(running=True, **counts)
@@ -129,7 +132,43 @@ async def load(client) -> dict:
         if not next_id or next_id == last_id:
             break
         last_id = next_id
+    counts["missing_on_prom"] = await reconcile(client, seen)
     return counts
+
+
+MISSING = "Товара нет на Prom (удалён в кабинете Prom?). Отправьте его заново или удалите из программы"
+CHECK_LIMIT = 500
+
+
+async def reconcile(client, seen: set[int]) -> int:
+    """Товары, которые программа считает выгруженными, но которых в каталоге Prom не оказалось.
+
+    Каждый перепроверяем по артикулу (одна неполная страница каталога не должна ничего ломать). Если Prom его
+    действительно не знает — товар получает статус «Ошибка» с понятной причиной, а не висит как «На Prom».
+    """
+    rows = db.query("SELECT id, external_id, prom_id FROM products WHERE synced_at IS NOT NULL "
+                    "AND status IN ('synced', 'ready', 'error')")
+    candidates = [r for r in rows if not r["prom_id"] or int(r["prom_id"]) not in seen][:CHECK_LIMIT]
+    missing = []
+    for r in candidates:
+        try:
+            found = await client.get_by_external_id(r["external_id"])
+        except PromError as exc:
+            log.warning("Сверка с Prom прервана: %s", exc)  # каталог уже загружен; сверка повторится в следующий раз
+            break
+        if found is None or _text(found.get("status")) in SKIP_STATUSES:
+            missing.append(r["id"])
+        elif found.get("id"):
+            with db.tx() as c:
+                c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (int(found["id"]), r["id"]))
+    if missing:
+        with db.tx() as c:
+            for pid in missing:
+                c.execute("""UPDATE products SET status = 'error', last_error = ?, synced_at = NULL, prom_id = NULL,
+                             pending_fields = '["*"]' WHERE id = ?""", (MISSING, pid))
+                changes.record(c, pid, "prom", "на Prom", "нет на Prom")
+        log.warning("Нет на Prom, хотя считались выгруженными: %d", len(missing))
+    return len(missing)
 
 
 async def run(client_factory) -> dict:
@@ -142,7 +181,7 @@ async def _run(client_factory) -> dict:
         raise PromError("Каталог уже загружается")
     try:
         _set_state(running=True, error="", seen=0, created=0, updated=0, skipped=0, no_external_id=0, kept_local=0,
-                   finished_at=None)
+                   missing_on_prom=0, finished_at=None)
         async with client_factory() as client:
             counts = await load(client)
         _set_state(running=False, finished_at=db.now(), **counts)

@@ -43,6 +43,27 @@
       <div class="jobs" id="ai-jobs"></div>
     </div>
 
+    <div class="modal hidden" id="delete-modal">
+      <div class="modal-box">
+        <h2>Удалить товаров: <span id="delete-count"></span></h2>
+        <p class="small">Из них на Prom: <b id="delete-on-prom"></b>.</p>
+        <label class="price-choice"><input type="radio" name="delete-mode" value="prom" checked>
+          <span><b>Удалить и на Prom</b><br><span class="small muted">Товар останется в списке со статусом «Удаляется с Prom»,
+          пока Prom не подтвердит удаление (обычно несколько секунд). Если Prom недоступен — программа повторит сама;
+          удаление можно отменить.</span></span></label>
+        <label class="price-choice"><input type="radio" name="delete-mode" value="local">
+          <span><b>Только из программы</b><br><span class="small muted">Товары останутся на Prom (<span id="delete-keep-count"></span>),
+          но программа их больше не будет обновлять. Вернуть их в программу — кнопка «⬇ Каталог с Prom».</span></span></label>
+        <p class="small err-text" id="delete-sending"></p>
+        <p class="small muted">Товары поставщиков при следующем обновлении прайса заново не создадутся
+          (вернуть — на странице поставщика).</p>
+        <div class="toolbar" style="margin:0;justify-content:flex-end">
+          <button class="btn" id="delete-cancel">Отмена</button>
+          <button class="btn danger" id="delete-apply">Удалить</button>
+        </div>
+      </div>
+    </div>
+
     <div class="modal hidden" id="prices-modal">
       <div class="modal-box">
         <h2>💲 Цены выбранных товаров: <span id="prices-count"></span></h2>

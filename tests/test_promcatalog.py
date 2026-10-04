@@ -53,7 +53,8 @@ def test_paginated_load(monkeypatch):
     ]
     factory, seen = serve(pages)
     counts = asyncio.run(promcatalog.run(factory))
-    assert counts == {"seen": 4, "created": 3, "updated": 0, "skipped": 1, "no_external_id": 1, "kept_local": 0}
+    assert counts == {"seen": 4, "created": 3, "updated": 0, "skipped": 1, "no_external_id": 1, "kept_local": 0,
+                      "missing_on_prom": 0}
     assert [s.get("last_id") for s in seen] == [None, "1002", "1004"]
 
     items = by_ext()

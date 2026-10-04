@@ -221,6 +221,11 @@ MIGRATIONS = {
         "barcode": "TEXT NOT NULL DEFAULT ''",
         "vendor_code": "TEXT NOT NULL DEFAULT ''",
         "cost_currency": "TEXT NOT NULL DEFAULT ''",
+        "delete_next_at": "TEXT",
+        "delete_attempts": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "supplier_items": {
+        "ignored": "INTEGER NOT NULL DEFAULT 0",
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",

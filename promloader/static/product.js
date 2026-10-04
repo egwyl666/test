@@ -217,7 +217,8 @@ function applyServer(product) {
   $("#status").innerHTML = statusBadge(product.status);
   $("#last-error").textContent = product.status === "error" && product.last_error ? "Ошибка Prom: " + product.last_error : "";
   ["#btn-duplicate", "#btn-delete", "#btn-send"].forEach((s) => ($(s).disabled = false));
-  $("#btn-send").disabled = product.status === "sending";
+  $("#btn-send").disabled = product.status === "sending" || product.status === "deleting";
+  if (product.status === "deleting") $("#last-error").textContent = product.last_error || "Удаляется с Prom — ждём подтверждения";
   $("#btn-send").textContent = product.status === "sending" ? "Отправляется…" : "Отправить на Prom";
   renderCheck(product.check);
   renderSupplier(product);
@@ -580,9 +581,13 @@ $("#btn-duplicate").addEventListener("click", async () => {
 });
 
 $("#btn-delete").addEventListener("click", async () => {
-  if (!confirm("Удалить товар? Это действие нельзя отменить.")) return;
+  let onProm = 0;
+  try { onProm = (await api("/api/products/delete/check", { method: "POST", json: { ids: [state.id] } })).on_prom; } catch {}
+  if (!confirm(onProm
+    ? "Удалить товар из программы и с Prom?\n\nОн уйдёт из программы, когда Prom подтвердит удаление. Удалить только из программы (оставив на Prom) можно в списке товаров."
+    : "Удалить товар? Это действие нельзя отменить.")) return;
   try {
-    await api("/api/products/delete", { method: "POST", json: { ids: [state.id] } });
+    await api("/api/products/delete", { method: "POST", json: { ids: [state.id], prom: true } });
     state.pending = {};
     writeBackup();
     location.href = "/";

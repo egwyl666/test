@@ -477,3 +477,5 @@ table.list .price-up { color: var(--ok); }
 table.list .price-down { color: var(--err); }
 table.list .show-sm { display: none; }
 @media (max-width: 640px) { table.list .show-sm { display: block; } }
+.badge.deleting { background: var(--err-soft); color: var(--err); }
+.deleting-note { margin-top: 4px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }

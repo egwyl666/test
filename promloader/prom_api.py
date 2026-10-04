@@ -136,6 +136,10 @@ class PromClient:
     async def import_status(self, import_id: str) -> dict:
         return await self._request("GET", f"/products/import/status/{import_id}")
 
+    async def delete_products(self, prom_ids: list[int]) -> dict:
+        """Удалить товары на Prom (до 100 за раз). Ответ: {"processed_ids": [...], "errors": {"id": {...}}}."""
+        return await self._request("POST", "/products/edit", json=[{"id": int(i), "status": "deleted"} for i in prom_ids])
+
     async def edit_by_external_id(self, items: list[dict]) -> dict:
         """Быстрое изменение цены/наличия уже выгруженных товаров (до 100 за раз)."""
         return await self._request("POST", "/products/edit_by_external_id", json=items)

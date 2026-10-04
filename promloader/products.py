@@ -21,6 +21,7 @@ STATUSES = {
     "sending": "Отправляется",
     "synced": "На Prom",
     "error": "Ошибка",
+    "deleting": "Удаляется с Prom",
 }
 
 TEXT_FIELDS = (
@@ -480,7 +481,7 @@ def mark_pending(c, product_id: int, names: list[str]) -> None:
     c.execute("UPDATE products SET pending_fields = ? WHERE id = ?", (json.dumps(sorted(pending)), product_id))
 
 
-def delete(ids: list[int]) -> int:
+def delete(ids: list[int], note: str = "") -> int:
     files = []
     with db.tx() as c:
         from . import changes
@@ -488,7 +489,7 @@ def delete(ids: list[int]) -> int:
             files += [r["file"] for r in c.execute("SELECT file FROM images WHERE product_id = ? AND file IS NOT NULL", (pid,))]
             row = c.execute("SELECT name, external_id FROM products WHERE id = ?", (pid,)).fetchone()
             if row:
-                changes.record(c, pid, "deleted", "", f"{row['name']} ({row['external_id']})")
+                changes.record(c, pid, "deleted", "", f"{row['name']} ({row['external_id']})" + (f" — {note}" if note else ""))
             c.execute("DELETE FROM products WHERE id = ?", (pid,))
     for name in files:
         (db.uploads_dir() / name).unlink(missing_ok=True)
@@ -502,14 +503,14 @@ def set_status(ids: list[int], status: str) -> int:
         with db.tx() as c:
             marks = ",".join("?" * len(ids))
             return c.execute(f"UPDATE products SET status = 'synced', last_error = '', updated_at = ? "
-                             f"WHERE id IN ({marks}) AND synced_at IS NOT NULL AND status != 'sending'",
+                             f"WHERE id IN ({marks}) AND synced_at IS NOT NULL AND status NOT IN ('sending', 'deleting')",
                              [db.now(), *ids]).rowcount if ids else 0
     if status not in ("draft", "ready"):
         raise ProductError("Вручную можно ставить только «черновик» или «готов»")
     with db.tx() as c:
         for pid in ids:
             c.execute(
-                "UPDATE products SET status = ?, updated_at = ? WHERE id = ? AND status != 'sending'",
+                "UPDATE products SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('sending', 'deleting')",
                 (status, db.now(), pid),
             )
     return len(ids)

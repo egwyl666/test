@@ -13,7 +13,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
-from . import changes, config, db, feed, notify, phototunnel, products, r2, updater
+from . import changes, config, db, feed, notify, phototunnel, products, promdelete, r2, updater
 from .prom_api import BUSY_MARKERS, DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
 
 log = logging.getLogger("promloader.sync")
@@ -46,6 +46,8 @@ def enqueue(product_ids: list[int]) -> dict:
         reasons = list(p["check"]["errors"])
         if p["status"] == "sending":
             reasons.append("Уже отправляется")
+        if p["status"] == "deleting":
+            reasons.append("Удаляется с Prom — сначала отмените удаление")
         if not base_url and not phototunnel.enabled() and any(not img["external"] for img in p["images"]):
             reasons.append("Фото загружены с компьютера, а способ передать их Prom не выбран "
                            "(Настройки → «Фото для Prom») — Prom не сможет их скачать")
@@ -527,6 +529,10 @@ async def worker(stop: asyncio.Event, interval: float = 2.0) -> None:
             await run_once()
         except Exception:
             log.exception("Сбой очереди отправки")
+        try:
+            await promdelete.process(make_client)
+        except Exception:
+            log.exception("Сбой удаления товаров на Prom")
         try:
             busy = db.query_one("SELECT 1 FROM sync_jobs WHERE status IN ('pending', 'waiting') LIMIT 1") is not None
             await asyncio.to_thread(phototunnel.tunnel.maybe_close, busy)
