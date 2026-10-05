@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-05 · версия 1.6.2_
+_Обновлено: 2026-10-05 · версия 1.7.0_
 
 ## Модули
 
@@ -8,7 +8,7 @@ _Обновлено: 2026-10-05 · версия 1.6.2_
 |---|---|---|
 | `main.py` | 1289 | FastAPI: маршруты, страницы (`PAGES`), фоновые задачи (`*_worker`), `lifespan` |
 | `suppliers.py` | 738 | Поставщики: `run`/`_run`, `apply_items`/`_apply_one` (пропуск `ignored`), `recompute_offer` (несколько поставщиков), `recalc_prices`, `bulk_prices` (`as_cost`/`percent`/`recalc`), `link_item` (строка прайса ↔ товар, снимает `ignored`), `deleted_items`/`restore_deleted(skus)`, защита от битого прайса |
-| `products.py` | 631 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products` (+ закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `set_status`, фото |
+| `products.py` | 631 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products(flt, sort, …)` / `_rows` (фильтры `FILTER_KEYS`, сортировки `SORTS`; «с ошибками» — через `validate` в Python; + закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `bulk_edit` (`BULK_FIELDS`), `export_xlsx`, `set_status`, фото |
 | `sync.py` | 544 | Очередь выгрузки: `enqueue`, `run_once`, `_start`/`_start_quick`/`_poll`, ожидание чужого импорта (`BUSY_RETRY_SECONDS`), `repair_false_success`, `worker` (+ `promdelete.process`) |
 | `excel.py` | 442 | Разбор файлов и XML в таблицу, `build_products`, `money_currency`, `clean_name`/`clean_names` |
 | `ai.py` | 373 | Gemini/Claude, `ACTIONS`, авто-выбор модели Gemini |
@@ -39,10 +39,10 @@ _Обновлено: 2026-10-05 · версия 1.6.2_
 
 | Группа | Маршруты |
 |---|---|
-| Товары | `GET/POST /api/products`, `GET/PATCH /api/products/{id}`, `…/{id}/ai`, `…/{id}/unlock`, `…/{id}/duplicate`, `…/{id}/changes`, `POST /api/products/status` |
+| Товары | `GET /api/products` (`status, q, supplier, group, presence, on_prom, no_photo, gone, errors, sort`), `GET /api/products.xlsx` (те же фильтры), `POST /api/products/bulk-edit` (`fields` + `ids`/`filter`), `POST /api/products`, `GET/PATCH /api/products/{id}`, `…/{id}/ai`, `…/{id}/unlock`, `…/{id}/duplicate`, `…/{id}/changes`, `POST /api/products/status` |
 | Фото | `POST …/{id}/images`, `…/images/url`, `…/images/order`, `DELETE …/images/{image_id}`, `GET /media/{name}` |
 | Удаление | `POST /api/products/delete` (`ids`, `prom`), `…/delete/check`, `…/delete/retry`, `…/delete/cancel` |
-| Выбор товаров | массовые действия (`/api/sync`, `/api/products/status`, `…/prices`, `…/currencies`, `…/delete`, `…/delete/check`, `/api/ai/bulk`) принимают `ids` **или** `filter` `{status, q, supplier}` — `main._selected` |
+| Выбор товаров | массовые действия (`/api/sync`, `/api/products/status`, `…/prices`, `…/bulk-edit`, `…/currencies`, `…/delete`, `…/delete/check`, `/api/ai/bulk`) принимают `ids` **или** `filter` `{status, q, supplier}` — `main._selected` |
 | Цены и курс | `GET/PUT /api/pricing`, `POST /api/pricing/test`, `/api/pricing/apply`, `/api/products/prices`, `/api/products/currencies`, `GET/PUT /api/rates`, `GET /api/rates/{code}` |
 | Журнал | `GET /api/changes`, `GET /api/changes.csv` |
 | Выгрузка | `POST /api/sync`, `GET /api/sync/jobs`, `…/jobs/{id}/file`, `…/jobs/{id}/retry`, `GET /api/sync/photos`, `POST /api/diagnose`, `GET /api/diagnose/{run_id}`, `GET /feed/prom.yml`, `GET /feed/{name}.xml` |

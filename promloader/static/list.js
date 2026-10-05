@@ -1,17 +1,40 @@
 // Список товаров, массовые действия и очередь отправки.
 
 const PAGE = 200;
+// фильтры списка — те же имена, что у /api/products; хранятся и в адресе страницы (?group=…&sort=…)
+const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors"];
+const START = new URLSearchParams(location.search);
 const list = {
-  status: "", q: "", supplier: new URLSearchParams(location.search).get("supplier") || "",
+  ...Object.fromEntries(FILTERS.map((k) => [k, START.get(k) || ""])),
+  sort: START.get("sort") || "updated",
   items: [], total: 0, selected: new Set(),
   allMatching: false,  // «выбраны все N по фильтру», а не только загруженные строки
 };
 
+function filterParams() { return Object.fromEntries(FILTERS.map((k) => [k, list[k]])); }
+
+// адрес страницы = текущий вид списка: «← К списку» из карточки вернёт сюда же
+function syncUrl() {
+  const url = new URL(location.href);
+  for (const k of [...FILTERS, "sort"]) {
+    const v = list[k];
+    if (v && !(k === "sort" && v === "updated")) url.searchParams.set(k, v); else url.searchParams.delete(k);
+  }
+  history.replaceState(null, "", url);
+  try { sessionStorage.setItem("promloader-list-url", url.pathname + url.search); } catch {}
+}
+
+function applyFilters() {
+  list.items = [];
+  resetSelection();
+  syncUrl();
+  renderFilterControls();
+  loadProducts();
+}
+
 // Что отправлять в массовые действия: отмеченные строки или «все по текущему фильтру»
 function selection() {
-  return list.allMatching
-    ? { filter: { status: list.status, q: list.q, supplier: list.supplier } }
-    : { ids: [...list.selected] };
+  return list.allMatching ? { filter: filterParams() } : { ids: [...list.selected] };
 }
 function selectionCount() { return list.allMatching ? list.total : list.selected.size; }
 
@@ -19,8 +42,9 @@ async function loadProducts(append = false) {
   const offset = append ? list.items.length : 0;
   // при автообновлении перечитываем столько, сколько уже показано
   const limit = append ? PAGE : Math.max(PAGE, list.items.length);
-  const params = new URLSearchParams({ status: list.status, q: list.q, supplier: list.supplier, limit, offset });
+  const params = new URLSearchParams({ ...filterParams(), sort: list.sort, limit, offset });
   const data = await api(`/api/products?${params}`);
+  $("#export-xlsx").href = "/api/products.xlsx?" + new URLSearchParams({ ...filterParams(), sort: list.sort });
   list.items = append ? list.items.concat(data.items) : data.items;
   list.total = data.total;
   $("#shown").textContent = list.total ? `показано ${list.items.length} из ${list.total}` : "";
@@ -44,9 +68,7 @@ function renderChips(counts) {
     .join("");
   $$("#chips .chip").forEach((c) => c.addEventListener("click", () => {
     list.status = c.dataset.status;
-    resetSelection();
-    list.items = [];
-    loadProducts();
+    applyFilters();
   }));
 }
 
@@ -80,7 +102,7 @@ function priceCell(p) {
 
 function renderRows() {
   const tbody = $("#rows");
-  const filtered = list.status !== "" || list.q !== "" || list.supplier !== "";
+  const filtered = FILTERS.some((k) => list[k] !== "");
   $("#empty").classList.toggle("hidden", list.items.length > 0 || filtered);
   $("#nothing-found").classList.toggle("hidden", list.items.length > 0 || !filtered);
   tbody.innerHTML = list.items.map((p) => {
@@ -95,15 +117,16 @@ function renderRows() {
       <td><input type="checkbox" class="sel" ${list.selected.has(p.id) ? "checked" : ""}></td>
       <td>${p.thumb ? `<img class="thumb" src="${esc(p.thumb)}" alt="" loading="lazy">` : `<div class="thumb empty">▢</div>`}</td>
       <td>
-        <div class="name">${esc(p.name) || '<span class="muted">Без названия</span>'}</div>
+        <a class="name" href="/product?id=${p.id}">${esc(p.name) || '<span class="muted">Без названия</span>'}</a>
         <div class="small muted">${esc(p.external_id)} · фото: ${p.image_count}${p.supplier_name ? ` · ${esc(p.supplier_name)}` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
+        <div class="show-sm" style="margin-top:4px">${statusBadge(p.status)}</div>
         ${problems}${promError}${deleting}
       </td>
       <td class="hide-sm">${esc(p.group_name)}</td>
       <td class="hide-sm cost">${costCell(p)}</td>
       <td class="price">${priceCell(p)}</td>
       <td class="hide-sm small">${esc(META.presence[p.presence] || "")}${p.quantity !== null ? ` · ${p.quantity}` : ""}</td>
-      <td>${statusBadge(p.status)}${p.synced_at && p.status !== "synced" ? `<span class="on-prom-note" title="Товар уже есть на Prom; изменения уйдут при следующей отправке">● есть на Prom</span>` : ""}</td>
+      <td class="hide-sm">${statusBadge(p.status)}${p.synced_at && p.status !== "synced" ? `<span class="on-prom-note" title="Товар уже есть на Prom; изменения уйдут при следующей отправке">● есть на Prom</span>` : ""}</td>
       <td class="hide-sm small muted">${esc(formatDate(p.updated_at))}</td>
     </tr>`;
   }).join("");
@@ -111,7 +134,7 @@ function renderRows() {
   $$("#rows tr.item").forEach((tr) => {
     const id = Number(tr.dataset.id);
     tr.addEventListener("click", async (e) => {
-      if (e.target.classList.contains("sel")) return;
+      if (e.target.classList.contains("sel") || e.target.closest("a")) return;  // ссылка-название откроется сама
       const del = e.target.closest("[data-del]");
       if (del) {
         try {
@@ -156,28 +179,55 @@ $("#check-all").addEventListener("change", (e) => {
 // фильтр поменялся — «все по фильтру» больше не про то же самое
 function resetSelection() { list.selected = new Set(); list.allMatching = false; }
 $("#reset-filters").addEventListener("click", () => {
-  list.status = ""; list.q = ""; list.supplier = "";
-  $("#search").value = ""; $("#supplier-filter").value = "";
-  const url = new URL(location.href); url.searchParams.delete("supplier"); history.replaceState(null, "", url);
-  resetSelection(); list.items = []; loadProducts();
+  FILTERS.forEach((k) => (list[k] = ""));
+  $("#search").value = "";
+  applyFilters();
 });
+
+// ---------- фильтры и сортировка ----------
+const FLAG_LABELS = { errors: "с ошибками заполнения", no_photo: "без фото", gone: "пропали у поставщика" };
+const ON_PROM_LABELS = { yes: "есть на Prom", no: "нет на Prom" };
+
+function renderFilterControls() {
+  $("#f-group").value = list.group;
+  $("#f-presence").value = list.presence;
+  $("#f-on_prom").value = list.on_prom;
+  $("#f-sort").value = list.sort;
+  $("#supplier-filter").value = list.supplier;
+  for (const k of Object.keys(FLAG_LABELS)) $(`#f-${k}`).checked = !!list[k];
+  // активные фильтры — чипы с крестиком
+  const active = [];
+  if (list.group) active.push(["group", `группа: ${list.group === "-" ? "без группы" : list.group}`]);
+  if (list.presence) active.push(["presence", META.presence[list.presence] || list.presence]);
+  if (list.on_prom) active.push(["on_prom", ON_PROM_LABELS[list.on_prom]]);
+  for (const [k, label] of Object.entries(FLAG_LABELS)) if (list[k]) active.push([k, label]);
+  $("#active-filters").innerHTML = active.map(([k, label]) =>
+    `<button class="chip active" data-clear="${k}" title="Убрать фильтр">${esc(label)} ×</button>`).join("");
+  const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0);
+  $("#more-filters-label").textContent = more ? `Ещё фильтры (${more}) ▾` : "Ещё фильтры ▾";
+}
+$("#active-filters").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-clear]");
+  if (!chip) return;
+  list[chip.dataset.clear] = "";
+  applyFilters();
+});
+$("#f-group").addEventListener("change", (e) => { list.group = e.target.value; applyFilters(); });
+$("#f-presence").addEventListener("change", (e) => { list.presence = e.target.value; applyFilters(); });
+$("#f-on_prom").addEventListener("change", (e) => { list.on_prom = e.target.value; applyFilters(); });
+$("#f-sort").addEventListener("change", (e) => { list.sort = e.target.value; list.items = []; syncUrl(); loadProducts(); });
+for (const k of Object.keys(FLAG_LABELS)) {
+  $(`#f-${k}`).addEventListener("change", (e) => { list[k] = e.target.checked ? "1" : ""; applyFilters(); });
+}
 
 let searchTimer;
 $("#search").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); list.items = []; resetSelection(); loadProducts(); }, 250);
+  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); applyFilters(); }, 250);
 });
 
 $("#more").addEventListener("click", () => loadProducts(true));
-$("#supplier-filter").addEventListener("change", (e) => {
-  list.supplier = e.target.value;
-  list.items = [];
-  resetSelection();
-  const url = new URL(location.href);
-  if (list.supplier) url.searchParams.set("supplier", list.supplier); else url.searchParams.delete("supplier");
-  history.replaceState(null, "", url);
-  loadProducts();
-});
+$("#supplier-filter").addEventListener("change", (e) => { list.supplier = e.target.value; applyFilters(); });
 
 $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () => {
   const sel = selection();
@@ -196,6 +246,9 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () =>
       return;
     } else if (action === "prices") {
       openPricesModal(sel);
+      return;
+    } else if (action === "edit") {
+      openEditModal(sel);
       return;
     } else if (action === "synced") {
       const res = await api("/api/products/status", { method: "POST", json: { ...sel, status: "synced" } });
@@ -435,8 +488,17 @@ $("#prom-catalog").addEventListener("click", async () => {
   loadAiJobs();
   $("#supplier-filter").innerHTML = `<option value="">Все поставщики</option><option value="none">Без поставщика</option>` +
     META.suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
-  $("#supplier-filter").value = list.supplier;
   $("#supplier-filter").classList.toggle("hidden", !META.suppliers.length);
+  $("#f-group").innerHTML = `<option value="">Все группы</option><option value="-">Без группы</option>` +
+    (META.groups || []).map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+  $("#f-presence").innerHTML = `<option value="">Любое наличие</option>` +
+    Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#e-presence").innerHTML = `<option value="">не менять</option>` +
+    Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#e-groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");
+  $("#search").value = list.q;
+  renderFilterControls();
+  syncUrl();
   await loadProducts();
   loadJobs();
 })();
@@ -514,3 +576,40 @@ $("#delete-apply").onclick = () => {
   $("#delete-modal").classList.add("hidden");
   doDelete($("input[name=delete-mode]:checked").value === "prom");
 };
+
+// ---------- ✏ изменить поля у многих товаров ----------
+let editSel = { ids: [] };
+function openEditModal(sel) {
+  editSel = sel;
+  $("#edit-count").textContent = selectionCount();
+  ["#e-group", "#e-quantity", "#e-vendor", "#e-keywords"].forEach((s) => ($(s).value = ""));
+  $("#e-presence").value = "";
+  $("#edit-modal").classList.remove("hidden");
+  $("#e-group").focus();
+}
+$("#edit-cancel").onclick = () => $("#edit-modal").classList.add("hidden");
+$("#edit-apply").onclick = async () => {
+  const fields = { group_name: $("#e-group").value.trim(), presence: $("#e-presence").value,
+    quantity: $("#e-quantity").value.trim(), vendor: $("#e-vendor").value.trim(), keywords: $("#e-keywords").value.trim() };
+  if (!Object.values(fields).some((v) => v)) { toast("Заполните то, что нужно изменить", "error"); return; }
+  $("#edit-apply").disabled = true;
+  try {
+    const res = await api("/api/products/bulk-edit", { method: "POST", json: { ...editSel, fields } });
+    $("#edit-modal").classList.add("hidden");
+    toast(`Изменено товаров: ${res.changed}`, "ok");
+    if (res.errors.length) toast(`Не изменено ${res.errors.length}: «${res.errors[0].name}» — ${res.errors[0].error}`, "error");
+    if (fields.group_name) await loadMeta().then(() => {
+      $("#f-group").innerHTML = `<option value="">Все группы</option><option value="-">Без группы</option>` +
+        (META.groups || []).map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+      renderFilterControls();
+    });
+    loadProducts();
+  } catch (err) { toast(err.message, "error"); }
+  $("#edit-apply").disabled = false;
+};
+
+// «Ещё фильтры» закрывается кликом мимо окна
+document.addEventListener("click", (e) => {
+  const box = $(".more-filters");
+  if (box && box.open && !box.contains(e.target)) box.open = false;
+});

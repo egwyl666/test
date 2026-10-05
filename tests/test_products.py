@@ -127,3 +127,68 @@ def test_bulk_actions_by_filter_cover_all_matching(client):
     assert sum(v == "ready" for v in statuses.values()) == 5 and statuses["Тарілка"] == "draft"
     assert client.post("/api/products/delete/check", json={"filter": flt}).json()["total"] == 5
     assert client.post("/api/products/status", json={"status": "ready"}).status_code == 400
+
+
+def _seed_list():
+    from promloader import db, products
+    a = products.create({"name": "Котушка Shimano", "price": 1400, "external_id": "A", "group_name": "Котушки"})
+    b = products.create({"name": "Вудилище", "price": 900, "external_id": "B", "group_name": "Вудилища",
+                         "presence": "not_available"})
+    c = products.create({"name": "", "price": 100, "external_id": "C"})   # без названия — ошибка заполнения
+    products.add_image_url(a, "https://x.example.com/a.jpg")
+    with db.tx() as cur:
+        cur.execute("UPDATE products SET synced_at = ?, status = 'synced' WHERE id = ?", (db.now(), a))
+    return a, b, c
+
+
+def test_list_filters_and_sorting(client):
+    a, b, c = _seed_list()
+    get = lambda **p: [x["id"] for x in client.get("/api/products", params=p).json()["items"]]  # noqa: E731
+    assert get(group="Котушки") == [a] and get(group="-") == [c]
+    assert get(presence="not_available") == [b]
+    assert get(on_prom="yes") == [a] and set(get(on_prom="no")) == {b, c}
+    assert set(get(no_photo="1")) == {b, c}
+    assert get(errors="1") == [c]
+    data = client.get("/api/products", params={"errors": "1"}).json()
+    assert data["total"] == 1 and data["counts"] == {"draft": 1}
+    assert get(sort="price_asc") == [c, b, a] and get(sort="price_desc") == [a, b, c]
+    assert get(sort="name")[0] == c and get(sort="nonsense")  # неизвестная сортировка — как обычно
+    assert get(q="котушка", on_prom="yes") == [a]
+
+
+def test_gone_from_supplier_filter(client):
+    from promloader import db, products, suppliers
+    a, b, _ = _seed_list()
+    sid = suppliers.create("Опт")
+    with db.tx() as c:
+        c.execute("INSERT INTO supplier_items (supplier_id, sku, product_id, data, missing, seen_at) "
+                  "VALUES (?, 'A', ?, '{}', 1, ?)", (sid, a, db.now()))
+        c.execute("INSERT INTO supplier_items (supplier_id, sku, product_id, data, missing, seen_at) "
+                  "VALUES (?, 'B', ?, '{}', 0, ?)", (sid, b, db.now()))
+    assert [x["id"] for x in client.get("/api/products", params={"gone": "1"}).json()["items"]] == [a]
+
+
+def test_bulk_edit_by_ids_and_filter(client):
+    from promloader import changes, products
+    a, b, c = _seed_list()
+    r = client.post("/api/products/bulk-edit", json={"ids": [a, b], "fields": {"group_name": "Акція", "quantity": "",
+                                                                                "presence": "order"}}).json()
+    assert r == {"changed": 2, "errors": []}
+    assert products.get(a)["group_name"] == "Акція" and products.get(b)["presence"] == "order"
+    assert products.get(a)["status"] == "ready"           # был на Prom — снова ждёт отправки
+    assert changes.search(period="all", field="group_name")["items"][0]["source"] == "Массово «✏ Изменить»"
+    r = client.post("/api/products/bulk-edit", json={"filter": {"group": "-"}, "fields": {"vendor": "Owner"}}).json()
+    assert r["changed"] == 1 and products.get(c)["vendor"] == "Owner"
+    assert client.post("/api/products/bulk-edit", json={"ids": [a], "fields": {"quantity": ""}}).status_code == 400
+
+
+def test_export_xlsx_follows_filter(client):
+    import io
+
+    from openpyxl import load_workbook
+    _seed_list()
+    r = client.get("/api/products.xlsx", params={"group": "Котушки"})
+    assert r.status_code == 200 and "tovary-" in r.headers["content-disposition"]
+    rows = list(load_workbook(io.BytesIO(r.content)).active.values)
+    assert rows[0][:3] == ("Артикул", "Название", "Группа") and len(rows) == 2
+    assert rows[1][1] == "Котушка Shimano" and rows[1][13] == "да"

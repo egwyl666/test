@@ -43,6 +43,26 @@
       <div class="jobs" id="ai-jobs"></div>
     </div>
 
+    <div class="modal hidden" id="edit-modal">
+      <div class="modal-box">
+        <h2>✏ Изменить у товаров: <span id="edit-count"></span></h2>
+        <p class="small muted" style="margin-top:-6px">Заполните только то, что нужно поменять, — пустые поля не меняются.
+          У товаров поставщика изменённые поля станут «🔒 своими», и поставщик их не перезапишет.</p>
+        <label class="field"><span>Группа</span><input id="e-group" list="e-groups" placeholder="не менять"></label>
+        <datalist id="e-groups"></datalist>
+        <div class="row">
+          <label class="field" style="flex:1"><span>Наличие</span><select id="e-presence"></select></label>
+          <label class="field" style="flex:1"><span>Количество</span><input id="e-quantity" inputmode="numeric" placeholder="не менять"></label>
+        </div>
+        <label class="field"><span>Производитель</span><input id="e-vendor" placeholder="не менять"></label>
+        <label class="field"><span>Ключевые слова (через запятую)</span><input id="e-keywords" placeholder="не менять"></label>
+        <div class="toolbar" style="margin:0;justify-content:flex-end">
+          <button class="btn" id="edit-cancel">Отмена</button>
+          <button class="btn primary" id="edit-apply">Применить</button>
+        </div>
+      </div>
+    </div>
+
     <div class="modal hidden" id="delete-modal">
       <div class="modal-box">
         <h2>Удалить товаров: <span id="delete-count"></span></h2>
@@ -115,6 +135,33 @@
         <select id="supplier-filter" style="max-width:220px"></select>
         <input id="search" placeholder="Поиск: название, артикул, группа" style="max-width:300px">
       </div>
+      <div class="toolbar list-filters" id="filters">
+        <select id="f-group" title="Группа"></select>
+        <select id="f-presence" title="Наличие"></select>
+        <details class="more-filters">
+          <summary class="btn" id="more-filters-label">Ещё фильтры ▾</summary>
+          <div class="more-box">
+            <label><input type="checkbox" id="f-errors"> с ошибками заполнения</label>
+            <label><input type="checkbox" id="f-no_photo"> без фото</label>
+            <label><input type="checkbox" id="f-gone"> пропали у поставщика</label>
+            <label class="field" style="margin:6px 0 0"><span>На Prom</span>
+              <select id="f-on_prom"><option value="">все</option><option value="yes">есть на Prom</option>
+                <option value="no">нет на Prom</option></select></label>
+          </div>
+        </details>
+        <span class="chips" id="active-filters"></span>
+        <span class="spacer"></span>
+        <label class="small muted" for="f-sort">Сортировка</label>
+        <select id="f-sort" style="max-width:190px">
+          <option value="updated">недавно изменённые</option>
+          <option value="created">недавно добавленные</option>
+          <option value="name">по названию</option>
+          <option value="price_asc">сначала дешёвые</option>
+          <option value="price_desc">сначала дорогие</option>
+          <option value="status">по статусу</option>
+        </select>
+        <a class="btn" id="export-xlsx" href="/api/products.xlsx" title="Скачать список по текущим фильтрам">⬇ Excel</a>
+      </div>
       <div class="toolbar" id="bulk">
         <label class="small"><input type="checkbox" id="check-all"> выбрать все</label>
         <span class="small muted" id="selected-count"></span>
@@ -122,6 +169,7 @@
         <button class="btn primary" data-action="send" disabled>Отправить на Prom</button>
         <button class="btn" data-action="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
         <button class="btn" data-action="prices" disabled title="Опт → закупка, наценка, курс, ±%">💲 Цены</button>
+        <button class="btn" data-action="edit" disabled title="Группа, наличие, количество, производитель, ключевые слова">✏ Изменить</button>
         <button class="btn" data-action="ready" disabled>Пометить «готов»</button>
         <button class="btn" data-action="synced" disabled title="Для уже выгруженных товаров: снова считать их «На Prom»">Вернуть «На Prom»</button>
         <button class="btn" data-action="draft" disabled>В черновики</button>
@@ -131,7 +179,7 @@
         <b>Быстрое создание:</b> перетащите сюда фото — на каждое фото создастся черновик товара
         <span class="small">(название возьмётся из имени файла, дальше заполните цену и описание)</span>
       </div>
-      <table class="list">
+      <div class="table-scroll"><table class="list">
         <thead>
           <tr>
             <th style="width:32px"></th>
@@ -141,12 +189,12 @@
             <th class="hide-sm">Закупка</th>
             <th>Цена</th>
             <th class="hide-sm">Наличие</th>
-            <th>Статус</th>
+            <th class="hide-sm">Статус</th>
             <th class="hide-sm">Изменён</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
-      </table>
+      </table></div>
       <div class="toolbar" style="justify-content:center;margin:14px 0 0">
         <span class="small muted" id="shown"></span>
         <button class="btn hidden" id="more">Показать ещё</button>

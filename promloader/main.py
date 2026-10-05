@@ -9,6 +9,7 @@ import os
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
@@ -376,10 +377,28 @@ def meta():
 
 
 @app.get("/api/products")
-def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier: str = ""):
-    """supplier: '' — все, 'none' — без поставщика, число — товары поставщика."""
-    supplier_id = 0 if supplier == "none" else (int(supplier) if supplier.isdigit() else None)
-    return products.list_products(status, q, max(1, min(limit, 1000)), max(0, offset), supplier_id)
+def list_products(request: Request, limit: int = 200, offset: int = 0, sort: str = "updated"):
+    """Фильтры (все необязательные): status, q, supplier ('' — все, 'none' — без поставщика, число), group ('-' —
+    без группы), presence, on_prom (yes/no), no_photo, gone (пропал у поставщика), errors (ошибки заполнения)."""
+    return products.list_products(_list_filter(request), sort, max(1, min(limit, 1000)), max(0, offset))
+
+
+def _list_filter(request: Request) -> dict:
+    return {k: request.query_params.get(k, "") for k in products.FILTER_KEYS}
+
+
+@app.get("/api/products.xlsx")
+def export_products(request: Request, sort: str = "updated"):
+    content = products.export_xlsx(_list_filter(request), sort)
+    name = f"tovary-{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/products/bulk-edit")
+def bulk_edit(fields: dict = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    with changes.source("Массово «✏ Изменить»"):
+        return products.bulk_edit(_selected(ids, filter), fields)
 
 
 @app.post("/api/products")

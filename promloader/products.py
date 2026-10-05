@@ -259,46 +259,100 @@ def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
     return f"({cols})", [like] * len(SEARCH_COLUMNS)
 
 
-def _filter_where(status: str = "", q: str = "", supplier_id: int | None = None, with_status: bool = True):
+FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors")
+SORTS = {
+    "updated": "p.updated_at DESC, p.id DESC",
+    "created": "p.created_at DESC, p.id DESC",
+    "name": "lower_u(p.name), p.id",
+    "price_asc": "p.price IS NULL, p.price, p.id",
+    "price_desc": "p.price IS NULL, p.price DESC, p.id",
+    "status": "p.status, p.updated_at DESC, p.id DESC",
+}
+_TRUE = ("1", "true", "yes", "on", True, 1)
+
+
+def _filter_where(flt: dict, with_status: bool = True) -> tuple[str, list]:
+    """WHERE для списка товаров (таблица с псевдонимом p). Ошибки заполнения (errors) считаются отдельно, в Python."""
     where, args = [], []
-    if status and with_status:
-        where.append("status = ?")
-        args.append(status)
-    if supplier_id == 0:
-        where.append("supplier_id IS NULL")
-    elif supplier_id:
-        where.append("supplier_id = ?")
-        args.append(supplier_id)
-    if q and q.strip():
-        clause, more = search_clause(q)
+    if flt.get("status") and with_status:
+        where.append("p.status = ?")
+        args.append(flt["status"])
+    supplier = str(flt.get("supplier") or "")
+    if supplier in ("none", "0"):
+        where.append("p.supplier_id IS NULL")
+    elif supplier.isdigit():
+        where.append("p.supplier_id = ?")
+        args.append(int(supplier))
+    group = flt.get("group") or ""
+    if group == "-":
+        where.append("p.group_name = ''")
+    elif group:
+        where.append("p.group_name = ?")
+        args.append(group)
+    if flt.get("presence") in PRESENCE:
+        where.append("p.presence = ?")
+        args.append(flt["presence"])
+    if flt.get("on_prom") == "yes":
+        where.append("p.synced_at IS NOT NULL")
+    elif flt.get("on_prom") == "no":
+        where.append("p.synced_at IS NULL")
+    if flt.get("no_photo") in _TRUE:
+        where.append("NOT EXISTS (SELECT 1 FROM images i WHERE i.product_id = p.id)")
+    if flt.get("gone") in _TRUE:
+        # пропал из прайса поставщика (и ни у кого из поставщиков его нет)
+        where.append("EXISTS (SELECT 1 FROM supplier_items si WHERE si.product_id = p.id AND si.missing = 1) "
+                     "AND NOT EXISTS (SELECT 1 FROM supplier_items si WHERE si.product_id = p.id AND si.missing = 0)")
+    q = flt.get("q") or ""
+    if q.strip():
+        clause, more = search_clause(q, "p.")
         where.append(clause)
         args += more
     return (("WHERE " + " AND ".join(where)) if where else ""), args
 
 
+LIST_SELECT = """SELECT p.*, (SELECT COALESCE(i.url, '/media/' || i.file) FROM images i
+                     WHERE i.product_id = p.id ORDER BY i.position, i.id LIMIT 1) AS thumb,
+                    (SELECT COUNT(*) FROM images i WHERE i.product_id = p.id) AS image_count,
+                    (SELECT s.name FROM suppliers s WHERE s.id = p.supplier_id) AS supplier_name
+                 FROM products p"""
+
+
+def _has_errors(row) -> bool:
+    return bool(validate(_row_to_dict(row), image_count=row["image_count"])["errors"])
+
+
 def ids_for_filter(flt: dict) -> list[int]:
     """Все товары по фильтру списка («выбрать все N по фильтру»), а не только загруженные на странице."""
-    supplier = flt.get("supplier")
-    supplier_id = None if supplier in (None, "") else int(supplier)
-    clause, args = _filter_where(flt.get("status") or "", flt.get("q") or "", supplier_id)
-    return [r["id"] for r in db.query(f"SELECT id FROM products {clause} ORDER BY id", args)]
+    clause, args = _filter_where(flt)
+    if flt.get("errors") in _TRUE:
+        return [r["id"] for r in db.query(f"{LIST_SELECT} {clause} ORDER BY p.id", args) if _has_errors(r)]
+    return [r["id"] for r in db.query(f"SELECT p.id FROM products p {clause} ORDER BY p.id", args)]
 
 
-def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier_id: int | None = None) -> dict:
-    clause, args = _filter_where(status, q, supplier_id)
-    total = db.query_one(f"SELECT COUNT(*) AS n FROM products {clause}", args)["n"]
-    rows = db.query(
-        f"""SELECT p.*, (SELECT COALESCE(i.url, '/media/' || i.file) FROM images i
-                         WHERE i.product_id = p.id ORDER BY i.position, i.id LIMIT 1) AS thumb,
-                        (SELECT COUNT(*) FROM images i WHERE i.product_id = p.id) AS image_count,
-                        (SELECT s.name FROM suppliers s WHERE s.id = p.supplier_id) AS supplier_name
-            FROM products p {clause} ORDER BY p.updated_at DESC, p.id DESC LIMIT ? OFFSET ?""",
-        args + [limit, offset],
-    )
-    # счётчики статусов — с тем же поиском и поставщиком, что и список (но по всем статусам)
-    count_clause, count_args = _filter_where(status, q, supplier_id, with_status=False)
+def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: int = 0) -> tuple[list, int, dict]:
+    """Строки страницы, всего по фильтру и счётчики статусов (с теми же фильтрами, но по всем статусам)."""
+    order = SORTS.get(sort) or SORTS["updated"]
+    clause, args = _filter_where(flt)
+    count_clause, count_args = _filter_where(flt, with_status=False)
+    if flt.get("errors") in _TRUE:
+        # «с ошибками заполнения» — проверка в Python (как в карточке), поэтому страницу режем здесь
+        all_rows = [r for r in db.query(f"{LIST_SELECT} {count_clause} ORDER BY {order}", count_args) if _has_errors(r)]
+        counts: dict = {}
+        for r in all_rows:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        matching = [r for r in all_rows if not flt.get("status") or r["status"] == flt["status"]]
+        page = matching[offset:offset + limit] if limit is not None else matching[offset:]
+        return page, len(matching), counts
+    total = db.query_one(f"SELECT COUNT(*) AS n FROM products p {clause}", args)["n"]
+    tail, tail_args = ("LIMIT ? OFFSET ?", [limit, offset]) if limit is not None else ("", [])
+    rows = db.query(f"{LIST_SELECT} {clause} ORDER BY {order} {tail}", args + tail_args)
     counts = {r["status"]: r["n"] for r in db.query(
-        f"SELECT status, COUNT(*) AS n FROM products {count_clause} GROUP BY status", count_args)}
+        f"SELECT p.status, COUNT(*) AS n FROM products p {count_clause} GROUP BY p.status", count_args)}
+    return rows, total, counts
+
+
+def list_products(flt: dict | None = None, sort: str = "updated", limit: int = 200, offset: int = 0) -> dict:
+    rows, total, counts = _rows(flt or {}, sort, limit, offset)
     from . import rates
 
     ids = [r["id"] for r in rows]
@@ -520,6 +574,65 @@ def delete(ids: list[int], note: str = "") -> int:
     for name in files:
         (db.uploads_dir() / name).unlink(missing_ok=True)
     return len(ids)
+
+
+BULK_FIELDS = ("group_name", "presence", "quantity", "vendor", "keywords")
+
+
+def bulk_edit(ids: list[int], fields: dict) -> dict:
+    """«✏ Изменить» для многих товаров: группа, наличие, количество, производитель, ключевые слова.
+
+    Пустое значение — «не менять». Это ручная правка: у товаров поставщика поля закрепляются (🔒), выгруженные
+    товары становятся «Готов к отправке». Товары, которые сейчас отправляются или удаляются, не трогаем.
+    """
+    data = {k: v for k, v in (fields or {}).items() if k in BULK_FIELDS and v not in (None, "")}
+    if not data:
+        raise ProductError("Укажите, что изменить")
+    changed, errors = 0, []
+    for pid in ids:
+        row = db.query_one("SELECT name, status FROM products WHERE id = ?", (int(pid),))
+        if row is None or row["status"] in ("sending", "deleting"):
+            continue
+        try:
+            before = get(int(pid))
+            after = update(int(pid), data)
+            if any(before.get(k) != after.get(k) for k in data):
+                changed += 1
+        except ProductError as exc:
+            errors.append({"id": int(pid), "name": row["name"], "error": str(exc)})
+    return {"changed": changed, "errors": errors}
+
+
+EXPORT_COLUMNS = (
+    ("Артикул", "external_id"), ("Название", "name"), ("Группа", "group_name"), ("Закупка", "cost_price"),
+    ("Валюта закупки", "cost_currency"), ("Закупка, грн", "cost_uah"), ("Цена", "price"), ("Валюта", "currency"),
+    ("Наличие", "presence"), ("Количество", "quantity"), ("Статус", "status"), ("Поставщик", "supplier_name"),
+    ("Артикул поставщика", "vendor_code"), ("На Prom", "on_prom"), ("Изменён", "updated_at"),
+)
+
+
+def export_xlsx(flt: dict, sort: str = "updated") -> bytes:
+    """Список товаров по текущим фильтрам — в Excel."""
+    from openpyxl import Workbook
+
+    from . import rates
+
+    rows, _, _ = _rows(flt, sort)
+    table = rates.Table()
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet("Товары")
+    ws.append([title for title, _ in EXPORT_COLUMNS])
+    for r in rows:
+        p = dict(r)
+        p["cost_uah"] = _in_uah(table, p["cost_price"], p["cost_currency"], p["supplier_id"])
+        p["presence"] = PRESENCE.get(p["presence"], p["presence"])
+        p["status"] = STATUSES.get(p["status"], p["status"])
+        p["on_prom"] = "да" if p["synced_at"] else "нет"
+        p["updated_at"] = (p["updated_at"] or "")[:16].replace("T", " ")
+        ws.append([p.get(key) if p.get(key) is not None else "" for _, key in EXPORT_COLUMNS])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 def set_status(ids: list[int], status: str) -> int:

@@ -479,3 +479,24 @@ table.list .show-sm { display: none; }
 @media (max-width: 640px) { table.list .show-sm { display: block; } }
 .badge.deleting { background: var(--err-soft); color: var(--err); }
 .deleting-note { margin-top: 4px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* фильтры списка товаров */
+.list-filters select { max-width: 200px; }
+.more-filters { position: relative; }
+.more-filters summary { list-style: none; cursor: pointer; }
+.more-filters summary::-webkit-details-marker { display: none; }
+.more-filters .more-box { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; min-width: 240px; background: #fff;
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; display: grid; gap: 6px; }
+.more-filters .more-box label { font-size: 14px; }
+table.list a.name { color: var(--text); text-decoration: none; display: block; }
+table.list a.name:hover { color: var(--accent); }
+@media (max-width: 640px) {
+  .list-filters select, .list-filters .more-filters { flex: 1 1 45%; max-width: none; }
+  .list-filters label[for="f-sort"] { display: none; }
+}
+@media (max-width: 640px) {
+  table.list td.price { white-space: normal; }
+  table.list .price-notes { white-space: normal; }
+  table.list td, table.list th { padding: 8px 6px; }
+  table.list .thumb { width: 40px; height: 40px; }
+}

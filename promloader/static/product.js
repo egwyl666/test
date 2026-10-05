@@ -687,6 +687,11 @@ $("#ai-instruction").addEventListener("keydown", (e) => {
 // ---------- старт ----------
 
 async function init() {
+  // «← К списку» — к тому же виду списка (фильтры, сортировка), откуда открыли товар
+  try {
+    const back = sessionStorage.getItem("promloader-list-url");
+    if (back && back.startsWith("/")) $("#back-link").href = back;
+  } catch {}
   await loadMeta();
   $("#presence").innerHTML = Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");
