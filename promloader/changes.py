@@ -73,6 +73,41 @@ def record_diff(c, product_id: int, before, fields: dict) -> None:
             record(c, product_id, key, before[key], value)
 
 
+# что можно вернуть одним нажатием: обычные поля товара (не фото, не характеристики — они хранятся в журнале не целиком)
+REVERTABLE = {"price", "old_price", "cost_price", "cost_currency", "rrp", "currency", "presence", "quantity", "name",
+              "name_ua", "description", "description_ua", "group_name", "keywords", "vendor", "country", "barcode",
+              "vendor_code", "unit"}
+
+
+class RevertError(Exception):
+    pass
+
+
+def revertable(row) -> bool:
+    """Значение «было» сохранено целиком (длинные тексты в журнале обрезаны — их вернуть нельзя)."""
+    old = row["old"] or ""
+    return row["field"] in REVERTABLE and len(old) < MAX_TEXT and row["product_id"] is not None
+
+
+def revert(change_id: int) -> dict:
+    """«↩ Вернуть»: записать в товар значение «было» из журнала (как правку руками; в журнале — «Откат»)."""
+    from . import products
+
+    row = db.query_one("SELECT ch.*, p.status FROM product_changes ch JOIN products p ON p.id = ch.product_id "
+                       "WHERE ch.id = ?", (change_id,))
+    if row is None:
+        raise RevertError("Товара уже нет или запись не найдена")
+    if not revertable(row):
+        raise RevertError("Это изменение нельзя вернуть автоматически — поправьте в карточке товара")
+    if row["status"] in ("sending", "deleting"):
+        raise RevertError("Товар сейчас отправляется или удаляется — попробуйте чуть позже")
+    value = row["old"]
+    if row["field"] == "presence":
+        value = {v: k for k, v in products.PRESENCE.items()}.get(value, value)
+    with source(f"Откат: {LABELS.get(row['field'], row['field'])}"):
+        return products.update(row["product_id"], {row["field"]: value})
+
+
 def cleanup() -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=KEEP_DAYS)).isoformat(timespec="seconds")
     with db.tx() as c:
@@ -121,7 +156,8 @@ def search(period: str = "7d", who: str = "", field: str = "", q: str = "", prod
     summary = {r["field"]: r["n"] for r in db.query(
         f"SELECT ch.field, COUNT(DISTINCT ch.product_id) AS n {base} GROUP BY ch.field", args)}
     sources = [r["source"] for r in db.query("SELECT DISTINCT source FROM product_changes ORDER BY source")]
-    return {"items": [dict(r) for r in rows], "total": total, "summary": summary, "sources": sources, "labels": LABELS}
+    items = [{**dict(r), "revertable": revertable(r) and r["product_name"] is not None} for r in rows]
+    return {"items": items, "total": total, "summary": summary, "sources": sources, "labels": LABELS}
 
 
 def to_csv(**filters) -> bytes:

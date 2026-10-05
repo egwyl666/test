@@ -68,6 +68,14 @@
       $("#product").innerHTML = items.map((p) =>
         `<option value="${p.id}">${esc(p.name)} · ${esc(p.external_id)} · ${esc(META.statuses[p.status] || p.status)}</option>`).join("")
         || `<option value="">Нет товаров</option>`;
+      if (want && !items.some((p) => String(p.id) === want)) {
+        // товар не попал в первые 500 — добавляем его в список, чтобы проверялся именно он
+        try {
+          const p = await api(`/api/products/${want}`);
+          $("#product").insertAdjacentHTML("afterbegin",
+            `<option value="${p.id}">${esc(p.name)} · ${esc(p.external_id)} · ${esc(META.statuses[p.status] || p.status)}</option>`);
+        } catch {}
+      }
       if (want) $("#product").value = want;
     }
 

@@ -627,6 +627,32 @@ async def changes_csv(period: str = "7d", who: str = "", field: str = "", q: str
                     headers={"Content-Disposition": 'attachment; filename="promloader-izmeneniya.csv"'})
 
 
+@app.post("/api/changes/{change_id}/revert")
+def change_revert(change_id: int):
+    try:
+        return changes.revert(change_id)
+    except changes.RevertError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/products/{product_id}/prom-link")
+async def prom_link(product_id: int):
+    """Номер товара на Prom: у выгруженных импортом он неизвестен — один раз спрашиваем у Prom по артикулу."""
+    p = await asyncio.to_thread(products.get, product_id)
+    if p["prom_id"] or not p["synced_at"]:
+        return {"url": p["prom_url"]}
+    try:
+        async with sync.make_client() as client:
+            found = await client.get_by_external_id(p["external_id"])
+    except PromError as exc:
+        raise HTTPException(400, str(exc))
+    if not found or not found.get("id") or str(found.get("status", "")) in ("deleted", "deleted_by_moderator"):
+        return {"url": ""}
+    with db.tx() as c:
+        c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (int(found["id"]), product_id))
+    return {"url": products.prom_url(found["id"])}
+
+
 @app.get("/api/products/{product_id}/changes")
 async def product_changes(product_id: int, limit: int = 100):
     return await asyncio.to_thread(changes.search, "all", "", "", "", product_id, min(max(limit, 1), 1000), 0)

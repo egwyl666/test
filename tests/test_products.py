@@ -192,3 +192,25 @@ def test_export_xlsx_follows_filter(client):
     rows = list(load_workbook(io.BytesIO(r.content)).active.values)
     assert rows[0][:3] == ("Артикул", "Название", "Группа") and len(rows) == 2
     assert rows[1][1] == "Котушка Shimano" and rows[1][13] == "да"
+
+
+def test_prom_link_found_by_article_once(client, monkeypatch):
+    import httpx
+
+    from promloader import db, products, sync
+    from promloader.prom_api import PromClient
+    pid = products.create({"name": "Гачок", "price": 1, "external_id": "G-1"})
+    assert client.get(f"/api/products/{pid}").json()["prom_url"] == ""
+    with db.tx() as c:
+        c.execute("UPDATE products SET synced_at = ?, status = 'synced' WHERE id = ?", (db.now(), pid))
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"product": {"id": 3222683083, "external_id": "G-1", "status": "on_display"}})
+    monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://my.prom.ua/api/v1", transport=httpx.MockTransport(handler)))
+    r = client.post(f"/api/products/{pid}/prom-link").json()
+    assert r["url"] == "https://my.prom.ua/cms/product/edit/3222683083"
+    assert client.get(f"/api/products/{pid}").json()["prom_url"] == r["url"]
+    client.post(f"/api/products/{pid}/prom-link")
+    assert len(calls) == 1      # номер запомнен — второй раз Prom не спрашиваем

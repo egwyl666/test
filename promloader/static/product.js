@@ -218,6 +218,17 @@ function applyServer(product) {
   $("#last-error").textContent = product.status === "error" && product.last_error ? "Ошибка Prom: " + product.last_error : "";
   ["#btn-duplicate", "#btn-delete", "#btn-send"].forEach((s) => ($(s).disabled = false));
   $("#btn-send").disabled = product.status === "sending" || product.status === "deleting";
+  $("#btn-diagnose").hidden = false;
+  $("#btn-diagnose").href = `/diagnose?id=${product.id}`;
+  $("#btn-on-prom").hidden = !product.prom_url;
+  if (product.prom_url) $("#btn-on-prom").href = product.prom_url;
+  else if (product.synced_at && !state.promLinkAsked) {
+    // выгружен импортом — номер на Prom узнаём один раз
+    state.promLinkAsked = true;
+    api(`/api/products/${product.id}/prom-link`, { method: "POST" }).then((r) => {
+      if (r.url) { $("#btn-on-prom").href = r.url; $("#btn-on-prom").hidden = false; }
+    }).catch(() => {});
+  }
   if (product.status === "deleting") $("#last-error").textContent = product.last_error || "Удаляется с Prom — ждём подтверждения";
   $("#btn-send").textContent = product.status === "sending" ? "Отправляется…" : "Отправить на Prom";
   renderCheck(product.check);
@@ -242,10 +253,28 @@ async function loadHistory() {
     const what = esc(data.labels[r.field] || r.field);
     const change = r.field === "created" || r.field === "deleted" || r.field === "prom"
       ? esc(r.new) : `<s>${esc(r.old || "—")}</s> → ${esc(r.new || "—")}`;
+    const back = r.revertable ? ` <button type="button" class="btn small" data-revert="${r.id}"
+      title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : "";
     return `<div class="history-row"><span class="muted">${esc(formatDate(r.at))}</span> <b>${what}</b>: ${change}` +
-      ` <span class="muted">· ${esc(r.source)}</span></div>`;
+      ` <span class="muted">· ${esc(r.source)}</span>${back}</div>`;
   }).join("") : "Изменений пока нет";
 }
+
+// «↩ Вернуть» прежнее значение из истории
+$("#history-list").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-revert]");
+  if (!btn) return;
+  if (!confirm("Вернуть прежнее значение?")) return;
+  btn.disabled = true;
+  try {
+    await flush();
+    const p = await api(`/api/changes/${btn.dataset.revert}/revert`, { method: "POST" });
+    fillForm(p);
+    applyServer(p);
+    toast("Прежнее значение возвращено", "ok");
+    loadHistory();
+  } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+});
 
 // ---------- поставщик и закреплённые поля ----------
 
@@ -462,6 +491,7 @@ async function uploadFiles(files, retryOf = null) {
 }
 
 async function deleteImage(imageId) {
+  if (!confirm("Удалить это фото у товара?")) return;
   try {
     applyServer(await api(`/api/products/${state.id}/images/${imageId}`, { method: "DELETE" }));
   } catch (err) {

@@ -47,7 +47,7 @@
       <div id="total" class="small muted" style="margin-bottom:8px"></div>
       <div class="table-scroll">
         <table class="list changes-table">
-          <thead><tr><th>Когда</th><th>Товар</th><th>Что</th><th>Было</th><th>Стало</th><th>Кто</th></tr></thead>
+          <thead><tr><th>Когда</th><th>Товар</th><th>Что</th><th>Было</th><th>Стало</th><th>Кто</th><th></th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
@@ -86,7 +86,8 @@
         : `<span class="muted">удалён</span>`;
       return `<tr><td class="small nowrap ch-at">${esc(formatDate(r.at))}</td><td class="ch-product">${product}</td>` +
         `<td class="ch-field">${esc(labels[r.field] || r.field)}</td><td class="ch-old">${cell(r.old)}</td>` +
-        `<td class="ch-new">${cell(r.new)}${diff(r)}</td><td class="small ch-who">${esc(r.source)}</td></tr>`;
+        `<td class="ch-new">${cell(r.new)}${diff(r)}</td><td class="small ch-who">${esc(r.source)}</td>` +
+        `<td class="ch-act">${r.revertable ? `<button class="btn small" data-revert="${r.id}" title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : ""}</td></tr>`;
     }
 
     function renderSummary(summary) {
@@ -114,7 +115,7 @@
       if (!append) renderSummary(data.summary);
       const html = data.items.map(rowHtml).join("");
       if (append) $("#rows").insertAdjacentHTML("beforeend", html);
-      else $("#rows").innerHTML = html || '<tr><td colspan="6" class="muted" style="text-align:center;padding:30px">За этот период изменений нет</td></tr>';
+      else $("#rows").innerHTML = html || '<tr><td colspan="7" class="muted" style="text-align:center;padding:30px">За этот период изменений нет</td></tr>';
       offset += data.items.length;
       $("#total").textContent = data.total ? `Записей: ${data.total}` + (offset < data.total ? ` · показано ${offset}` : "") : "";
       $("#more").style.display = offset >= data.total ? "none" : "";
@@ -130,6 +131,17 @@
     $("#f-who").onchange = () => load();
     $("#f-q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(load, 300); });
     $("#more").onclick = () => load(true);
+    $("#rows").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-revert]");
+      if (!btn) return;
+      if (!confirm("Вернуть товару прежнее значение?")) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/changes/${btn.dataset.revert}/revert`, { method: "POST" });
+        toast("Прежнее значение возвращено — откат записан в журнал", "ok");
+        load();
+      } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+    });
 
     (async () => { await loadMeta(); load(); })();
   </script>

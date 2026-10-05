@@ -500,3 +500,9 @@ table.list a.name:hover { color: var(--accent); }
   table.list td, table.list th { padding: 8px 6px; }
   table.list .thumb { width: 40px; height: 40px; }
 }
+.history-row [data-revert] { margin-left: 6px; padding: 2px 8px; font-size: 12px; }
+.changes-table .ch-act { white-space: nowrap; }
+@media (max-width: 700px) {
+  .changes-table .ch-act { grid-row: 4; grid-column: 1 / -1; }
+  .changes-table .ch-act:empty { display: none; }
+}

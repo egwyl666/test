@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-05 · версия 1.7.0_
+_Обновлено: 2026-10-05 · версия 1.8.0_
 
 ## Модули
 
@@ -30,7 +30,7 @@ _Обновлено: 2026-10-05 · версия 1.7.0_
 | `backup.py` | 161 | zip-копии базы, фото и прайсов |
 | `pricing.py` | 151 | `Pricer`: `to_uah`, `price`, `apply`; правила наценки и округление |
 | `launcher.py` | 140 | Запуск сервера и браузера |
-| `changes.py` | 134 | Журнал: `source()` (contextvar «кто»), `record`, `record_diff`, `search`, `to_csv`, `cleanup` (180 дней) |
+| `changes.py` | 171 | Журнал: `source()` (contextvar «кто»), `record`, `record_diff`, `search` (+ `revertable`), `revert` (`REVERTABLE`), `to_csv`, `cleanup` (180 дней) |
 | `feed.py` | 105 | YML-фид для импорта Prom |
 | `config.py` | 58 | Настройки: переменные окружения важнее сохранённых |
 | `autostart.py`, `runtime.py` | 48, 38 | Автозапуск Windows; перезапуск из веб-сервера |
@@ -39,12 +39,12 @@ _Обновлено: 2026-10-05 · версия 1.7.0_
 
 | Группа | Маршруты |
 |---|---|
-| Товары | `GET /api/products` (`status, q, supplier, group, presence, on_prom, no_photo, gone, errors, sort`), `GET /api/products.xlsx` (те же фильтры), `POST /api/products/bulk-edit` (`fields` + `ids`/`filter`), `POST /api/products`, `GET/PATCH /api/products/{id}`, `…/{id}/ai`, `…/{id}/unlock`, `…/{id}/duplicate`, `…/{id}/changes`, `POST /api/products/status` |
+| Товары | `GET /api/products` (`status, q, supplier, group, presence, on_prom, no_photo, gone, errors, sort`), `GET /api/products.xlsx` (те же фильтры), `POST /api/products/bulk-edit` (`fields` + `ids`/`filter`), `POST /api/products`, `GET/PATCH /api/products/{id}`, `…/{id}/ai`, `…/{id}/unlock`, `…/{id}/duplicate`, `…/{id}/changes`, `POST …/{id}/prom-link` (номер на Prom по артикулу, ссылка `products.prom_url` на кабинет), `POST /api/products/status` |
 | Фото | `POST …/{id}/images`, `…/images/url`, `…/images/order`, `DELETE …/images/{image_id}`, `GET /media/{name}` |
 | Удаление | `POST /api/products/delete` (`ids`, `prom`), `…/delete/check`, `…/delete/retry`, `…/delete/cancel` |
 | Выбор товаров | массовые действия (`/api/sync`, `/api/products/status`, `…/prices`, `…/bulk-edit`, `…/currencies`, `…/delete`, `…/delete/check`, `/api/ai/bulk`) принимают `ids` **или** `filter` `{status, q, supplier}` — `main._selected` |
 | Цены и курс | `GET/PUT /api/pricing`, `POST /api/pricing/test`, `/api/pricing/apply`, `/api/products/prices`, `/api/products/currencies`, `GET/PUT /api/rates`, `GET /api/rates/{code}` |
-| Журнал | `GET /api/changes`, `GET /api/changes.csv` |
+| Журнал | `GET /api/changes`, `GET /api/changes.csv`, `POST /api/changes/{id}/revert` |
 | Выгрузка | `POST /api/sync`, `GET /api/sync/jobs`, `…/jobs/{id}/file`, `…/jobs/{id}/retry`, `GET /api/sync/photos`, `POST /api/diagnose`, `GET /api/diagnose/{run_id}`, `GET /feed/prom.yml`, `GET /feed/{name}.xml` |
 | Импорт файла | `POST /api/import/upload`, `GET /api/import/{token}/sheet`, `…/image`, `POST …/preview`, `…/commit` |
 | Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`) |

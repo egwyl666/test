@@ -69,3 +69,29 @@ def test_cleanup_drops_old_records():
     with db.tx() as c:
         c.execute("UPDATE product_changes SET at = '2020-01-01T00:00:00+00:00'")
     assert changes.cleanup() >= 1 and rows(pid) == []
+
+
+def test_revert_price_and_presence_from_journal(client):
+    pid = products.create({"name": "Гачок", "price": 100})
+    client.patch(f"/api/products/{pid}", json={"price": "150", "presence": "order"})
+    items = {r["field"]: r for r in client.get(f"/api/products/{pid}/changes").json()["items"]}
+    assert items["price"]["revertable"] and items["presence"]["revertable"] and not items["created"]["revertable"]
+    p = client.post(f"/api/changes/{items['price']['id']}/revert").json()
+    assert p["price"] == 100
+    p = client.post(f"/api/changes/{items['presence']['id']}/revert").json()
+    assert p["presence"] == "available"       # в журнале «В наличии» — возвращается код наличия
+    last = client.get(f"/api/products/{pid}/changes").json()["items"][0]
+    assert last["source"].startswith("Откат") and last["new"] == "В наличии"
+
+
+def test_revert_refuses_truncated_text_and_deleted_product(client):
+    pid = products.create({"name": "Гачок", "price": 1, "description": "x" * 1000})
+    client.patch(f"/api/products/{pid}", json={"description": "коротко"})
+    ch = [r for r in client.get(f"/api/products/{pid}/changes").json()["items"] if r["field"] == "description"][0]
+    assert not ch["revertable"]
+    assert client.post(f"/api/changes/{ch['id']}/revert").status_code == 400
+    client.patch(f"/api/products/{pid}", json={"price": "5"})
+    price = [r for r in client.get(f"/api/products/{pid}/changes").json()["items"] if r["field"] == "price"][0]
+    client.post("/api/products/delete", json={"ids": [pid]})
+    r = client.post(f"/api/changes/{price['id']}/revert")
+    assert r.status_code == 400 and "нет" in r.json()["detail"]

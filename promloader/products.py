@@ -197,6 +197,7 @@ def get(product_id: int) -> dict:
     p["images"] = [{"id": i["id"], "src": image_src(i), "external": bool(i["url"])} for i in image_rows(product_id)]
     p["check"] = validate(p)
     p["offers"] = offers(product_id)
+    p["prom_url"] = prom_url(p.get("prom_id"))
     p["cost_uah"] = None
     if p["cost_price"] is not None and (p["cost_currency"] or "UAH") != "UAH":
         from . import rates
@@ -215,6 +216,11 @@ def get(product_id: int) -> dict:
 
 
 COMMERCIAL = ("price", "old_price", "cost_price", "rrp", "presence", "quantity", "currency", "cost_currency")
+
+
+def prom_url(prom_id) -> str:
+    """Товар в кабинете Prom (API Prom не отдаёт ссылку на товар — только его номер)."""
+    return f"https://my.prom.ua/cms/product/edit/{int(prom_id)}" if prom_id else ""
 
 
 def choose_offer(items: list[dict]) -> dict | None:
