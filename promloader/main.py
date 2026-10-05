@@ -363,6 +363,7 @@ def meta():
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
         "prom_token_set": bool(config.get("prom_token")),
+        "failed_suppliers": suppliers.failed(),
         "version": updater.current_version(),
         "update_available": db.get_setting("update_latest"),
         "missed_schedules": schedule.missed(),
@@ -1073,6 +1074,15 @@ async def open_supplier_source(supplier_id: int, refetch: bool = Body(False, emb
     return _new_import_token(path.read_bytes(), row["source_name"] or path.name)
 
 
+@app.post("/api/suppliers/{supplier_id}/preview")
+def preview_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
+    """«👁 Что изменится» при обновлении прайса — ничего не записывая."""
+    try:
+        return suppliers.preview(supplier_id, force)
+    except (suppliers.SupplierError, excel.ImportError_, rates.RateError) as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/api/suppliers/{supplier_id}/run")
 async def run_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
     """Запуск обновления в фоне; ход виден в истории запусков поставщика."""
@@ -1145,6 +1155,37 @@ async def products_prices(action: str = Body(...), value: float = Body(0), curre
             return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value, currency)
         except suppliers.SupplierError as exc:
             raise HTTPException(400, str(exc))
+
+
+@app.post("/api/pricing/preview")
+def preview_pricing(rules: list[dict] | None = Body(None, embed=True)):
+    """Сколько цен изменит пересчёт (с правилами из формы, если переданы) и сколько уйдёт на Prom."""
+    rates.prefetch()
+
+    def run():
+        if rules is not None:
+            pricing.save_rules(rules)
+        return suppliers.recalc_prices()
+    try:
+        with changes.source("Пересчёт по наценке"):
+            return changes.preview(run)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"Ошибка в правилах: {exc}")
+
+
+@app.post("/api/rates/preview")
+def preview_rates(data: dict = Body(...)):
+    """Сколько цен изменит новый курс (настройки из формы применяются понарошку)."""
+    rates.prefetch()
+
+    def run():
+        rates.save_settings(data)
+        return suppliers.recalc_prices()
+    try:
+        with changes.source("Курс валют"):
+            return changes.preview(run)
+    except rates.RateError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/pricing/apply")

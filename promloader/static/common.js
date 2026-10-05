@@ -35,6 +35,7 @@ async function loadMeta() {
   Object.assign(META, await api("/api/meta"));
   showUpdateBanner();
   showTokenBanner();
+  showFailedSuppliers();
   showMissedSchedules();
   const link = document.querySelector('.topbar nav a[href="/orders"]');
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
@@ -63,6 +64,74 @@ function showMissedSchedules() {
     }));
     document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
   }
+}
+
+// Сбой обновления поставщика — видно на всех страницах, а не только на странице поставщика.
+function showFailedSuppliers() {
+  const failed = META.failed_suppliers || [];
+  const link = document.querySelector('.topbar nav a[href="/suppliers"]');
+  if (link) link.innerHTML = `Поставщики${failed.length ? ` <span class="nav-badge" title="Не обновились: ${esc(failed.map((f) => f.name).join(", "))}">!</span>` : ""}`;
+  $$(".supplier-failed-banner").forEach((el) => el.remove());
+  const here = Number(new URLSearchParams(location.search).get("id"));
+  const show = failed.filter((f) => !(location.pathname === "/supplier" && f.id === here));
+  if (!show.length) return;
+  const bar = document.createElement("div");
+  bar.className = "update-banner supplier-failed-banner";
+  const first = show[0];
+  bar.innerHTML = `⚠️ Поставщик <b>«${esc(first.name)}»</b> не обновился: ${esc((first.message || "").slice(0, 160))}
+    <a href="/supplier?id=${first.id}">Открыть</a>${show.length > 1 ? ` · и ещё ${show.length - 1} — <a href="/suppliers">все поставщики</a>` : ""}`;
+  document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
+}
+
+// «Что изменится»: окно с итогом пробного прогона. Возвращает true, если нажали «Применить».
+function showPreview(title, p, { applyLabel = "Применить", note = "" } = {}) {
+  return new Promise((resolve) => {
+    const money = (v, cur) => formatPrice(v, cur || "UAH");
+    const pct = (o, n) => {
+      const a = parseFloat(o), b = parseFloat(n);
+      if (!(a > 0) || isNaN(b)) return "";
+      const d = Math.round((b - a) / a * 1000) / 10;
+      return ` <span class="${d >= 0 ? "price-up" : "price-down"}">${d >= 0 ? "+" : ""}${d}%</span>`;
+    };
+    const table = (rows, head, cell) => rows.length
+      ? `<div class="table-scroll preview-table"><table class="list"><thead><tr>${head}</tr></thead><tbody>${rows.map(cell).join("")}</tbody></table></div>` : "";
+    const nothing = !p.created && !p.changed;
+    const box = document.createElement("div");
+    box.className = "modal";
+    box.innerHTML = `<div class="modal-box preview-box">
+      <h2>${esc(title)}</h2>
+      ${nothing ? `<p>Ничего не изменится — цены и товары уже актуальны.</p>` : `
+      <div class="preview-sum">
+        ${p.created ? `<div><b>${p.created}</b> новых товаров</div>` : ""}
+        ${p.price_changed ? `<div><b>${p.price_changed}</b> цен изменится</div>` : ""}
+        ${p.gone ? `<div><b>${p.gone}</b> станут «нет в наличии»</div>` : ""}
+        ${p.changed - p.price_changed - p.gone > 0 ? `<div><b>${p.changed}</b> товаров изменится всего</div>` : ""}
+        ${p.to_prom ? `<div>🚀 <b>${p.to_prom}</b> сразу уйдут на Prom</div>` : ""}
+      </div>
+      ${Object.keys(p.fields || {}).length ? `<p class="small muted">Что меняется: ${Object.entries(p.fields).map(([k, n]) => `${esc(k)} — ${n}`).join(", ")}</p>` : ""}
+      ${p.samples.prices.length ? `<h3>Цены${p.price_changed > p.samples.prices.length ? ` (первые ${p.samples.prices.length})` : ""}</h3>` : ""}
+      ${table(p.samples.prices, "<th>Товар</th><th>Было</th><th>Станет</th>", (r) =>
+        `<tr><td>${esc(r.name)}<div class="small muted">${esc(r.code)}</div></td><td class="nowrap">${money(r.old, r.currency)}</td>
+         <td class="nowrap"><b>${money(r.new, r.currency)}</b>${pct(r.old, r.new)}</td></tr>`)}
+      ${p.samples.created.length ? `<h3>Новые товары${p.created > p.samples.created.length ? ` (первые ${p.samples.created.length})` : ""}</h3>` : ""}
+      ${table(p.samples.created, "<th>Товар</th><th>Артикул</th>", (r) => `<tr><td>${esc(r.name)}</td><td class="small">${esc(r.code)}</td></tr>`)}
+      ${p.samples.gone.length ? `<h3>Станут «нет в наличии»</h3>` : ""}
+      ${table(p.samples.gone, "<th>Товар</th><th>Артикул</th>", (r) => `<tr><td>${esc(r.name)}</td><td class="small">${esc(r.code)}</td></tr>`)}`}
+      ${note ? `<p class="small muted">${note}</p>` : ""}
+      <div class="toolbar" style="margin:12px 0 0;justify-content:flex-end">
+        <button class="btn" data-a="cancel">Отмена</button>
+        <button class="btn primary" data-a="apply">${esc(nothing ? "Всё равно применить" : applyLabel)}</button>
+      </div></div>`;
+    const done = (ok) => { box.remove(); document.removeEventListener("keydown", onKey); resolve(ok); };
+    const onKey = (e) => { if (e.key === "Escape") done(false); };
+    box.addEventListener("click", (e) => {
+      const a = e.target.closest("[data-a]");
+      if (a) done(a.dataset.a === "apply");
+      else if (e.target === box) done(false);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(box);
+  });
 }
 
 // Нет токена Prom — отправка на Prom невозможна: говорим об этом на всех страницах, кроме «Настроек».

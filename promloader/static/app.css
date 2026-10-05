@@ -506,3 +506,14 @@ table.list a.name:hover { color: var(--accent); }
   .changes-table .ch-act { grid-row: 4; grid-column: 1 / -1; }
   .changes-table .ch-act:empty { display: none; }
 }
+
+/* окно «Что изменится» */
+.preview-box { width: 720px; max-height: 90vh; overflow-y: auto; }
+.preview-box h3 { font-size: 15px; margin: 16px 0 6px; }
+.preview-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 10px 12px; background: var(--bg); border-radius: 8px; }
+.preview-table { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.preview-table table.list td, .preview-table table.list th { padding: 6px 10px; }
+.preview-box .price-up { color: var(--ok); }
+.preview-box .price-down { color: var(--err); }
+.update-banner.supplier-failed-banner { background: #fff4e0; color: #7a4a00; border-bottom: 1px solid #f3d9a6; }
+.update-banner.supplier-failed-banner a { color: #7a4a00; }

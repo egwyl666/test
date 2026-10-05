@@ -8,6 +8,7 @@
 import contextvars
 import csv
 import io
+import json
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 
@@ -106,6 +107,65 @@ def revert(change_id: int) -> dict:
         value = {v: k for k, v in products.PRESENCE.items()}.get(value, value)
     with source(f"Откат: {LABELS.get(row['field'], row['field'])}"):
         return products.update(row["product_id"], {row["field"]: value})
+
+
+class _Rollback(Exception):
+    pass
+
+
+PREVIEW_SAMPLES = 50
+
+
+def preview(fn, *args, **kwargs) -> dict:
+    """«Что изменится»: выполнить fn по-настоящему внутри одной транзакции, собрать записи журнала, которые она
+    сделала, и откатить всё (товары, журнал, очередь на Prom). Вложенные db.tx() входят во внешнюю транзакцию.
+
+    Ответ: {created, price_changed, gone, changed (товаров вообще), to_prom, fields, samples, result}.
+    Запросы в интернет внутри fn недопустимы (курс НБУ — заранее, rates.prefetch()).
+    """
+    out: dict = {}
+    with db._lock:
+        start = db.query_one("SELECT COALESCE(MAX(id), 0) AS n FROM product_changes")["n"]
+        jobs_start = db.query_one("SELECT COALESCE(MAX(id), 0) AS n FROM sync_jobs")["n"]
+        try:
+            with db.tx():
+                out["result"] = fn(*args, **kwargs)
+                rows = db.query("""SELECT ch.*, p.name AS product_name, p.external_id AS product_code, p.currency
+                                   FROM product_changes ch LEFT JOIN products p ON p.id = ch.product_id
+                                   WHERE ch.id > ? ORDER BY ch.id""", (start,))
+                to_prom = set()
+                for j in db.query("SELECT products FROM sync_jobs WHERE id > ?", (jobs_start,)):
+                    to_prom |= set(json.loads(j["products"]))
+                out["rows"] = [dict(r) for r in rows]
+                out["to_prom"] = len(to_prom)
+                raise _Rollback
+        except _Rollback:
+            pass
+    rows = out.pop("rows")
+    created = [r for r in rows if r["field"] == "created"]
+    created_ids = {r["product_id"] for r in created}
+    prices = [r for r in rows if r["field"] == "price" and r["product_id"] not in created_ids]
+    gone = [r for r in rows if r["field"] == "presence" and r["new"] == "Нет в наличии"
+            and r["product_id"] not in created_ids]
+    fields: dict = {}
+    for r in rows:
+        if r["field"] != "created" and r["product_id"] not in created_ids:
+            fields.setdefault(r["field"], set()).add(r["product_id"])
+
+    def sample(r):
+        return {"product_id": r["product_id"], "name": r["product_name"] or r["new"], "code": r["product_code"] or "",
+                "old": r["old"], "new": r["new"], "currency": r["currency"] or "UAH"}
+    return {
+        "created": len(created_ids), "price_changed": len({r["product_id"] for r in prices}),
+        "gone": len({r["product_id"] for r in gone}),
+        "changed": len({r["product_id"] for r in rows if r["product_id"] not in created_ids}),
+        "to_prom": out["to_prom"],
+        "fields": {LABELS.get(k, k): len(v) for k, v in fields.items()},
+        "samples": {"created": [sample(r) for r in created[:PREVIEW_SAMPLES]],
+                    "prices": [sample(r) for r in prices[:PREVIEW_SAMPLES]],
+                    "gone": [sample(r) for r in gone[:PREVIEW_SAMPLES]]},
+        "result": out.get("result"),
+    }
 
 
 def cleanup() -> int:

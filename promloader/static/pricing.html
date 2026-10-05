@@ -157,6 +157,10 @@
     };
     $("#save-apply").onclick = async () => {
       try {
+        // сначала — что изменит пересчёт с этими правилами
+        const p = await api("/api/pricing/preview", { method: "POST", json: { rules: readRules() } });
+        if (!(await showPreview("Пересчёт по наценке: что изменится", p, { applyLabel: "Сохранить и пересчитать",
+          note: "Цены, которые вы поменяли руками (🔒), не пересчитываются." }))) return;
         await save();
         const res = await api("/api/pricing/apply", { method: "POST" });
         toast(`Цен изменено: ${res.changed}` + (res.queued ? `, отправлено на Prom: ${res.queued}` : ""), "ok");
@@ -214,12 +218,19 @@
     }
     $("#rate-mode").addEventListener("change", showRateMode);
     $("#rate-save").onclick = async () => {
-      $("#rate-result").textContent = "Пересчитываю…";
+      const body = { mode: $("#rate-mode").value, add: $("#rate-add").value || 0, auto_send: $("#rate-auto-send").checked,
+        manual: { USD: $("#rate-usd").value || 0, EUR: $("#rate-eur").value || 0 } };
+      $("#rate-result").textContent = "Считаю, что изменится…";
       $("#rate-result").style.color = "";
       try {
-        const data = await api("/api/rates", { method: "PUT", json: {
-          mode: $("#rate-mode").value, add: $("#rate-add").value || 0, auto_send: $("#rate-auto-send").checked,
-          manual: { USD: $("#rate-usd").value || 0, EUR: $("#rate-eur").value || 0 } } });
+        const p = await api("/api/rates/preview", { method: "POST", json: body });
+        if ((p.created || p.changed) && !(await showPreview("Новый курс: что изменится", p, { applyLabel: "Сохранить курс и пересчитать",
+          note: "Цены, которые вы поменяли руками (🔒), по курсу не пересчитываются." }))) {
+          $("#rate-result").textContent = "";
+          return;
+        }
+        $("#rate-result").textContent = "Пересчитываю…";
+        const data = await api("/api/rates", { method: "PUT", json: body });
         fillRates(data);
         const r = data.result;
         $("#rate-result").textContent = `Сохранено. Цен изменено: ${r.changed}` + (r.queued ? `, отправлено на Prom: ${r.queued}` : "") +

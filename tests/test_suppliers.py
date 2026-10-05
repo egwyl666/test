@@ -328,3 +328,45 @@ def test_changes_queued_even_if_run_fails_midway(monkeypatch):
     monkeypatch.setattr(suppliers, "_apply_one", apply_then_fail)
     r = run(sid)
     assert r["status"] == "failed" and len(sent) == 2   # первая часть записана — и ушла в очередь
+
+
+def snapshot():
+    return (db.query_one("SELECT COUNT(*) n FROM products")["n"],
+            [(p["external_id"], p["price"], p["presence"]) for p in db.query("SELECT * FROM products ORDER BY id")],
+            db.query_one("SELECT COUNT(*) n FROM product_changes")["n"],
+            db.query_one("SELECT COUNT(*) n FROM sync_jobs")["n"],
+            db.query_one("SELECT COUNT(*) n FROM supplier_items")["n"])
+
+
+def test_preview_shows_changes_and_writes_nothing():
+    sid = make_supplier(make_yml(BASE), auto_sync=1, new_status="ready")
+    run(sid)
+    changed = [("A1", "Кружка белая", "120", "10", "true"),       # цена выросла
+               ("A2", "Кружка синяя", "150.50", "10", "true"),
+               ("C1", "Новая миска", "70", "20", "true")]          # новая; B1 пропала
+    suppliers.store_source(sid, make_yml(changed), "feed.xml")
+    before = snapshot()
+    p = suppliers.preview(sid)
+    assert snapshot() == before                                     # ничего не записано
+    assert p["created"] == 1 and p["price_changed"] == 1 and p["gone"] == 0   # B1 и так «нет в наличии»
+    assert p["samples"]["created"][0]["name"] == "Новая миска"
+    price = p["samples"]["prices"][0]
+    assert price["code"] == "A1" and price["old"] == "100" and price["new"] == "120"
+    assert p["to_prom"] >= 1 and p["total"] == 3
+    r = run(sid)                                                    # «Применить» — то же самое по-настоящему
+    assert r["stats"]["created"] == 1 and r["stats"]["price_changed"] == 1
+
+
+def test_broken_download_keeps_last_good_price_list():
+    sid = make_supplier(make_yml(BASE))
+    suppliers.update(sid, {"url": "https://supplier.example.com/feed.xml"})
+    good = httpx.MockTransport(lambda r: httpx.Response(200, content=make_yml(BASE)))
+    assert suppliers.run(sid, transport=good)["status"] == "ok"
+    kept = suppliers.source_path(sid).read_bytes()
+    broken = httpx.MockTransport(lambda r: httpx.Response(200, content=b"<html>500 Internal Server Error</html>"))
+    r = suppliers.run(sid, transport=broken)
+    assert r["status"] == "failed"
+    assert suppliers.source_path(sid).read_bytes() == kept          # рабочий прайс на месте
+    assert not list(db.suppliers_dir().glob(f"{sid}.new.*"))         # временный файл убран
+    with pytest.raises(excel.ImportError_):
+        suppliers.preview(sid, transport=broken)

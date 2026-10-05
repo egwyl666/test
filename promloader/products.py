@@ -223,12 +223,28 @@ def prom_url(prom_id) -> str:
     return f"https://my.prom.ua/cms/product/edit/{int(prom_id)}" if prom_id else ""
 
 
-def choose_offer(items: list[dict]) -> dict | None:
-    """Лучшее предложение: самая низкая закупка среди тех, у кого товар есть; иначе — среди оставшихся в прайсах."""
+def choose_offer(items: list[dict], table=None) -> dict | None:
+    """Лучшее предложение: самая низкая закупка среди тех, у кого товар есть; иначе — среди оставшихся в прайсах.
+    Закупки в разных валютах сравниваются в гривнах по курсу (3 $ не «дешевле» 100 грн)."""
+    from . import rates
+
+    table = table or rates.Table()
+
     def cost(i):
         d = i["data"]
-        value = d.get("cost_price") if d.get("cost_price") is not None else d.get("price")
-        return float("inf") if value is None else value
+        if d.get("cost_price") is not None:
+            value, currency = d["cost_price"], d.get("cost_currency") or d.get("currency")
+        elif d.get("rrp") is not None:
+            value, currency = d["rrp"], d.get("cost_currency") or d.get("currency")
+        else:
+            value, currency = d.get("price"), d.get("currency")
+        if value is None:
+            return float("inf")
+        try:
+            rate = table.rate(currency, i.get("supplier_id"))
+        except rates.RateError:
+            rate = None
+        return value * rate if rate else value
 
     live = [i for i in items if not i["missing"]]
     in_stock = [i for i in live if i["data"].get("presence", "available") != "not_available"]

@@ -103,6 +103,7 @@ $("#deleted-restore-all").onclick = () => restoreDeleted(null);
 function renderRuns(s) {
   const running = s.running;
   $("#run").disabled = running;
+  $("#preview-run").disabled = running;
   $("#run").textContent = running ? "Обновляется…" : "Обновить сейчас";
   $("#run-state").innerHTML = running ? statusPill("running") : "";
   const broken = s.runs[0] && s.runs[0].status === "failed" && /сломан/.test(s.runs[0].message);
@@ -206,7 +207,26 @@ $("#save").onclick = async () => {
 $("#save-run").onclick = async () => {
   try { await save(); await runNow(); } catch (err) { toast(err.message, "error"); }
 };
-$("#run").onclick = () => runNow(false);
+// «👁 Что изменится»: пробное обновление — посмотреть новые товары и цены было → стало, потом применить
+async function previewThenRun(force = false) {
+  const btn = $("#preview-run");
+  btn.disabled = true;
+  btn.textContent = "Считаю…";
+  try {
+    const p = await api(`/api/suppliers/${sid}/preview`, { method: "POST", json: { force } });
+    const note = `В прайсе ${p.total} строк${p.errors ? `, с ошибками ${p.errors}` : ""}${p.ignored ? `, удалённых вами ${p.ignored}` : ""}. ` +
+      "Цены и наличие, которые вы поменяли руками (🔒), поставщик не трогает.";
+    if (await showPreview(`Обновление «${supplier.name}»: что изменится`, p, { applyLabel: "Обновить", note })) await runNow(force);
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "👁 Что изменится";
+  }
+}
+$("#preview-run").onclick = () => previewThenRun(false);
+// если изменения сразу уходят на Prom — сначала показываем, что именно уйдёт
+$("#run").onclick = () => (supplier && supplier.auto_sync ? previewThenRun(false) : runNow(false));
 $("#delete").onclick = async () => {
   if (!confirm("Удалить поставщика? Его товары останутся в списке как обычные товары, но перестанут обновляться.")) return;
   await api(`/api/suppliers/${sid}`, { method: "DELETE" });

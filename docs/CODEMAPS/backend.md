@@ -1,13 +1,13 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-05 · версия 1.8.0_
+_Обновлено: 2026-10-05 · версия 1.9.0_
 
 ## Модули
 
 | Модуль | Строк | Назначение · ключевое |
 |---|---|---|
 | `main.py` | 1289 | FastAPI: маршруты, страницы (`PAGES`), фоновые задачи (`*_worker`), `lifespan` |
-| `suppliers.py` | 738 | Поставщики: `run`/`_run`, `apply_items`/`_apply_one` (пропуск `ignored`), `recompute_offer` (несколько поставщиков), `recalc_prices`, `bulk_prices` (`as_cost`/`percent`/`recalc`), `link_item` (строка прайса ↔ товар, снимает `ignored`), `deleted_items`/`restore_deleted(skus)`, защита от битого прайса |
+| `suppliers.py` | 738 | Поставщики: `run`/`_run`, `apply_items`/`_apply_one` (пропуск `ignored`), `recompute_offer` (несколько поставщиков), `recalc_prices`, `bulk_prices` (`as_cost`/`percent`/`recalc`), `link_item` (строка прайса ↔ товар, снимает `ignored`), `preview` (что изменит обновление), `failed` (сбойные поставщики), `_fetch_source` (скачанный прайс — во временный файл до успеха), `deleted_items`/`restore_deleted(skus)`, защита от битого прайса |
 | `products.py` | 631 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products(flt, sort, …)` / `_rows` (фильтры `FILTER_KEYS`, сортировки `SORTS`; «с ошибками» — через `validate` в Python; + закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `bulk_edit` (`BULK_FIELDS`), `export_xlsx`, `set_status`, фото |
 | `sync.py` | 544 | Очередь выгрузки: `enqueue`, `run_once`, `_start`/`_start_quick`/`_poll`, ожидание чужого импорта (`BUSY_RETRY_SECONDS`), `repair_false_success`, `worker` (+ `promdelete.process`) |
 | `excel.py` | 442 | Разбор файлов и XML в таблицу, `build_products`, `money_currency`, `clean_name`/`clean_names` |
@@ -30,7 +30,7 @@ _Обновлено: 2026-10-05 · версия 1.8.0_
 | `backup.py` | 161 | zip-копии базы, фото и прайсов |
 | `pricing.py` | 151 | `Pricer`: `to_uah`, `price`, `apply`; правила наценки и округление |
 | `launcher.py` | 140 | Запуск сервера и браузера |
-| `changes.py` | 171 | Журнал: `source()` (contextvar «кто»), `record`, `record_diff`, `search` (+ `revertable`), `revert` (`REVERTABLE`), `to_csv`, `cleanup` (180 дней) |
+| `changes.py` | 171 | Журнал: `source()` (contextvar «кто»), `record`, `record_diff`, `search` (+ `revertable`), `revert` (`REVERTABLE`), `preview(fn)` (пробный прогон: выполнить и откатить, итог по журналу), `to_csv`, `cleanup` (180 дней) |
 | `feed.py` | 105 | YML-фид для импорта Prom |
 | `config.py` | 58 | Настройки: переменные окружения важнее сохранённых |
 | `autostart.py`, `runtime.py` | 48, 38 | Автозапуск Windows; перезапуск из веб-сервера |
@@ -47,7 +47,7 @@ _Обновлено: 2026-10-05 · версия 1.8.0_
 | Журнал | `GET /api/changes`, `GET /api/changes.csv`, `POST /api/changes/{id}/revert` |
 | Выгрузка | `POST /api/sync`, `GET /api/sync/jobs`, `…/jobs/{id}/file`, `…/jobs/{id}/retry`, `GET /api/sync/photos`, `POST /api/diagnose`, `GET /api/diagnose/{run_id}`, `GET /feed/prom.yml`, `GET /feed/{name}.xml` |
 | Импорт файла | `POST /api/import/upload`, `GET /api/import/{token}/sheet`, `…/image`, `POST …/preview`, `…/commit` |
-| Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`) |
+| Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`), `POST …/preview` |
 | Prom | `GET/POST /api/prom/catalog`, `GET /api/orders`, `POST /api/orders/refresh`, `…/seen`, `…/{id}/status` |
 | ИИ | `POST /api/ai/check`, `GET/POST /api/ai/bulk`, `…/{job_id}/status`, `…/{job_id}/revert` |
 | Настройки и сервис | `GET/POST /api/settings`, `…/check`, `GET /api/meta`, `/api/update/check`, `/api/update/install`, `/api/backups*`, `/api/shutdown`, `/api/restart`, `/api/autostart`, `/api/schedules*`, `/api/r2/check`, `/api/r2/stats` |
@@ -64,5 +64,6 @@ _Обновлено: 2026-10-05 · версия 1.8.0_
 - Prom запускает импорты по одному: `sync` ждёт и не шлёт второй. Импорт закончен, только когда счётчики покрыли все товары файла (`prom_api.import_counted`).
 - Товары `sending` не удаляются, `deleting` не отправляются; кнопки статусов их не трогают.
 - Удалённые вами товары поставщика помечаются `supplier_items.ignored = 1` и при обновлении прайса не создаются заново; если товар с тем же артикулом снова есть — поставщик привязывает его и метку снимает (`_apply_one`).
+- «Что изменится» — только через `changes.preview(fn)`: внутри fn никаких запросов в интернет и записи файлов (курс — `rates.prefetch()` заранее, картинки — `embedded={}`).
 - Поиск — только через `products.search_clause` (`lower_u(...) LIKE`): обычный `LIKE` в SQLite не понимает регистр кириллицы.
 - `sync.enqueue` без токена Prom ничего не ставит в очередь (в тестах токен задаёт `conftest.py`).

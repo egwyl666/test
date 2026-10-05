@@ -246,3 +246,27 @@ def test_nbu_failure_is_not_retried_for_every_product(monkeypatch):
         for _ in range(3):
             REAL_NBU("EUR")
     assert len(calls) == 2
+
+
+def test_price_and_rate_preview_change_nothing(client):
+    pricing.save_rules([{"markup_percent": 0, "rounding": "none"}])
+    pid = products.create({"name": "Гачок", "cost_price": 1, "cost_currency": "USD", "price": 40, "currency": "UAH"})
+    with db.tx() as c:
+        c.execute("UPDATE products SET status = 'synced', synced_at = ?, pending_fields = '[]' WHERE id = ?", (db.now(), pid))
+    p = client.post("/api/rates/preview", json={"mode": "manual", "manual": {"USD": 45}, "auto_send": True}).json()
+    assert p["price_changed"] == 1 and p["to_prom"] == 1
+    assert p["samples"]["prices"][0]["old"] == "40" and p["samples"]["prices"][0]["new"] == "45"
+    assert rates.settings()["mode"] == "nbu" and products.get(pid)["price"] == 40   # ничего не сохранено
+    assert db.query_one("SELECT COUNT(*) n FROM sync_jobs")["n"] == 0
+    p = client.post("/api/pricing/preview", json={"rules": [{"markup_percent": 50, "rounding": "int"}]}).json()
+    assert p["price_changed"] == 1 and p["samples"]["prices"][0]["new"] == "60"
+    assert pricing.list_rules()[0]["markup_percent"] == 0 and products.get(pid)["price"] == 40
+    assert client.post("/api/rates/preview", json={"mode": "bank"}).status_code == 400
+
+
+def test_failed_supplier_in_meta(client):
+    from promloader import suppliers
+    sid = suppliers.create("Опт")
+    suppliers.run(sid)                                   # нет ни ссылки, ни файла — сбой
+    failed = client.get("/api/meta").json()["failed_suppliers"]
+    assert failed and failed[0]["name"] == "Опт" and failed[0]["message"]

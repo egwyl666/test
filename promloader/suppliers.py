@@ -91,6 +91,14 @@ def list_suppliers() -> list[dict]:
     return result
 
 
+def failed() -> list[dict]:
+    """Поставщики, у которых последнее обновление не удалось (для предупреждения на всех страницах)."""
+    rows = db.query("""SELECT s.id, s.name, r.message, r.finished_at FROM suppliers s
+                       JOIN supplier_runs r ON r.id = (SELECT MAX(id) FROM supplier_runs WHERE supplier_id = s.id)
+                       WHERE r.status = 'failed' ORDER BY s.name COLLATE NOCASE""")
+    return [{"id": r["id"], "name": r["name"], "message": r["message"], "at": r["finished_at"]} for r in rows]
+
+
 def get(supplier_id: int) -> dict:
     s = _parse(_row(supplier_id))
     s["runs"] = [_run_dict(r) for r in db.query(
@@ -339,7 +347,7 @@ def recompute_offer(c, product_id: int, pricer: pricing.Pricer) -> bool:
         return False
     items = [{"supplier_id": r["supplier_id"], "missing": r["missing"], "data": json.loads(r["data"])["data"]} for r in rows]
     product = c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
-    best = products.choose_offer(items)
+    best = products.choose_offer(items, pricer.rates)
     if best is None:
         target = {"presence": "not_available", "quantity": 0 if product["quantity"] is not None else None}
     else:
@@ -572,6 +580,65 @@ def run(supplier_id: int, trigger: str = "manual", force: bool = False, transpor
             _running.discard(supplier_id)
 
 
+def _fetch_source(s: dict, transport=None) -> tuple[Path, bytes | None, str]:
+    """Свежий прайс по ссылке — сначала во временный файл: текущим он станет только после успешного обновления,
+    чтобы битый или пустой прайс не затёр последний рабочий. Без ссылки — сохранённый файл."""
+    if not s["url"]:
+        return source_path(s["id"]), None, ""
+    content, name = download(s["url"], transport)
+    tmp = db.suppliers_dir() / f"{s['id']}.new{excel.detect_suffix(content, name)}"
+    tmp.write_bytes(content)
+    return tmp, content, name
+
+
+def _drop_downloads(supplier_id: int) -> None:
+    for tmp in db.suppliers_dir().glob(f"{supplier_id}.new.*"):
+        tmp.unlink(missing_ok=True)
+
+
+def _parse_items(s: dict, path: Path, images: bool = True) -> tuple[list[dict], dict]:
+    sheets = excel.sheet_names(path)
+    sheet = s["sheet"] if s["sheet"] in sheets else sheets[0]
+    rows, embedded = excel.read_sheet(path, sheet)
+    if not images:
+        embedded = {}
+    spec = s["rows"] or f"{s['header_row'] + 1}-"
+    numbers = excel.parse_row_spec(spec, len(rows))
+    items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
+                                 pricing.Pricer(), s["id"])
+    if s["clean_names"]:
+        excel.clean_names(items)
+    return items, embedded
+
+
+def preview(supplier_id: int, force: bool = False, transport=None) -> dict:
+    """«👁 Что изменится»: обновление прайса понарошку — посчитать новые товары, изменения цен и пропавшие,
+    ничего не записав (и не затронув сохранённый прайс)."""
+    s = _parse(_row(supplier_id))
+    if supplier_id in _running:
+        raise SupplierError("Этот поставщик сейчас обновляется — дождитесь окончания")
+    if not any(t == "external_id" for t in s["mapping"].values()):
+        raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
+    try:
+        path, _, _ = _fetch_source(s, transport)
+        rates.prefetch()
+        items, _ = _parse_items(s, path, images=False)
+        def apply_and_queue():
+            changed: list[int] = []
+            stats, _ = apply_items(s, items, {}, 0, force, changed)
+            if s["auto_sync"]:
+                _queue_changed(changed)  # сколько ушло бы на Prom (очередь тоже откатится)
+            return stats, changed
+
+        result = changes.preview(apply_and_queue)
+    finally:
+        _drop_downloads(supplier_id)
+    stats = result.pop("result")[0]
+    result.update(total=stats["total"], valid=stats["valid"], errors=stats["errors"],
+                  error_samples=stats["error_samples"][:10], unchanged=stats["unchanged"], ignored=stats.get("ignored", 0))
+    return result
+
+
 def _run(s: dict, trigger: str, force: bool, transport) -> dict:
     supplier_id = s["id"]
     with db.tx() as c:
@@ -583,23 +650,19 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
     try:
         if not any(t == "external_id" for t in s["mapping"].values()):
             raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
-        path = source_path(supplier_id, refetch=True, transport=transport)
+        path, content, name = _fetch_source(s, transport)
         rates.prefetch()  # курс — до записи в базу
-        sheets = excel.sheet_names(path)
-        sheet = s["sheet"] if s["sheet"] in sheets else sheets[0]
-        rows, embedded = excel.read_sheet(path, sheet)
-        spec = s["rows"] or f"{s['header_row'] + 1}-"
-        numbers = excel.parse_row_spec(spec, len(rows))
-        items = excel.build_products(rows, s["header_row"], numbers, s["mapping"], s["defaults"], embedded,
-                                     pricing.Pricer(), supplier_id)
-        if s["clean_names"]:
-            excel.clean_names(items)
+        items, embedded = _parse_items(s, path)
         stats, _ = apply_items(s, items, embedded, run_id, force, changed)
+        if content is not None:
+            store_source(supplier_id, content, name)  # прайс разобран и применён — теперь он текущий
     except (SupplierError, excel.ImportError_, rates.RateError) as exc:
         status, message = "failed", str(exc)
     except Exception as exc:
         log.exception("Поставщик %s: сбой обновления", supplier_id)
         status, message = "failed", f"Внутренняя ошибка: {exc}"
+    finally:
+        _drop_downloads(supplier_id)
     if s["auto_sync"]:
         # даже если обновление оборвалось на середине: уже изменённое (записано частями) должно уйти на Prom,
         # иначе при следующем обновлении эти товары выглядят «без изменений» и остались бы со старой ценой
