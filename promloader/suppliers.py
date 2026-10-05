@@ -116,8 +116,15 @@ def deleted_items(supplier_id: int) -> list[dict]:
             data = json.loads(r["data"]).get("data", {})
         except ValueError:
             data = {}
-        out.append({"sku": r["sku"], "name": data.get("name") or "", "price": data.get("price") or data.get("cost_price"),
-                    "currency": data.get("currency") or "", "missing": bool(r["missing"]), "seen_at": r["seen_at"]})
+        # цена поставщика (закупка в его валюте), а не уже посчитанная розничная
+        if data.get("cost_price") is not None:
+            price, currency = data["cost_price"], data.get("cost_currency") or "UAH"
+        elif data.get("rrp") is not None:
+            price, currency = data["rrp"], data.get("cost_currency") or "UAH"
+        else:
+            price, currency = data.get("price"), data.get("currency") or "UAH"
+        out.append({"sku": r["sku"], "name": data.get("name") or "", "price": price, "currency": currency,
+                    "missing": bool(r["missing"]), "seen_at": r["seen_at"]})
     return out
 
 
