@@ -80,6 +80,7 @@ def test_updates_existing_and_keeps_own_photos(monkeypatch):
 
 
 def test_api(client, monkeypatch):
+    db.set_setting("prom_token", "")  # проверяем поведение без токена
     assert client.post("/api/prom/catalog").status_code == 400  # нет токена
     db.set_setting("prom_token", "tkn")
     factory, _ = serve([[prom_product(1)]])

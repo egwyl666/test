@@ -18,6 +18,7 @@ REAL_NBU = rates.nbu
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("PROMLOADER_DATA", str(tmp_path))
     db.init(tmp_path)
+    db.set_setting("prom_token", "test-token")  # программа подключена к Prom (тест «без токена» убирает его сам)
     yield tmp_path
 
 

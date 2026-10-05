@@ -80,7 +80,7 @@ def list_suppliers() -> list[dict]:
     for row in db.query("SELECT * FROM suppliers ORDER BY name COLLATE NOCASE"):
         s = _parse(row)
         counts = db.query_one(
-            """SELECT COUNT(*) AS total, SUM(missing = 0) AS active, SUM(product_id IS NOT NULL) AS linked
+            """SELECT COUNT(*) AS total, SUM(missing = 0 AND ignored = 0) AS active, SUM(product_id IS NOT NULL) AS linked
                FROM supplier_items WHERE supplier_id = ?""", (s["id"],))
         s["items_total"] = counts["total"] or 0
         s["items_active"] = counts["active"] or 0
@@ -96,7 +96,8 @@ def get(supplier_id: int) -> dict:
     s["runs"] = [_run_dict(r) for r in db.query(
         "SELECT * FROM supplier_runs WHERE supplier_id = ? ORDER BY id DESC LIMIT 15", (supplier_id,))]
     counts = db.query_one(
-        "SELECT COUNT(*) AS total, SUM(missing = 0) AS active FROM supplier_items WHERE supplier_id = ?", (supplier_id,))
+        "SELECT COUNT(*) AS total, SUM(missing = 0 AND ignored = 0) AS active FROM supplier_items WHERE supplier_id = ?",
+        (supplier_id,))
     s["items_total"] = counts["total"] or 0
     s["items_active"] = counts["active"] or 0
     s["items_deleted"] = db.query_one(
@@ -105,12 +106,32 @@ def get(supplier_id: int) -> dict:
     return s
 
 
-def restore_deleted(supplier_id: int) -> int:
-    """Товары поставщика, удалённые вручную, снова создаются при следующем обновлении прайса."""
+def deleted_items(supplier_id: int) -> list[dict]:
+    """Строки прайса, товары которых вы удалили: поставщик их не создаёт заново, пока не вернёте."""
     _row(supplier_id)
+    out = []
+    for r in db.query("SELECT sku, data, missing, seen_at FROM supplier_items WHERE supplier_id = ? AND ignored = 1 "
+                      "AND product_id IS NULL ORDER BY sku", (supplier_id,)):
+        try:
+            data = json.loads(r["data"]).get("data", {})
+        except ValueError:
+            data = {}
+        out.append({"sku": r["sku"], "name": data.get("name") or "", "price": data.get("price") or data.get("cost_price"),
+                    "currency": data.get("currency") or "", "missing": bool(r["missing"]), "seen_at": r["seen_at"]})
+    return out
+
+
+def restore_deleted(supplier_id: int, skus: list[str] | None = None) -> int:
+    """Вернуть удалённые вами товары поставщика (все или выбранные артикулы) — они создадутся при обновлении прайса."""
+    _row(supplier_id)
+    where, args = "supplier_id = ? AND ignored = 1 AND product_id IS NULL", [supplier_id]
+    if skus is not None:
+        if not skus:
+            return 0
+        where += f" AND sku IN ({','.join('?' * len(skus))})"
+        args += [str(x) for x in skus]
     with db.tx() as c:
-        return c.execute("UPDATE supplier_items SET ignored = 0 WHERE supplier_id = ? AND ignored = 1 AND product_id IS NULL",
-                         (supplier_id,)).rowcount
+        return c.execute(f"UPDATE supplier_items SET ignored = 0 WHERE {where}", args).rowcount
 
 
 # ---------- настройки ----------
@@ -338,13 +359,7 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
     urls = item["image_urls"]
     img_hash = _images_hash(urls, files)
     existing = c.execute("SELECT * FROM supplier_items WHERE supplier_id = ? AND sku = ?", (s["id"], sku)).fetchone()
-    if existing is not None and existing["ignored"]:
-        # товар удалили вы — не создаём его заново (вернуть: страница поставщика → «Вернуть удалённые»)
-        payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": urls}, ensure_ascii=False)
-        c.execute("UPDATE supplier_items SET data = ?, images_hash = ?, missing = 0, seen_at = ?, seen_run = ? WHERE id = ?",
-                  (payload, img_hash, ts, run_id, existing["id"]))
-        stats["ignored"] = stats.get("ignored", 0) + 1
-        return
+    payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": urls}, ensure_ascii=False)
 
     product = None
     if existing and existing["product_id"]:
@@ -357,7 +372,14 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
                 stats["errors"] += 1
                 _sample(stats, f"{sku}: артикул {external_id} уже занят товаром другого поставщика")
                 return
-            product = other  # товар уже был (создан руками или импортом) — привязываем его к поставщику
+            # товар уже был (создан руками, импортом или снова появился после удаления) — привязываем его к поставщику
+            product = other
+    if product is None and existing is not None and existing["ignored"]:
+        # товар удалили вы — не создаём его заново (вернуть: страница поставщика → «Удалённые вами товары»)
+        c.execute("UPDATE supplier_items SET data = ?, images_hash = ?, missing = 0, seen_at = ?, seen_run = ? WHERE id = ?",
+                  (payload, img_hash, ts, run_id, existing["id"]))
+        stats["ignored"] = stats.get("ignored", 0) + 1
+        return
     if product is None and s["merge_by_barcode"] and valid_barcode(fields.get("barcode", "")):
         # тот же товар у ДРУГОГО поставщика — добавляем как ещё одно предложение
         product = c.execute(
@@ -418,13 +440,18 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
         else:
             stats["unchanged"] += 1
 
-    payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": urls}, ensure_ascii=False)
+    link_item(c, s["id"], sku, product_id, payload, img_hash, ts, run_id)
+
+
+def link_item(c, supplier_id: int, sku: str, product_id: int, payload: str, img_hash: str, ts: str, run_id: int) -> None:
+    """Строка прайса ↔ товар. Привязанная строка больше не считается удалённой вами."""
     c.execute(
         """INSERT INTO supplier_items (supplier_id, sku, product_id, data, images_hash, missing, seen_at, seen_run)
            VALUES (?, ?, ?, ?, ?, 0, ?, ?)
            ON CONFLICT(supplier_id, sku) DO UPDATE SET product_id = excluded.product_id, data = excluded.data,
-               images_hash = excluded.images_hash, missing = 0, seen_at = excluded.seen_at, seen_run = excluded.seen_run""",
-        (s["id"], sku, product_id, payload, img_hash, ts, run_id),
+               images_hash = excluded.images_hash, missing = 0, seen_at = excluded.seen_at, seen_run = excluded.seen_run,
+               ignored = 0""",
+        (supplier_id, sku, product_id, payload, img_hash, ts, run_id),
     )
 
 

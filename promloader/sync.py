@@ -37,6 +37,11 @@ def import_settings() -> dict | None:
 def enqueue(product_ids: list[int]) -> dict:
     """Ставит товары в очередь. Товары с ошибками заполнения не берутся — возвращаются с причиной."""
     accepted, rejected = {}, []
+    if not config.get("prom_token"):
+        # без токена задача только зависла бы в «Отправляется» до первой ошибки — говорим сразу
+        reason = "Не указан API-токен Prom — вставьте его в «Настройках» и нажмите «Проверить подключение»"
+        rows = [products.get(pid) for pid in product_ids if db.query_one("SELECT 1 FROM products WHERE id = ?", (pid,))]
+        return {"job_id": None, "accepted": 0, "rejected": [{"id": p["id"], "name": p["name"], "reasons": [reason]} for p in rows]}
     base_url = config.public_base_url() or (r2.base_url() if r2.active() else "")
     for pid in product_ids:
         try:

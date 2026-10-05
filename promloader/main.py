@@ -309,6 +309,7 @@ async def meta():
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
+        "prom_token_set": bool(config.get("prom_token")),
         "version": updater.current_version(),
         "update_available": db.get_setting("update_latest"),
         "missed_schedules": schedule.missed(),
@@ -394,20 +395,43 @@ async def duplicate_product(product_id: int):
     return products.get(new_id)
 
 
+@app.get("/api/suppliers/{supplier_id}/deleted")
+async def supplier_deleted(supplier_id: int):
+    return await asyncio.to_thread(suppliers.deleted_items, supplier_id)
+
+
 @app.post("/api/suppliers/{supplier_id}/restore-deleted")
-async def supplier_restore_deleted(supplier_id: int):
-    return {"count": suppliers.restore_deleted(supplier_id)}
+async def supplier_restore_deleted(supplier_id: int, body: dict = Body(default={})):
+    """Вернуть удалённые вами товары поставщика: все или skus; run — сразу обновить прайс, чтобы они появились."""
+    skus = body.get("skus")
+    count = suppliers.restore_deleted(supplier_id, [str(x) for x in skus] if skus is not None else None)
+    started = False
+    if count and body.get("run", True) and not suppliers.get(supplier_id)["running"]:
+        task = asyncio.create_task(_run_supplier_bg(supplier_id, False))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+        started = True
+    return {"count": count, "started": started}
+
+
+def _selected(ids: list[int] | None, flt: dict | None) -> list[int]:
+    """Выбранные товары: список id или «все по фильтру списка» ({status, q, supplier})."""
+    if flt is not None:
+        return products.ids_for_filter(flt)
+    if ids is None:
+        raise HTTPException(400, "Не выбраны товары")
+    return [int(i) for i in ids]
 
 
 @app.post("/api/products/delete")
-async def delete_products(ids: list[int] = Body(...), prom: bool = Body(True)):
+async def delete_products(ids: list[int] | None = Body(None), prom: bool = Body(True), filter: dict | None = Body(None)):
     """Удалить товары. prom=True — и на Prom (товар уйдёт из программы, когда Prom подтвердит удаление)."""
-    return await asyncio.to_thread(promdelete.request, ids, prom)
+    return await asyncio.to_thread(promdelete.request, _selected(ids, filter), prom)
 
 
 @app.post("/api/products/delete/check")
-async def delete_check(ids: list[int] = Body(..., embed=True)):
-    return await asyncio.to_thread(promdelete.check, ids)
+async def delete_check(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return await asyncio.to_thread(promdelete.check, _selected(ids, filter))
 
 
 @app.post("/api/products/delete/retry")
@@ -421,8 +445,8 @@ async def delete_cancel(ids: list[int] = Body(..., embed=True)):
 
 
 @app.post("/api/products/status")
-async def set_status(ids: list[int] = Body(...), status: str = Body(...)):
-    return {"ok": True, "changed": products.set_status(ids, status)}
+async def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return {"ok": True, "changed": products.set_status(_selected(ids, filter), status)}
 
 
 @app.post("/api/products/{product_id}/images")
@@ -461,8 +485,8 @@ async def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)
 # ---------- отправка на Prom ----------
 
 @app.post("/api/sync")
-async def enqueue(ids: list[int] = Body(..., embed=True)):
-    return sync.enqueue(ids)
+async def enqueue(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return await asyncio.to_thread(sync.enqueue, _selected(ids, filter))
 
 
 @app.get("/api/sync/jobs")
@@ -849,11 +873,29 @@ def _import_commit(token: str, body: dict) -> dict:
         return _import_commit_inner(token, body)
 
 
+def _link_imported(supplier: dict, sku: str, pid: int, item: dict) -> None:
+    """Импорт с выбранным поставщиком: товар становится товаром поставщика (и перестаёт считаться удалённым вами)."""
+    payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": item["image_urls"]},
+                         ensure_ascii=False)
+    with db.tx() as c:
+        owner = c.execute("SELECT supplier_id FROM products WHERE id = ?", (pid,)).fetchone()
+        if owner is None or owner["supplier_id"] not in (None, supplier["id"]):
+            return  # товар другого поставщика — не перехватываем
+        c.execute("UPDATE products SET supplier_id = ? WHERE id = ?", (supplier["id"], pid))
+        suppliers.link_item(c, supplier["id"], sku, pid, payload, "", db.now(), 0)
+
+
 def _import_commit_inner(token: str, body: dict) -> dict:
     items, images = _build(token, body)
     embedded = images if body.get("use_embedded_images", True) else {}
     status = body.get("status") if body.get("status") in ("draft", "ready") else "draft"
     update_existing = bool(body.get("update_existing", True))
+    supplier = None
+    if body.get("supplier_id"):
+        try:
+            supplier = suppliers.get(int(body["supplier_id"]))
+        except KeyError:
+            supplier = None
     created = updated = skipped = 0
     failed = []
     for item in items:
@@ -861,6 +903,9 @@ def _import_commit_inner(token: str, body: dict) -> dict:
             skipped += 1
             continue
         data = dict(item["data"])
+        sku = data.get("external_id") or ""
+        if supplier and sku:
+            data["external_id"] = supplier["prefix"] + sku  # как у товаров, созданных обновлением этого поставщика
         if item["params"]:
             data["params"] = item["params"]
         files = embedded.get(item["row"], [])
@@ -880,6 +925,8 @@ def _import_commit_inner(token: str, body: dict) -> dict:
                 products.replace_images(pid, item["image_urls"], files)
             if status == "ready":
                 products.set_status([pid], "ready")
+            if supplier and sku:
+                _link_imported(supplier, sku, pid, item)
         except products.ProductError as exc:
             failed.append({"row": item["row"], "error": str(exc)})
     return {"created": created, "updated": updated, "skipped": skipped, "failed": failed}
@@ -979,8 +1026,9 @@ async def test_pricing(body: dict = Body(...)):
 
 
 @app.post("/api/products/currencies")
-async def products_currencies(ids: list[int] = Body(..., embed=True)):
+async def products_currencies(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
     """В какой валюте сейчас цена у выбранных товаров (закупка/РРЦ — в своей валюте, иначе — валюта цены)."""
+    ids = _selected(ids, filter)
     if not ids:
         return {}
     marks = ",".join("?" * len(ids))
@@ -991,8 +1039,9 @@ async def products_currencies(ids: list[int] = Body(..., embed=True)):
 
 
 @app.post("/api/products/prices")
-async def products_prices(ids: list[int] = Body(...), action: str = Body(...), value: float = Body(0),
-                          currency: str = Body("")):
+async def products_prices(action: str = Body(...), value: float = Body(0), currency: str = Body(""),
+                          ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    ids = _selected(ids, filter)
     label = {"as_cost": "опт → закупка", "percent": f"{value:+g}%", "recalc": "пересчёт по наценке"}.get(action, "")
     with changes.source(f"Массово «💲 Цены»: {label}" if label else "Вручную"):
         try:
@@ -1138,9 +1187,9 @@ async def ai_bulk_jobs():
 
 
 @app.post("/api/ai/bulk")
-async def ai_bulk_create(ids: list[int] = Body(...), action: str = Body(...), instruction: str = Body(""),
-                         only_empty: bool = Body(True)):
-    return aibulk.create(ids, action, instruction, only_empty)
+async def ai_bulk_create(action: str = Body(...), instruction: str = Body(""), only_empty: bool = Body(True),
+                         ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return aibulk.create(_selected(ids, filter), action, instruction, only_empty)
 
 
 @app.post("/api/ai/bulk/{job_id}/status")

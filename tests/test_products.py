@@ -94,3 +94,36 @@ def test_delete_removes_files(data_dir):
     products.add_image_file(pid, make_image())
     products.delete([pid])
     assert list((data_dir / "uploads").iterdir()) == []
+
+
+def test_search_ignores_case_for_cyrillic_and_finds_codes(client):
+    from promloader import changes, products
+    a = products.create({"name": "Кроссовки Найк", "price": 1, "external_id": "KR-1"})
+    products.create({"name": "Ліхтар", "price": 1, "external_id": "L-2", "vendor_code": "GT-354"})
+    products.create({"name": "Чашка 100%", "price": 1, "external_id": "C_3"})
+    names = lambda q: [p["name"] for p in client.get("/api/products", params={"q": q}).json()["items"]]  # noqa: E731
+    assert names("кросс") == ["Кроссовки Найк"] and names("КРОСС") == ["Кроссовки Найк"]
+    assert names("ліх") == ["Ліхтар"] and names("gt-354") == ["Ліхтар"]
+    assert names("100%") == ["Чашка 100%"] and names("c_3") == ["Чашка 100%"] and names("_") == ["Чашка 100%"]
+    assert changes.search(period="all", q="кросс")["items"][0]["product_id"] == a
+
+
+def test_status_counts_follow_search(client):
+    from promloader import products
+    products.create({"name": "Кроссовки", "price": 1})
+    products.create({"name": "Тарілка", "price": 1})
+    data = client.get("/api/products", params={"q": "кросс"}).json()
+    assert data["total"] == 1 and sum(data["counts"].values()) == 1
+
+
+def test_bulk_actions_by_filter_cover_all_matching(client):
+    from promloader import products
+    for i in range(5):
+        products.create({"name": f"Гачок {i}", "price": 10, "external_id": f"G-{i}"})
+    products.create({"name": "Тарілка", "price": 10, "external_id": "T-1"})
+    flt = {"status": "", "q": "ГАЧОК", "supplier": ""}
+    client.post("/api/products/status", json={"filter": flt, "status": "ready"})
+    statuses = {p["name"]: p["status"] for p in products.list_products(limit=100)["items"]}
+    assert sum(v == "ready" for v in statuses.values()) == 5 and statuses["Тарілка"] == "draft"
+    assert client.post("/api/products/delete/check", json={"filter": flt}).json()["total"] == 5
+    assert client.post("/api/products/status", json={"status": "ready"}).status_code == 400

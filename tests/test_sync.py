@@ -393,3 +393,13 @@ def test_import_state_rules():
     assert import_state({"status": "PARTIAL", "total": 1, "imported": 0, "updated": 0}) == "running"
     assert import_state({"status": "SUCCESS", "imported": 1}) == "ok"  # без счётчика total — верим статусу
     assert import_state({"status": "FATAL"}) == "failed"
+
+
+def test_no_prom_token_rejects_send_with_reason(client):
+    from promloader import db, products, sync
+    db.set_setting("prom_token", "")
+    pid = products.create({"name": "Гачок", "price": 10, "external_id": "G-1"})
+    res = sync.enqueue([pid])
+    assert res["accepted"] == 0 and "API-токен" in res["rejected"][0]["reasons"][0]
+    assert products.get(pid)["status"] == "draft"
+    assert client.get("/api/meta").json()["prom_token_set"] is False

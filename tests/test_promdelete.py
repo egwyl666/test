@@ -139,12 +139,12 @@ def test_supplier_does_not_recreate_deleted_product(client):
     total = run(sid)["stats"]["created"]
     pid = db.query_one("SELECT id FROM products ORDER BY id LIMIT 1")["id"]
     promdelete.request([pid])                     # не на Prom — удаляется сразу
-    stats = run(sid, force=True)["stats"]
+    stats = run(sid)["stats"]
     assert stats.get("ignored") == 1 and stats["created"] == 0
     assert db.query_one("SELECT COUNT(*) AS n FROM products")["n"] == total - 1
     assert client.get(f"/api/suppliers/{sid}").json()["items_deleted"] == 1
-    assert client.post(f"/api/suppliers/{sid}/restore-deleted").json()["count"] == 1
-    assert run(sid, force=True)["stats"]["created"] == 1
+    assert client.post(f"/api/suppliers/{sid}/restore-deleted", json={"run": False}).json()["count"] == 1
+    assert run(sid)["stats"]["created"] == 1
 
 
 def test_catalog_marks_products_missing_on_prom():
@@ -165,3 +165,48 @@ def test_status_buttons_do_not_interrupt_deletion():
     products.set_status([a], "ready")
     products.set_status([a], "synced")
     assert exists(a)["status"] == "deleting"
+
+
+def supplier_with_deleted():
+    sid = make_supplier(make_yml(BASE))
+    run(sid)
+    p = db.query_one("SELECT id, external_id, price FROM products ORDER BY id LIMIT 1")
+    promdelete.request([p["id"]])
+    return sid, p
+
+
+def test_recreated_product_is_linked_back_to_supplier():
+    """Удалили товар поставщика, потом создали заново с тем же артикулом — поставщик снова его ведёт."""
+    sid, old = supplier_with_deleted()
+    pid = products.create({"name": "Создан заново", "price": 1, "external_id": old["external_id"]})
+    stats = run(sid)["stats"]
+    p = products.get(pid)
+    assert p["supplier_id"] == sid and p["price"] == old["price"] and not stats.get("ignored")
+    assert suppliers.get(sid)["items_deleted"] == 0
+
+
+def test_restore_selected_deleted_items(client):
+    sid = make_supplier(make_yml(BASE))
+    run(sid)
+    rows = db.query("SELECT id, external_id FROM products ORDER BY id LIMIT 2")
+    promdelete.request([r["id"] for r in rows])
+    deleted = client.get(f"/api/suppliers/{sid}/deleted").json()
+    assert len(deleted) == 2 and all(d["name"] for d in deleted)
+    keep = deleted[0]["sku"]
+    r = client.post(f"/api/suppliers/{sid}/restore-deleted", json={"skus": [keep], "run": False}).json()
+    assert r == {"count": 1, "started": False}
+    run(sid)
+    codes = {p["external_id"] for p in products.list_products(limit=1000)["items"]}
+    assert keep in codes and deleted[1]["sku"] not in codes
+    assert [d["sku"] for d in client.get(f"/api/suppliers/{sid}/deleted").json()] == [deleted[1]["sku"]]
+
+
+def test_import_with_supplier_links_products(client):
+    sid, old = supplier_with_deleted()
+    from promloader import main
+    item = {"data": {"external_id": old["external_id"], "name": "З файлу"}, "params": [], "image_urls": []}
+    pid = products.create({"name": "З файлу", "price": 5, "external_id": old["external_id"]})
+    main._link_imported(suppliers.get(sid), old["external_id"], pid, item)
+    assert products.get(pid)["supplier_id"] == sid and suppliers.get(sid)["items_deleted"] == 0
+    run(sid)
+    assert products.get(pid)["price"] == old["price"]

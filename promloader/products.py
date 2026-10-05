@@ -249,9 +249,19 @@ def offers(product_id: int) -> list[dict]:
     } for i in items]
 
 
-def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier_id: int | None = None) -> dict:
+SEARCH_COLUMNS = ("name", "name_ua", "external_id", "group_name", "vendor_code", "barcode")
+
+
+def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
+    """Поиск без учёта регистра (в том числе для кириллицы) по названию, артикулам, группе и штрихкоду."""
+    like = "%" + q.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+    cols = " OR ".join(f"lower_u({prefix}{c}) LIKE ? ESCAPE '\\'" for c in SEARCH_COLUMNS)
+    return f"({cols})", [like] * len(SEARCH_COLUMNS)
+
+
+def _filter_where(status: str = "", q: str = "", supplier_id: int | None = None, with_status: bool = True):
     where, args = [], []
-    if status:
+    if status and with_status:
         where.append("status = ?")
         args.append(status)
     if supplier_id == 0:
@@ -259,10 +269,23 @@ def list_products(status: str = "", q: str = "", limit: int = 200, offset: int =
     elif supplier_id:
         where.append("supplier_id = ?")
         args.append(supplier_id)
-    if q:
-        where.append("(name LIKE ? OR name_ua LIKE ? OR external_id LIKE ? OR group_name LIKE ?)")
-        args += [f"%{q}%"] * 4
-    clause = ("WHERE " + " AND ".join(where)) if where else ""
+    if q and q.strip():
+        clause, more = search_clause(q)
+        where.append(clause)
+        args += more
+    return (("WHERE " + " AND ".join(where)) if where else ""), args
+
+
+def ids_for_filter(flt: dict) -> list[int]:
+    """Все товары по фильтру списка («выбрать все N по фильтру»), а не только загруженные на странице."""
+    supplier = flt.get("supplier")
+    supplier_id = None if supplier in (None, "") else int(supplier)
+    clause, args = _filter_where(flt.get("status") or "", flt.get("q") or "", supplier_id)
+    return [r["id"] for r in db.query(f"SELECT id FROM products {clause} ORDER BY id", args)]
+
+
+def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier_id: int | None = None) -> dict:
+    clause, args = _filter_where(status, q, supplier_id)
     total = db.query_one(f"SELECT COUNT(*) AS n FROM products {clause}", args)["n"]
     rows = db.query(
         f"""SELECT p.*, (SELECT COALESCE(i.url, '/media/' || i.file) FROM images i
@@ -272,7 +295,10 @@ def list_products(status: str = "", q: str = "", limit: int = 200, offset: int =
             FROM products p {clause} ORDER BY p.updated_at DESC, p.id DESC LIMIT ? OFFSET ?""",
         args + [limit, offset],
     )
-    counts = {r["status"]: r["n"] for r in db.query("SELECT status, COUNT(*) AS n FROM products GROUP BY status")}
+    # счётчики статусов — с тем же поиском и поставщиком, что и список (но по всем статусам)
+    count_clause, count_args = _filter_where(status, q, supplier_id, with_status=False)
+    counts = {r["status"]: r["n"] for r in db.query(
+        f"SELECT status, COUNT(*) AS n FROM products {count_clause} GROUP BY status", count_args)}
     from . import rates
 
     ids = [r["id"] for r in rows]

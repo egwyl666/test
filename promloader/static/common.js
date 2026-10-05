@@ -34,6 +34,7 @@ async function api(path, options = {}) {
 async function loadMeta() {
   Object.assign(META, await api("/api/meta"));
   showUpdateBanner();
+  showTokenBanner();
   showMissedSchedules();
   const link = document.querySelector('.topbar nav a[href="/orders"]');
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
@@ -62,6 +63,17 @@ function showMissedSchedules() {
     }));
     document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
   }
+}
+
+// Нет токена Prom — отправка на Prom невозможна: говорим об этом на всех страницах, кроме «Настроек».
+function showTokenBanner() {
+  if (META.prom_token_set || $("#token-banner") || location.pathname === "/settings") return;
+  const bar = document.createElement("div");
+  bar.id = "token-banner";
+  bar.className = "update-banner";
+  bar.innerHTML = `Программа ещё не подключена к Prom — товары нельзя отправить.
+    <a href="/settings">Вставьте API-токен в «Настройках»</a>`;
+  document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
 }
 
 function showUpdateBanner() {

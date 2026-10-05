@@ -276,6 +276,9 @@ def init(path: str | os.PathLike | None = None) -> None:
             _conn.close()
         conn = sqlite3.connect(base / "promloader.sqlite3", check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        # LIKE в SQLite не различает регистр только у латиницы — для поиска по-русски/по-украински сравниваем
+        # строки в нижнем регистре: lower_u(name) LIKE '%кросс%'
+        conn.create_function("lower_u", 1, lambda s: s.lower() if isinstance(s, str) else s, deterministic=True)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)

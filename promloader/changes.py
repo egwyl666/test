@@ -99,8 +99,9 @@ def _where(period: str = "", who: str = "", field: str = "", q: str = "", produc
             where.append("ch.field = ?")
             args.append(field)
     if q:
-        where.append("(p.name LIKE ? OR p.external_id LIKE ? OR ch.new LIKE ?)")
-        args += [f"%{q}%"] * 3
+        like = f"%{q.strip().lower()}%"
+        where.append("(lower_u(p.name) LIKE ? OR lower_u(p.external_id) LIKE ? OR lower_u(ch.new) LIKE ?)")
+        args += [like] * 3
     if product_id is not None:
         where.append("ch.product_id = ?")
         args.append(product_id)

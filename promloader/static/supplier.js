@@ -56,20 +56,49 @@ function fill(s) {
   $("#source-info").innerHTML = s.source_name
     ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
       (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`) +
-      (s.items_deleted ? ` · удалено вами: ${s.items_deleted} (при обновлении не создаются) — <a href="#" id="restore-deleted">вернуть</a>` : "")
+      (s.items_deleted ? ` · <a href="#deleted-panel">удалено вами: ${s.items_deleted}</a>` : "")
     : "";
   const open = $("#open-current");
   if (open) open.onclick = (e) => { e.preventDefault(); openSource(false); };
-  const restore = $("#restore-deleted");
-  if (restore) restore.onclick = async (e) => {
-    e.preventDefault();
-    if (!confirm(`Вернуть ${s.items_deleted} удалённых товаров? Они создадутся заново при следующем обновлении прайса.`)) return;
-    const r = await api(`/api/suppliers/${s.id}/restore-deleted`, { method: "POST" });
-    toast(`Вернётся при обновлении: ${r.count}`, "ok");
-    restore.parentElement && restore.remove();
-  };
   renderRuns(s);
+  loadDeleted(s.items_deleted);
 }
+
+// ---------- удалённые вами товары ----------
+let deletedShown = -1;
+async function loadDeleted(count) {
+  $("#deleted-panel").hidden = !count;
+  if (!count || count === deletedShown) return;  // список не менялся — не перерисовываем (страница обновляется сама)
+  deletedShown = count;
+  let rows = [];
+  try { rows = await api(`/api/suppliers/${sid}/deleted`); } catch (err) { toast(err.message, "error"); return; }
+  $("#deleted-count").textContent = rows.length;
+  $("#deleted-all").checked = false;
+  $("#deleted-table tbody").innerHTML = rows.map((r) => `<tr>
+    <td><input type="checkbox" class="del-sel" value="${esc(r.sku)}"></td>
+    <td class="small">${esc(r.sku)}</td><td>${esc(r.name) || '<span class="muted">без названия</span>'}</td>
+    <td class="small">${r.price != null ? esc(formatPrice(r.price, r.currency || "UAH")) : ""}</td>
+    <td class="small muted">${r.missing ? "сейчас нет в прайсе" : ""}</td></tr>`).join("");
+  updateDeletedButtons();
+}
+function selectedDeleted() { return $$(".del-sel:checked").map((x) => x.value); }
+function updateDeletedButtons() { $("#deleted-restore-selected").disabled = !selectedDeleted().length; }
+$("#deleted-table").addEventListener("change", (e) => {
+  if (e.target.id === "deleted-all") $$(".del-sel").forEach((x) => (x.checked = e.target.checked));
+  updateDeletedButtons();
+});
+async function restoreDeleted(skus) {
+  const n = skus ? skus.length : Number($("#deleted-count").textContent);
+  if (!confirm(`Вернуть товаров: ${n}? Программа сразу обновит прайс, и они появятся в списке товаров.`)) return;
+  try {
+    const r = await api(`/api/suppliers/${sid}/restore-deleted`, { method: "POST", json: skus ? { skus, run: true } : { run: true } });
+    toast(r.started ? `Возвращаю ${r.count}: обновляю прайс…` : `Вернётся при обновлении: ${r.count}`, "ok");
+    deletedShown = -1;
+    await reload();
+  } catch (err) { toast(err.message, "error"); }
+}
+$("#deleted-restore-selected").onclick = () => restoreDeleted(selectedDeleted());
+$("#deleted-restore-all").onclick = () => restoreDeleted(null);
 
 function renderRuns(s) {
   const running = s.running;

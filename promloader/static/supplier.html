@@ -102,6 +102,19 @@
       <div class="preview-grid" id="preview"></div>
     </div>
 
+    <div class="panel" id="deleted-panel" hidden>
+      <div class="toolbar" style="margin-bottom:6px"><h2 style="margin:0">Удалённые вами товары: <span id="deleted-count"></span></h2>
+        <span class="spacer"></span>
+        <button class="btn" id="deleted-restore-selected" disabled>Вернуть выбранные</button>
+        <button class="btn" id="deleted-restore-all">Вернуть все</button></div>
+      <p class="small muted" style="margin-top:0">Эти позиции есть в прайсе, но вы удалили их товары — при обновлении поставщик их не
+        создаёт заново. Вернёте — программа сразу обновит прайс, и товары появятся снова (новыми товарами).
+        Если вы сами создали товар с тем же артикулом, поставщик привяжет его к себе автоматически.</p>
+      <div class="table-scroll"><table class="list" id="deleted-table">
+        <thead><tr><th style="width:32px"><input type="checkbox" id="deleted-all"></th><th>Артикул</th><th>Название</th>
+          <th>Цена в прайсе</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+
     <div class="panel">
       <h2>История обновлений</h2>
       <table class="runs" id="runs"></table>

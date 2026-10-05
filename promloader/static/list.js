@@ -4,7 +4,16 @@ const PAGE = 200;
 const list = {
   status: "", q: "", supplier: new URLSearchParams(location.search).get("supplier") || "",
   items: [], total: 0, selected: new Set(),
+  allMatching: false,  // «выбраны все N по фильтру», а не только загруженные строки
 };
+
+// Что отправлять в массовые действия: отмеченные строки или «все по текущему фильтру»
+function selection() {
+  return list.allMatching
+    ? { filter: { status: list.status, q: list.q, supplier: list.supplier } }
+    : { ids: [...list.selected] };
+}
+function selectionCount() { return list.allMatching ? list.total : list.selected.size; }
 
 async function loadProducts(append = false) {
   const offset = append ? list.items.length : 0;
@@ -16,7 +25,8 @@ async function loadProducts(append = false) {
   list.total = data.total;
   $("#shown").textContent = list.total ? `показано ${list.items.length} из ${list.total}` : "";
   $("#more").classList.toggle("hidden", list.items.length >= list.total);
-  const ids = new Set(data.items.map((p) => p.id));
+  // отметки сохраняем для всех показанных строк (раньше «Показать ещё» сбрасывал отмеченные выше)
+  const ids = new Set(list.items.map((p) => p.id));
   list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
   renderChips(data.counts);
   renderRows();
@@ -34,6 +44,7 @@ function renderChips(counts) {
     .join("");
   $$("#chips .chip").forEach((c) => c.addEventListener("click", () => {
     list.status = c.dataset.status;
+    resetSelection();
     list.items = [];
     loadProducts();
   }));
@@ -69,7 +80,9 @@ function priceCell(p) {
 
 function renderRows() {
   const tbody = $("#rows");
-  $("#empty").classList.toggle("hidden", list.items.length > 0 || list.status !== "" || list.q !== "" || list.supplier !== "");
+  const filtered = list.status !== "" || list.q !== "" || list.supplier !== "";
+  $("#empty").classList.toggle("hidden", list.items.length > 0 || filtered);
+  $("#nothing-found").classList.toggle("hidden", list.items.length > 0 || !filtered);
   tbody.innerHTML = list.items.map((p) => {
     const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.join(" · "))}</div>` : "";
     const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
@@ -112,6 +125,7 @@ function renderRows() {
     });
     tr.querySelector(".sel").addEventListener("change", (e) => {
       if (e.target.checked) list.selected.add(id); else list.selected.delete(id);
+      list.allMatching = false;
       updateBulk();
     });
   });
@@ -119,27 +133,46 @@ function renderRows() {
 }
 
 function updateBulk() {
-  const n = list.selected.size;
-  $("#selected-count").textContent = n ? `выбрано: ${n}` : "";
+  const n = selectionCount();
+  const pageAll = list.selected.size > 0 && list.selected.size === list.items.length;
+  $("#selected-count").innerHTML = !n ? "" : list.allMatching
+    ? `выбраны все ${n} по фильтру · <a href="#" id="select-page">только показанные</a>`
+    : `выбрано: ${n}` + (pageAll && list.total > list.items.length
+      ? ` · <a href="#" id="select-all-matching">выбрать все ${list.total} по фильтру</a>` : "");
   $$("#bulk [data-action]").forEach((b) => (b.disabled = !n));
-  $("#check-all").checked = n > 0 && n === list.items.length;
+  $("#check-all").checked = pageAll || list.allMatching;
+  const allLink = $("#select-all-matching");
+  if (allLink) allLink.onclick = (e) => { e.preventDefault(); list.allMatching = true; updateBulk(); };
+  const pageLink = $("#select-page");
+  if (pageLink) pageLink.onclick = (e) => { e.preventDefault(); list.allMatching = false; updateBulk(); };
 }
 
 $("#check-all").addEventListener("change", (e) => {
   list.selected = e.target.checked ? new Set(list.items.map((p) => p.id)) : new Set();
+  list.allMatching = false;
   renderRows();
+});
+
+// фильтр поменялся — «все по фильтру» больше не про то же самое
+function resetSelection() { list.selected = new Set(); list.allMatching = false; }
+$("#reset-filters").addEventListener("click", () => {
+  list.status = ""; list.q = ""; list.supplier = "";
+  $("#search").value = ""; $("#supplier-filter").value = "";
+  const url = new URL(location.href); url.searchParams.delete("supplier"); history.replaceState(null, "", url);
+  resetSelection(); list.items = []; loadProducts();
 });
 
 let searchTimer;
 $("#search").addEventListener("input", (e) => {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); list.items = []; loadProducts(); }, 250);
+  searchTimer = setTimeout(() => { list.q = e.target.value.trim(); list.items = []; resetSelection(); loadProducts(); }, 250);
 });
 
 $("#more").addEventListener("click", () => loadProducts(true));
 $("#supplier-filter").addEventListener("change", (e) => {
   list.supplier = e.target.value;
   list.items = [];
+  resetSelection();
   const url = new URL(location.href);
   if (list.supplier) url.searchParams.set("supplier", list.supplier); else url.searchParams.delete("supplier");
   history.replaceState(null, "", url);
@@ -147,11 +180,11 @@ $("#supplier-filter").addEventListener("change", (e) => {
 });
 
 $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () => {
-  const ids = [...list.selected];
+  const sel = selection();
   const action = b.dataset.action;
   try {
     if (action === "send") {
-      const res = await api("/api/sync", { method: "POST", json: { ids } });
+      const res = await api("/api/sync", { method: "POST", json: sel });
       if (res.accepted) toast(`В очереди на Prom: ${res.accepted}`, "ok");
       if (res.rejected.length) {
         const first = res.rejected[0];
@@ -159,19 +192,19 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () =>
       }
       loadJobs();
     } else if (action === "ai") {
-      openAiModal(ids);
+      openAiModal(sel);
       return;
     } else if (action === "prices") {
-      openPricesModal(ids);
+      openPricesModal(sel);
       return;
     } else if (action === "synced") {
-      const res = await api("/api/products/status", { method: "POST", json: { ids, status: "synced" } });
+      const res = await api("/api/products/status", { method: "POST", json: { ...sel, status: "synced" } });
       toast(res.changed ? `Снова «На Prom»: ${res.changed}` : "Эти товары ещё не выгружались на Prom", res.changed ? "ok" : "error");
     } else if (action === "delete") {
-      openDeleteModal(ids);
+      openDeleteModal(sel);
       return;
     } else {
-      await api("/api/products/status", { method: "POST", json: { ids, status: action } });
+      await api("/api/products/status", { method: "POST", json: { ...sel, status: action } });
     }
     loadProducts();
   } catch (err) {
@@ -274,16 +307,16 @@ function summarizeResult(r) {
 // ---------- массовый ИИ ----------
 
 const AI_BULK = ["translate_ua", "improve", "keywords", "name", "shorten", "custom"];
-let aiIds = [];
+let aiSel = { ids: [] };
 let aiRate = 8;
 
-function openAiModal(ids) {
+function openAiModal(sel) {
   if (!META.ai || !META.ai.enabled) {
     toast("Сначала подключите ИИ в «Настройках» (бесплатно через Google Gemini)", "error");
     return;
   }
-  aiIds = ids;
-  $("#ai-count").textContent = ids.length;
+  aiSel = sel;
+  $("#ai-count").textContent = selectionCount();
   $("#ai-action").innerHTML = AI_BULK.map((k) => `<option value="${k}">${esc(META.ai.actions[k])}</option>`).join("");
   updateAiModal();
   $("#ai-modal").classList.remove("hidden");
@@ -293,7 +326,7 @@ function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
   $("#ai-empty-wrap").classList.toggle("hidden", !["translate_ua", "keywords", "improve"].includes(action));
-  const minutes = Math.ceil(aiIds.length / aiRate);
+  const minutes = Math.ceil(selectionCount() / aiRate);
   $("#ai-eta").textContent = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
 }
 
@@ -302,7 +335,7 @@ $("#ai-cancel-modal").addEventListener("click", () => $("#ai-modal").classList.a
 $("#ai-start").addEventListener("click", async () => {
   try {
     await api("/api/ai/bulk", { method: "POST", json: {
-      ids: aiIds, action: $("#ai-action").value, instruction: $("#ai-instr").value, only_empty: $("#ai-only-empty").checked,
+      ...aiSel, action: $("#ai-action").value, instruction: $("#ai-instr").value, only_empty: $("#ai-only-empty").checked,
     } });
     $("#ai-modal").classList.add("hidden");
     toast("Задание для ИИ запущено", "ok");
@@ -409,14 +442,14 @@ $("#prom-catalog").addEventListener("click", async () => {
 })();
 
 // ---------- 💲 цены ----------
-let pricesIds = [];
-async function openPricesModal(ids) {
-  pricesIds = ids;
-  $("#prices-count").textContent = ids.length;
+let pricesSel = { ids: [] };
+async function openPricesModal(sel) {
+  pricesSel = sel;
+  $("#prices-count").textContent = selectionCount();
   $("#prices-modal").classList.remove("hidden");
   $("#prices-currency").value = "";
   try {
-    const sum = await api("/api/products/currencies", { method: "POST", json: { ids } });
+    const sum = await api("/api/products/currencies", { method: "POST", json: sel });
     const parts = Object.entries(sum).map(([c, n]) => `${c === "UAH" ? "в гривнах" : "в " + c} — ${n}`);
     $("#prices-currency-hint").textContent = parts.length ? `Сейчас у выбранных товаров цена ${parts.join(", ")}. ` +
       (sum.UAH ? "Если на самом деле это доллары — выберите «доллары $»." : "") : "";
@@ -435,7 +468,7 @@ $("#prices-apply").onclick = async () => {
   const currency = action === "as_cost" ? $("#prices-currency").value : "";
   $("#prices-apply").disabled = true;
   try {
-    const res = await api("/api/products/prices", { method: "POST", json: { ids: pricesIds, action, value, currency } });
+    const res = await api("/api/products/prices", { method: "POST", json: { ...pricesSel, action, value, currency } });
     $("#prices-modal").classList.add("hidden");
     toast(`Цен изменено: ${res.changed}` + (res.queued ? `, отправлено на Prom: ${res.queued}` : ""), "ok");
     res.warnings.forEach((w) => toast(w, "error"));
@@ -445,17 +478,17 @@ $("#prices-apply").onclick = async () => {
 };
 
 // ---------- удаление ----------
-let deleteIds = [];
-async function openDeleteModal(ids) {
-  deleteIds = ids;
+let deleteSel = { ids: [] };
+async function openDeleteModal(sel) {
+  deleteSel = sel;
   let info;
-  try { info = await api("/api/products/delete/check", { method: "POST", json: { ids } }); }
+  try { info = await api("/api/products/delete/check", { method: "POST", json: sel }); }
   catch (err) { toast(err.message, "error"); return; }
   if (!info.on_prom) {
-    if (!confirm(`Удалить товаров: ${ids.length}? На Prom их нет. Это нельзя отменить.`)) return;
+    if (!confirm(`Удалить товаров: ${info.total}? На Prom их нет. Это нельзя отменить.`)) return;
     return doDelete(false);
   }
-  $("#delete-count").textContent = ids.length;
+  $("#delete-count").textContent = info.total;
   $("#delete-on-prom").textContent = info.on_prom;
   $("#delete-keep-count").textContent = info.on_prom;
   $("#delete-sending").textContent = info.sending
@@ -465,14 +498,14 @@ async function openDeleteModal(ids) {
 }
 async function doDelete(fromProm) {
   try {
-    const res = await api("/api/products/delete", { method: "POST", json: { ids: deleteIds, prom: fromProm } });
+    const res = await api("/api/products/delete", { method: "POST", json: { ...deleteSel, prom: fromProm } });
     const parts = [];
     if (res.deleted) parts.push(`удалено: ${res.deleted}`);
     if (res.deleting) parts.push(`удаляются с Prom: ${res.deleting} — уйдут из списка, когда Prom подтвердит`);
     if (res.kept_on_prom) parts.push(`на Prom остались: ${res.kept_on_prom}`);
     if (parts.length) toast(parts.join(" · "), "ok");
     if (res.rejected.length) toast(`Не удалено ${res.rejected.length}: ${res.rejected[0].reason}`, "error");
-    list.selected.clear();
+    resetSelection();
     loadProducts();
   } catch (err) { toast(err.message, "error"); }
 }
