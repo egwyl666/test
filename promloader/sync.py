@@ -178,6 +178,21 @@ def _found_nothing(result: dict) -> bool:
     return isinstance(total, int) and total == 0
 
 
+def repair_stuck_sending() -> int:
+    """При запуске: товары в «Отправляется», для которых нет незаконченной выгрузки (программу выключили в
+    неудачный момент), возвращаются в «Готов к отправке» — их можно отправить снова, ничего не потеряно."""
+    active = set()
+    for r in db.query("SELECT products FROM sync_jobs WHERE status IN ('pending', 'waiting')"):
+        active |= {int(pid) for pid in json.loads(r["products"])}
+    stuck = [r["id"] for r in db.query("SELECT id FROM products WHERE status = 'sending'") if r["id"] not in active]
+    if stuck:
+        with db.tx() as c:
+            for pid in stuck:
+                c.execute("UPDATE products SET status = 'ready', last_error = ? WHERE id = ? AND status = 'sending'",
+                          ("Отправка прервалась (программа была выключена) — отправьте ещё раз", pid))
+    return len(stuck)
+
+
 def repair_false_success() -> int:
     """Чиним следы старых версий: выгрузки «успешные» при total: 0 (до 1.3.3) и упавшие из-за того,
     что Prom был занят другим импортом (до 1.3.7) — вторые ставим в очередь заново."""
@@ -234,9 +249,10 @@ def _fail_or_retry(job: dict, err: PromError) -> None:
         _update_job(job["id"], attempts=attempts, last_error=str(err), next_run_at=_at(delay))
         return
     log.error("Задача %s не выполнена: %s", job["id"], err)
-    _update_job(job["id"], status="failed", attempts=attempts, last_error=str(err))
     count = len(json.loads(job["products"]))
-    _finish_products(json.loads(job["products"]), ok=False, message=str(err))
+    with db.tx():  # задача и её товары — одной записью: выключение посередине не оставит товары в «Отправляется»
+        _update_job(job["id"], status="failed", attempts=attempts, last_error=str(err))
+        _finish_products(json.loads(job["products"]), ok=False, message=str(err))
     notify.send("sync_failed", f"❗ <b>Отправка на Prom не удалась</b> (товаров: {count})\n{notify.esc(err)}")
 
 
@@ -343,8 +359,9 @@ async def _start_quick(job: dict, client: PromClient) -> None:
     fallback_products = {str(pid): job_products[str(pid)] for pid in fallback}
     finished = {k: v for k, v in job_products.items() if k not in fallback_products}
     result = {"mode": "quick", "processed": processed, "errors": errors, "requeued": len(fallback_products)}
-    _update_job(job["id"], status="done", result=json.dumps(result, ensure_ascii=False))
-    _finish_products(finished, ok=True, per_product=errors)
+    with db.tx():
+        _update_job(job["id"], status="done", result=json.dumps(result, ensure_ascii=False))
+        _finish_products(finished, ok=True, per_product=errors)
     _requeue_as_import(fallback_products)
     if finished:
         notify.send("sync_done", f"✅ <b>Цены и наличие обновлены на Prom</b>: товаров {len(finished) - len(errors)}"
@@ -358,6 +375,16 @@ def _import_in_progress(job_id: int):
     """Prom обрабатывает импорты по одному: пока идёт предыдущий, новый не запускаем."""
     return db.query_one("SELECT id FROM sync_jobs WHERE kind = 'import' AND status = 'waiting' AND id != ? "
                         "ORDER BY id LIMIT 1", (job_id,))
+
+
+def _import_with_same_products(job: dict) -> int | None:
+    """Номер незаконченного импорта, в котором есть товары этой задачи (или None)."""
+    mine = set(json.loads(job["products"]))
+    for r in db.query("SELECT id, products FROM sync_jobs WHERE kind = 'import' AND status IN ('pending', 'waiting') "
+                      "AND id < ? ORDER BY id", (job["id"],)):
+        if mine & set(json.loads(r["products"])):
+            return r["id"]
+    return None
 
 
 def _absorb_queued(job: dict) -> dict:
@@ -379,6 +406,11 @@ def _absorb_queued(job: dict) -> dict:
 
 async def _start(job: dict, client: PromClient) -> None:
     if job.get("kind") == "quick":
+        busy = _import_with_same_products(job)
+        if busy:
+            # Prom ещё не дописал импорт с этими товарами: если быстро обновить цену сейчас, импорт потом вернёт старую
+            _update_job(job["id"], last_error=WAIT_PREVIOUS.format(busy), next_run_at=_at(POLL_SECONDS))
+            return
         return await _start_quick(job, client)
     busy = _import_in_progress(job["id"])
     if busy:
@@ -386,7 +418,7 @@ async def _start(job: dict, client: PromClient) -> None:
         return
     job_products = _absorb_queued(job)
     ids = [int(pid) for pid in job_products]
-    content = feed.build(ids, await _photo_base_url(ids))
+    content = await asyncio.to_thread(feed.build, ids, await _photo_base_url(ids))
     settings = {**DEFAULT_IMPORT_SETTINGS, **(import_settings() or {})}
     if db.get_setting("import_plain_v2") == "1":
         settings.pop("updated_fields", None)
@@ -467,7 +499,7 @@ async def _poll(job: dict, client: PromClient) -> None:
     if ok and _found_nothing(result) and sent.get("method", "file") == "file":
         # Prom не увидел товаров в загруженном файле — тот же файл по ссылке («Завантажити файл з сервера»)
         ids = [int(pid) for pid in json.loads(job["products"])]
-        content = feed.build(ids, await _photo_base_url(ids))
+        content = await asyncio.to_thread(feed.build, ids, await _photo_base_url(ids))
         import_id, retry = await _send_import(client, content, sent.get("settings") or dict(DEFAULT_IMPORT_SETTINGS), "url")
         retry["after_file_import"] = job["import_id"]
         _update_job(job["id"], import_id=import_id, sent=json.dumps(retry, ensure_ascii=False), started_at=db.now(),
@@ -480,15 +512,17 @@ async def _poll(job: dict, client: PromClient) -> None:
     if ok and sent.get("after_file_import") and db.get_setting("import_method") != "url":
         log.warning("Импорт по ссылке сработал, а загрузкой файла — нет: дальше отправляю по ссылке")
         db.set_setting("import_method", "url")
-    _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False), last_error=message)
     per_product = _per_product_errors(result)
+    with db.tx():  # итог задачи и статусы товаров — одной записью
+        _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False),
+                    last_error=message)
+        _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=per_product)
     if ok:
         count = len(json.loads(job["products"]))
         notify.send("sync_done", f"✅ <b>Выгрузка на Prom выполнена</b>: товаров {max(0, count - len(per_product))}"
                     + (f", с ошибками {len(per_product)} (подробности — в программе)" if per_product else ""))
     if not ok:
         notify.send("sync_failed", f"❗ <b>Prom не принял импорт</b>\n{notify.esc(message[:300])}")
-    _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=per_product)
 
 
 def make_client() -> PromClient:

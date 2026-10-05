@@ -222,3 +222,27 @@ def test_previous_price_currency_not_taken_from_other_action(client):
     client.patch(f"/api/products/{a}", json={"price": "199"})  # в ту же секунду, руками
     ch = client.get("/api/products").json()["items"][0]["price_change"]
     assert ch["old"] == "150" and ch["old_currency"] is None
+
+
+def test_nbu_failure_is_not_retried_for_every_product(monkeypatch):
+    """НБУ не ответил — следующие 10 минут не ждём его снова (иначе каждый товар в $ открывался бы по 20 с)."""
+    calls = []
+
+    class Down:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k):
+            calls.append(1)
+            raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(rates.httpx, "Client", Down)
+    monkeypatch.setattr(rates, "_failed", {})
+    db.set_setting("nbu_rate_USD", json.dumps({"rate": 41.0, "date": "2026-01-01"}))
+    for _ in range(5):
+        assert REAL_NBU("USD")["rate"] == 41.0
+    assert len(calls) == 1
+    with pytest.raises(rates.RateError):
+        for _ in range(3):
+            REAL_NBU("EUR")
+    assert len(calls) == 2

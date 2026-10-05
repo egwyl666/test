@@ -9,6 +9,8 @@ for name in ("PROM_API_TOKEN", "PUBLIC_BASE_URL", "PROM_API_BASE", "FEED_KEY", "
              "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL"):
     os.environ.pop(name, None)
 
+os.environ["PROMLOADER_ALLOWED_HOSTS"] = "testserver"  # адрес TestClient
+
 from promloader import db, rates  # noqa: E402
 
 REAL_NBU = rates.nbu

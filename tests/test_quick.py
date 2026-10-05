@@ -166,3 +166,33 @@ def test_product_deleted_on_prom_is_recreated_by_full_import():
 
 def test_quick_error_text_is_readable():
     assert sync._quick_errors({"errors": {"X": {"price": "Неверная цена"}}}) == {"X": "Неверная цена"}
+
+
+def test_quick_waits_for_import_with_same_product():
+    """Цену поменяли, пока Prom ещё обрабатывает импорт этого товара: быстрое обновление ждёт конца импорта,
+    иначе импорт потом вернул бы старую цену."""
+    pid = synced()
+    products.update(pid, {"name": "Нова назва"})       # полная выгрузка
+    import_job = sync.enqueue([pid])["job_id"]
+    with db.tx() as c:                                  # Prom принял файл и обрабатывает
+        c.execute("UPDATE sync_jobs SET status = 'waiting' WHERE id = ?", (import_job,))
+        c.execute("UPDATE products SET status = 'synced', synced_at = ?, pending_fields = '[]' WHERE id = ?",
+                  (db.now(), pid))
+    products.update(pid, {"price": "120"})              # и тут же поменяли цену
+    quick_job = sync.enqueue([pid])["job_id"]
+    prom = Prom()
+    base = prom.handler
+
+    def still_processing(request):                      # Prom ещё не отчитался по товарам импорта
+        if "/import/status/" in request.url.path:
+            prom.calls.append(request)
+            return httpx.Response(200, json={"status": "PARTIAL", "total": 1, "created": 0, "updated": 0,
+                                             "not_changed": 0, "with_errors_count": 0})
+        return base(request)
+    prom.handler = still_processing
+    with db.tx() as c:
+        c.execute("UPDATE sync_jobs SET import_id = 'imp-1' WHERE id = ?", (import_job,))
+    prom.run()
+    job = db.query_one("SELECT * FROM sync_jobs WHERE id = ?", (quick_job,))
+    assert job["status"] == "pending" and f"№{import_job}" in job["last_error"]
+    assert "edit_by_external_id" not in prom.paths()

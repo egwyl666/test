@@ -460,7 +460,9 @@ def _sample(stats: dict, message: str) -> None:
         stats["error_samples"].append(message)
 
 
-def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: bool = False) -> tuple[dict, list[int]]:
+def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: bool = False,
+                changed: list[int] | None = None) -> tuple[dict, list[int]]:
+    """changed — список, куда складываются изменённые товары по ходу (он остаётся у вызывающего даже при сбое)."""
     stats = {"total": len(items), "valid": 0, "created": 0, "updated": 0, "unchanged": 0, "price_changed": 0,
              "missing": 0, "returned": 0, "errors": 0, "error_samples": []}
     valid, seen = [], set()
@@ -490,7 +492,7 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
         )
 
     ts = db.now()
-    changed: list[int] = []
+    changed = changed if changed is not None else []
     multi: set[int] = set()
     for start in range(0, len(valid), CHUNK):
         trash: list[str] = []
@@ -570,10 +572,12 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
             "INSERT INTO supplier_runs (supplier_id, status, trigger, started_at) VALUES (?, 'running', ?, ?)",
             (supplier_id, trigger, db.now())).lastrowid
     status, stats, message = "ok", {}, ""
+    changed: list[int] = []
     try:
         if not any(t == "external_id" for t in s["mapping"].values()):
             raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
         path = source_path(supplier_id, refetch=True, transport=transport)
+        rates.prefetch()  # курс — до записи в базу
         sheets = excel.sheet_names(path)
         sheet = s["sheet"] if s["sheet"] in sheets else sheets[0]
         rows, embedded = excel.read_sheet(path, sheet)
@@ -583,14 +587,19 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
                                      pricing.Pricer(), supplier_id)
         if s["clean_names"]:
             excel.clean_names(items)
-        stats, changed = apply_items(s, items, embedded, run_id, force)
-        if s["auto_sync"]:
-            stats["queued"] = _queue_changed(changed)
+        stats, _ = apply_items(s, items, embedded, run_id, force, changed)
     except (SupplierError, excel.ImportError_, rates.RateError) as exc:
         status, message = "failed", str(exc)
     except Exception as exc:
         log.exception("Поставщик %s: сбой обновления", supplier_id)
         status, message = "failed", f"Внутренняя ошибка: {exc}"
+    if s["auto_sync"]:
+        # даже если обновление оборвалось на середине: уже изменённое (записано частями) должно уйти на Prom,
+        # иначе при следующем обновлении эти товары выглядят «без изменений» и остались бы со старой ценой
+        try:
+            stats["queued"] = _queue_changed(changed)
+        except Exception:
+            log.exception("Поставщик %s: не удалось поставить изменения в очередь", supplier_id)
     if status == "failed":
         notify.send("supplier_failed", f"⚠️ <b>Поставщик «{notify.esc(s['name'])}» не обновился</b>\n{notify.esc(message)}")
     with db.tx() as c:
@@ -657,6 +666,7 @@ def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dic
     ids — только эти товары (None — все с закупкой/РРЦ). send — отправить изменённые цены товаров, которые
     уже на Prom (None — по настройке «Наценка» → «сразу отправлять новые цены»).
     """
+    rates.prefetch()
     pricer = pricing.Pricer()
     where = "WHERE (cost_price IS NOT NULL OR rrp IS NOT NULL)"
     args: list = []
@@ -687,7 +697,6 @@ def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dic
                     products._touch(c, p["id"], updates, p["status"])
                     changed.append(p["id"])
     if send is None:
-        from . import rates
         send = rates.settings()["auto_send"]
     on_prom = {p["id"] for p in rows if p["synced_at"]}
     auto = {r["id"] for r in db.query("SELECT id FROM suppliers WHERE auto_sync = 1")}

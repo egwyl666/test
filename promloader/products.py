@@ -551,6 +551,8 @@ def store_image_bytes(content: bytes) -> str:
         img.load()
     except (UnidentifiedImageError, OSError):
         raise ProductError("Файл не похож на изображение")
+    except Image.DecompressionBombError:
+        raise ProductError("Картинка слишком большая (больше 90 мегапикселей) — уменьшите её")
     fmt = img.format or ""
     too_big = max(img.size) > MAX_IMAGE_SIDE
     if fmt in KEEP_FORMATS and not too_big:

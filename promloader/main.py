@@ -11,6 +11,7 @@ import uuid
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -43,6 +44,9 @@ async def lifespan(app: FastAPI):
     fixed = sync.repair_false_success()
     if fixed:
         log.warning("Выгрузки, в которых Prom не нашёл товаров, помечены как неудачные: %d", fixed)
+    stuck = sync.repair_stuck_sending()
+    if stuck:
+        log.warning("Товары, застрявшие в «Отправляется» после выключения, возвращены в «Готов»: %d", stuck)
     stop = asyncio.Event()
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
@@ -217,6 +221,54 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 # ---------- доступ ----------
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+OPEN_PATHS = ("/media/", "/feed/")  # фото и фид забирает Prom по публичному адресу
+
+
+def _host_name(value: str) -> str:
+    """'localhost:8765' -> 'localhost'; '[::1]:80' -> '[::1]'."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value.split("]")[0] + "]"
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def _allowed_hosts() -> set[str]:
+    hosts = set(LOCAL_HOSTS)
+    extra = os.environ.get("PROMLOADER_ALLOWED_HOSTS", "")
+    hosts |= {h.strip().lower() for h in extra.split(",") if h.strip()}
+    public = config.public_base_url()
+    if public:
+        hosts.add(_host_name(urlparse(public).netloc))
+    return hosts
+
+
+@app.middleware("http")
+async def same_site_only(request: Request, call_next):
+    """Защита от чужих сайтов, открытых в том же браузере.
+
+    - Программа отвечает только по своему адресу (localhost). Это закрывает «DNS rebinding»: чужой сайт не может
+      прочитать, например, резервную копию с токенами. Если интерфейс открыт по сети и закрыт паролем
+      (APP_PASSWORD), адрес не проверяется; другие адреса можно разрешить в PROMLOADER_ALLOWED_HOSTS.
+    - Изменяющие запросы (POST/PUT/PATCH/DELETE) принимаются только со страниц самой программы: браузер
+      сообщает, откуда запрос (Origin, Sec-Fetch-Site), и запрос с чужого сайта отклоняется.
+    """
+    path = request.url.path
+    if not path.startswith(OPEN_PATHS):
+        host = request.headers.get("host", "")
+        if not os.environ.get("APP_PASSWORD") and _host_name(host) not in _allowed_hosts():
+            return JSONResponse({"detail": "Программа открывается только по адресу http://localhost. Для доступа по "
+                                           "сети задайте APP_PASSWORD (см. README)"}, status_code=403)
+        if request.method in UNSAFE_METHODS:
+            origin = request.headers.get("origin")
+            site = request.headers.get("sec-fetch-site", "")
+            if site == "cross-site" or (origin is not None and urlparse(origin).netloc.lower() != host.lower()):
+                log.warning("Отклонён запрос %s %s с чужой страницы (%s)", request.method, path, origin or site)
+                return JSONResponse({"detail": "Запрос отклонён: он пришёл не со страницы программы"}, status_code=403)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
     """Если задан APP_PASSWORD — интерфейс закрыт паролем. Фото и фид остаются открытыми: их забирает Prom."""
@@ -292,7 +344,7 @@ async def feed_file(name: str):
 
 
 @app.get("/feed/prom.yml")
-async def feed_all(key: str = ""):
+def feed_all(key: str = ""):
     """Постоянная ссылка для автоимпорта в кабинете Prom (все товары, кроме черновиков)."""
     if not secrets.compare_digest(key, config.get("feed_key")):
         raise HTTPException(403, "Неверный ключ фида")
@@ -302,7 +354,7 @@ async def feed_all(key: str = ""):
 # ---------- товары ----------
 
 @app.get("/api/meta")
-async def meta():
+def meta():
     return {
         "presence": products.PRESENCE,
         "statuses": products.STATUSES,
@@ -324,24 +376,24 @@ async def meta():
 
 
 @app.get("/api/products")
-async def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier: str = ""):
+def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier: str = ""):
     """supplier: '' — все, 'none' — без поставщика, число — товары поставщика."""
     supplier_id = 0 if supplier == "none" else (int(supplier) if supplier.isdigit() else None)
     return products.list_products(status, q, max(1, min(limit, 1000)), max(0, offset), supplier_id)
 
 
 @app.post("/api/products")
-async def create_product(data: dict = Body(default={})):
+def create_product(data: dict = Body(default={})):
     return products.get(products.create(data))
 
 
 @app.get("/api/products/{product_id}")
-async def get_product(product_id: int):
+def get_product(product_id: int):
     return products.get(product_id)
 
 
 @app.patch("/api/products/{product_id}")
-async def update_product(product_id: int, data: dict = Body(...)):
+def update_product(product_id: int, data: dict = Body(...)):
     return products.update(product_id, data)
 
 
@@ -458,10 +510,10 @@ async def upload_images(product_id: int, files: list[UploadFile] = File(...)):
             errors.append(f"{f.filename}: файл больше 25 МБ")
             continue
         try:
-            added.append(products.add_image_file(product_id, content))
+            added.append(await asyncio.to_thread(products.add_image_file, product_id, content))
         except products.ProductError as exc:
             errors.append(f"{f.filename}: {exc}")
-    return {"added": added, "errors": errors, "product": products.get(product_id)}
+    return {"added": added, "errors": errors, "product": await asyncio.to_thread(products.get, product_id)}
 
 
 @app.post("/api/products/{product_id}/images/url")
@@ -1096,7 +1148,8 @@ async def restore_backup(name: str):
 
 @app.post("/api/backups/upload")
 async def restore_uploaded_backup(file: UploadFile = File(...)):
-    backup.stage_restore_upload(await file.read())
+    # копия может весить гигабайты (фото) — пишем на диск частями, а не читаем целиком в память
+    await asyncio.to_thread(backup.stage_restore_stream, file.file)
     return {"restarting": runtime.request_restart()}
 
 

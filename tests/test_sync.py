@@ -403,3 +403,15 @@ def test_no_prom_token_rejects_send_with_reason(client):
     assert res["accepted"] == 0 and "API-токен" in res["rejected"][0]["reasons"][0]
     assert products.get(pid)["status"] == "draft"
     assert client.get("/api/meta").json()["prom_token_set"] is False
+
+
+def test_products_stuck_in_sending_are_released_on_start():
+    from promloader import db, products, sync
+    stuck = products.create({"name": "Застряг", "price": 10, "external_id": "S-1"})
+    queued = products.create({"name": "В черзі", "price": 10, "external_id": "S-2"})
+    sync.enqueue([queued])
+    with db.tx() as c:
+        c.execute("UPDATE products SET status = 'sending' WHERE id = ?", (stuck,))
+    assert sync.repair_stuck_sending() == 1
+    assert products.get(stuck)["status"] == "ready" and "прервалась" in products.get(stuck)["last_error"]
+    assert products.get(queued)["status"] == "sending"   # у этого выгрузка ещё идёт — не трогаем

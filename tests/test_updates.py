@@ -199,3 +199,33 @@ def test_update_keeps_user_files_and_uses_manifest(tmp_path):
     assert not (app / "promloader" / "old_module.py").exists()  # устаревший код программы удалён
     manifest = json.loads((db.data_dir() / "updates" / "manifest.json").read_text())
     assert "promloader/added.py" in manifest and "START.bat" in manifest
+
+
+def test_restore_rejects_foreign_files_and_keeps_update_source(tmp_path):
+    import io
+    import zipfile as zf
+
+    from promloader import backup, db
+
+    db.set_setting("update_repo", "owner/real")
+    db.set_setting("shop_name", "Мій магазин")
+    good = backup.create("manual")
+    # подложенная копия: исполняемый файл и чужой репозиторий обновлений
+    evil = io.BytesIO()
+    with zf.ZipFile(backup.path_of(good["name"])) as src, zf.ZipFile(evil, "w") as z:
+        for info in src.infolist():
+            z.writestr(info, src.read(info))
+        z.writestr("tools/cloudflared.exe", b"MZ")
+    with pytest.raises(backup.BackupError, match="посторонние"):
+        backup.stage_restore_upload(evil.getvalue())
+
+    db.set_setting("update_repo", "attacker/evil")      # «копия» с чужим источником обновлений
+    snap = backup.create("manual")
+    db.set_setting("update_repo", "owner/real")
+    backup.stage_restore(snap["name"])
+    data_dir = db.data_dir()
+    db._conn.close()
+    db._conn = None
+    assert backup.apply_pending(data_dir)
+    db.init(data_dir)
+    assert db.get_setting("update_repo") == "owner/real" and db.get_setting("shop_name") == "Мій магазин"

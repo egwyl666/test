@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-05 · версия 1.6.1_
+_Обновлено: 2026-10-05 · версия 1.6.2_
 
 ## Модули
 
@@ -54,6 +54,10 @@ _Обновлено: 2026-10-05 · версия 1.6.1_
 | Telegram и поддержка | `/api/telegram/recipients*`, `/api/telegram/candidates`, `/api/support*`, `/api/support/channel/chats` |
 
 ## Правила, которые легко нарушить
+
+- Доступ: middleware `same_site_only` (`main.py`) — только `localhost` (или `APP_PASSWORD` / `PROMLOADER_ALLOWED_HOSTS`), изменяющие запросы только с Origin своей страницы; `/media/` и `/feed/` открыты для Prom. В тестах `conftest.py` разрешает адрес `testserver`.
+- Никаких запросов в интернет внутри `db.tx()`: курс заранее — `rates.prefetch()`; тяжёлые эндпоинты — `def` (пул потоков) или `asyncio.to_thread`.
+- Восстановление копии: `backup._allowed` (только база, `uploads/`, `suppliers/`), `integrity_check`, настройки обновлений (`DEVICE_SETTINGS`) берутся с этого компьютера.
 
 - Все изменения товара — через `products.update`/`_touch`: иначе нет журнала, `pending_fields` и смены статуса.
 - «Кто поменял» задаётся `with changes.source("…")` вокруг операции (поставщик, курс, ИИ, импорт, Prom).

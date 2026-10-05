@@ -308,3 +308,23 @@ def test_delete_supplier_keeps_products():
     items = products_by_sku()
     assert len(items) == 3 and all(p["supplier_id"] is None for p in items.values())
     assert json.loads(db.query_one("SELECT COUNT(*) AS n FROM supplier_items")["n"].__str__()) == 0
+
+
+def test_changes_queued_even_if_run_fails_midway(monkeypatch):
+    """Обновление оборвалось на середине — уже записанные изменения всё равно уходят на Prom."""
+    from promloader import sync
+    sid = make_supplier(make_yml(BASE), auto_sync=1, new_status="ready")
+    sent = []
+    monkeypatch.setattr(sync, "enqueue", lambda ids: sent.extend(ids) or {"accepted": len(ids), "rejected": []})
+    orig_apply_one = suppliers._apply_one
+    count = {"n": 0}
+
+    def apply_then_fail(*a, **k):
+        count["n"] += 1
+        if count["n"] == 3:
+            raise RuntimeError("сбой посередине")
+        return orig_apply_one(*a, **k)
+    monkeypatch.setattr(suppliers, "CHUNK", 2)
+    monkeypatch.setattr(suppliers, "_apply_one", apply_then_fail)
+    r = run(sid)
+    assert r["status"] == "failed" and len(sent) == 2   # первая часть записана — и ушла в очередь

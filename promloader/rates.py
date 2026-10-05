@@ -11,6 +11,7 @@
 
 import json
 import logging
+import time
 from datetime import date
 
 import httpx
@@ -23,6 +24,10 @@ NBU_URL = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange"
 CURRENCIES = ("USD", "EUR", "PLN", "GBP")
 SIGN = {"USD": "$", "EUR": "€", "PLN": "zł", "GBP": "£", "UAH": "грн"}
 LOCAL = ("UAH", "ГРН", "")
+
+
+FAIL_PAUSE = 600  # НБУ не ответил — не спрашиваем снова 10 минут (иначе каждый товар в валюте ждал бы до 20 с)
+_failed: dict[str, tuple[float, str]] = {}
 
 
 class RateError(Exception):
@@ -43,16 +48,24 @@ def nbu(code: str, transport=None) -> dict:
     today = date.today().isoformat()
     if cached and cached["date"] == today:
         return {**cached, "stale": False}
+    failed = _failed.get(code)
+    if failed and time.monotonic() - failed[0] < FAIL_PAUSE and transport is None:
+        if cached:
+            return {**cached, "stale": True}
+        raise RateError(failed[1])
     try:
         with httpx.Client(timeout=20, transport=transport) as client:
             r = client.get(NBU_URL, params={"valcode": code, "json": ""})
             r.raise_for_status()
             rate = float(r.json()[0]["rate"])
     except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        message = f"Не удалось получить курс {code} НБУ ({exc}). Укажите свой курс на странице «Наценка»"
+        _failed[code] = (time.monotonic(), message)
         if cached:
             log.warning("НБУ недоступен (%s) — беру курс %s за %s", exc, code, cached["date"])
             return {**cached, "stale": True}
-        raise RateError(f"Не удалось получить курс {code} НБУ ({exc}). Укажите свой курс на странице «Наценка»")
+        raise RateError(message)
+    _failed.pop(code, None)
     value = {"rate": rate, "date": today}
     db.set_setting(f"nbu_rate_{code}", json.dumps(value))
     return {**value, "stale": False}
@@ -144,6 +157,21 @@ class Table:
         if own:
             return own["rate_value"] * (1 + (own["rate_add"] or 0) / 100)
         return self.general(code)
+
+
+def prefetch() -> None:
+    """Запросить курсы НБУ заранее — до записи в базу. Иначе запрос в интернет (до 20 с) шёл бы внутри записи,
+    и всё остальное в программе ждало бы его. Ошибки не страшны: пересчёт потом сообщит о них сам."""
+    if settings()["mode"] != "nbu":
+        return
+    codes = {r["c"].upper() for r in db.query("SELECT DISTINCT cost_currency AS c FROM products WHERE cost_currency != ''")}
+    codes |= {r["c"].upper() for r in db.query("SELECT DISTINCT rate_currency AS c FROM suppliers")}
+    for code in sorted(codes - set(LOCAL)):
+        if code in CURRENCIES:
+            try:
+                nbu(code)
+            except RateError:
+                pass
 
 
 def current(transport=None) -> dict:
