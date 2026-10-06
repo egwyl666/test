@@ -185,7 +185,9 @@ def image_rows(product_id: int) -> list[dict]:
 def image_src(img: dict, base_url: str = "") -> str:
     """Ссылка на фото. base_url нужен для фида: Prom скачивает фото по абсолютному адресу."""
     if img.get("url"):
-        return img["url"]
+        from .excel import fix_url
+
+        return fix_url(img["url"])  # на случай старых ссылок с пробелами
     return f"{base_url}/media/{img['file']}"
 
 
@@ -739,7 +741,9 @@ def add_image_file(product_id: int, content: bytes) -> dict:
 
 
 def add_image_url(product_id: int, url: str) -> dict:
-    url = url.strip()
+    from .excel import fix_url
+
+    url = fix_url(url)
     if not re.match(r"^https?://\S+$", url):
         raise ProductError("Ссылка на фото должна начинаться с http:// или https://")
     with db.tx() as c:

@@ -354,7 +354,18 @@ def clean_names(items: list[dict]) -> int:
 
 
 def _split_urls(text: str) -> list[str]:
-    return [u for u in re.split(r"[\s,;|]+", text or "") if re.match(r"^https?://", u)]
+    """Несколько ссылок на фото в одной ячейке. Делим только там, где начинается новая ссылка: в имени файла
+    поставщика бывают пробелы («warm_white (2)500x500.jpg»), и деление по пробелам обрезало адрес — Prom
+    получал несуществующую ссылку (404)."""
+    parts = re.split(r"[\s,;|]+(?=https?://)", (text or "").strip())
+    return [fix_url(u) for u in parts if re.match(r"^https?://", u.strip())]
+
+
+def fix_url(url: str) -> str:
+    """Адрес фото в виде, который скачает Prom: пробелы и кириллица — в %-кодировке, уже закодированное не трогаем."""
+    from urllib.parse import quote
+
+    return quote(url.strip().rstrip(",;|"), safe=":/?#[]@!$&'()*+,;=%~")
 
 
 def build_products(
