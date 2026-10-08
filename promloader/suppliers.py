@@ -361,8 +361,11 @@ def recompute_offer(c, product_id: int, pricer: pricing.Pricer) -> bool:
     else:
         data = dict(best["data"])
         data["group_name"] = product["group_name"]
+        data.setdefault("presence", "available")  # нет колонки наличия — значит, есть (как в choose_offer)
         pricer.apply(data, best["supplier_id"])
-        target = {k: data[k] for k in products.COMMERCIAL if k in data}
+        # чего нет у лучшего поставщика — не оставляем от прежнего (старая цена «со скидкой», чужой остаток)
+        target = {k: data.get(k) for k in ("old_price", "cost_price", "rrp", "quantity")}
+        target.update({k: data[k] for k in products.COMMERCIAL if k in data})
         if not any(not i["missing"] and i["data"].get("presence", "available") != "not_available" for i in items):
             target["presence"] = "not_available"
     locked = set(json.loads(product["locked_fields"] or "[]"))
@@ -443,8 +446,8 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
         if returned:
             # вернулся в прайс: наличие берём от поставщика, даже если его правили руками
             updates["presence"] = fields.get("presence", "available")
-            if "quantity" in fields:
-                updates["quantity"] = fields["quantity"]
+            # пропажа обнулила остаток; поставщик его не даёт — «0 шт.» при «в наличии» не оставляем
+            updates["quantity"] = fields.get("quantity")
             updates = {k: v for k, v in updates.items() if product[k] != v}
             stats["returned"] += 1
         if product["supplier_id"] is None:
@@ -500,10 +503,16 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
             stats["errors"] += 1
             _sample(stats, f"строка {item['row']}: артикул {sku} повторяется")
             continue
-        if item["errors"]:
+        bad_cells = item.get("field_errors") or []
+        fatal = [e for e in item["errors"] if e not in bad_cells]
+        if fatal or bad_cells:
             stats["errors"] += 1
-            _sample(stats, f"строка {item['row']} ({sku}): {'; '.join(item['errors'])}")
+            _sample(stats, f"строка {item['row']} ({sku}): {'; '.join(item['errors'])}"
+                           + ("" if fatal else " — это поле пропущено, остальное обновлено"))
+        if fatal:
             continue
+        # одна непонятная ячейка (наличие «уточняйте», количество «много») не выбрасывает строку: иначе товар
+        # считался бы пропавшим у поставщика и уходил в «нет в наличии»
         seen.add(sku)
         valid.append(item)
     stats["valid"] = len(valid)

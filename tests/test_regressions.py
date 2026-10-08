@@ -281,3 +281,75 @@ def test_supplier_own_rate_only_for_its_currency():
     suppliers.update(sid, {"rate_mode": "manual", "rate_value": "41.8", "rate_currency": "USD"})
     t = rates.Table()
     assert t.rate("USD", sid) == pytest.approx(41.8) and t.rate("EUR", sid) == 40    # евро — по общему курсу
+
+
+# ---------- прайсы поставщиков ----------
+
+@pytest.mark.parametrize("text,key", [("Есть в наличии", "available"), ("В наличии.", "available"),
+                                      ("є  в наявності", "available"), ("5 шт", "available"), (">10", "available"),
+                                      ("0", "not_available"), ("Нет на складе", "not_available"),
+                                      ("Ожидается", "order")])
+def test_presence_words(text, key):
+    assert products.parse_presence(text) == key
+
+
+def test_unclear_cell_does_not_throw_the_row_away():
+    """«уточняйте» в колонке наличия выбрасывало всю строку — товар считался пропавшим и уходил в «нет в наличии»."""
+    from .test_multisupplier import refresh, supplier
+    pricing.save_rules([{"markup_percent": 50, "rounding": "none"}])
+    sid = supplier("Альфа", [])
+    refresh(sid, [["A1", "", "Кружка", 100, "есть", ""]])
+    stats = refresh(sid, [["A1", "", "Кружка", 110, "уточняйте", ""]])
+    p = products.get(products.list_products()["items"][0]["id"])
+    assert p["presence"] == "available" and p["cost_price"] == 110 and p["price"] == 165
+    assert stats["missing"] == 0 and stats["errors"] == 1
+    assert "поле пропущено" in stats["error_samples"][0]
+
+
+def test_row_without_name_is_still_rejected():
+    from .test_multisupplier import refresh, supplier
+    sid = supplier("Альфа", [])
+    stats = refresh(sid, [["A1", "", "", 100, "есть", ""]])
+    assert stats["created"] == 0 and stats["errors"] == 1
+
+
+@pytest.mark.parametrize("spec,rows", [("2 - 5", [2, 3, 4, 5]), ("2–4, 8", [2, 3, 4, 8]), ("8 -", [8, 9, 10]),
+                                       ("2-3 5", [2, 3, 5])])
+def test_row_spec_with_spaces(spec, rows):
+    """«2 - 50» делилось на «2», «-», «50», а одиночный «-» брал все строки файла."""
+    from promloader import excel
+    assert excel.parse_row_spec(spec, 10) == rows
+
+
+def test_multi_supplier_product_returns_in_stock_without_presence_column():
+    """Прайсы без колонки наличия: товар двух поставщиков после возврата оставался «нет в наличии»."""
+    from .test_multisupplier import only_product, refresh, supplier
+    mapping = {"A": "external_id", "B": "barcode", "C": "name", "D": "cost_price"}
+    pricing.save_rules([{"markup_percent": 50, "rounding": "none"}])
+    a = supplier("Альфа", [], mapping=mapping)
+    b = supplier("Бета", [], mapping=mapping)
+    refresh(a, [["A1", "4820000000017", "Кружка", 100, "", ""]])
+    refresh(b, [["B7", "4820000000017", "Кружка", 80, "", ""]])
+    refresh(a, [])
+    refresh(b, [])
+    assert only_product()["presence"] == "not_available"
+    refresh(b, [["B7", "4820000000017", "Кружка", 85, "", ""]])
+    p = only_product()
+    assert p["presence"] == "available" and p["cost_price"] == 85 and p["quantity"] in (None, 0)
+
+
+NODE = __import__("shutil").which("node")
+
+
+@pytest.mark.skipif(not NODE, reason="нужен node")
+def test_mapping_keeps_open_range_when_a_row_is_unticked():
+    """Снятие одной галочки превращало «2-» в «2, 4-5000»: новые строки прайса потом не брались."""
+    import pathlib
+    import subprocess
+    src = pathlib.Path(__file__).parent.parent / "promloader" / "static" / "mapping.js"
+    code = src.read_text() + """
+const s = parseRowSpec("2-", 10); s.delete(3);
+console.log(JSON.stringify([rowSpecFromSet(s, 10), rowSpecFromSet(s, 0), [...parseRowSpec("2 - 4", 10)]]));
+"""
+    out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True).stdout
+    assert json.loads(out) == ["2, 4-", "2, 4-10", [2, 3, 4]]

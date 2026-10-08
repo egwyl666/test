@@ -228,7 +228,8 @@ def read_sheet(path: Path, sheet: str) -> tuple[list[list[str]], dict[int, list[
 
 def parse_row_spec(spec: str, max_row: int) -> list[int]:
     """'2-50, 55, 60-' -> номера строк (как в Excel, с единицы)."""
-    spec = (spec or "").strip()
+    # «2 - 50» и «2–50»: без склейки пробелы делили диапазон на «2», «-», «50», а одиночный «-» брал все строки
+    spec = re.sub(r"\s*[-–—]\s*", "-", (spec or "").strip())
     if not spec:
         return []
     selected: set[int] = set()
@@ -438,6 +439,7 @@ def build_products(
             "image_urls": urls[: products.MAX_IMAGES],
             "embedded_images": len(files),
             "errors": errors + check["errors"],
+            "field_errors": errors,  # непонятные ячейки: поле пропущено, остальная строка годится
             "warnings": price_warnings + check["warnings"],
         })
     return result

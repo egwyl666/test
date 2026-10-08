@@ -3,7 +3,8 @@
 
 function parseRowSpec(spec, maxRow) {
   const out = new Set();
-  for (const part of spec.split(/[,;\s]+/).filter(Boolean)) {
+  // «2 - 50», «2–50» — один диапазон, а не «2», «-» (все строки), «50»
+  for (const part of spec.trim().replace(/\s*[-–—]\s*/g, "-").split(/[,;\s]+/).filter(Boolean)) {
     const m = part.match(/^(\d+)?-(\d+)?$|^(\d+)$/);
     if (!m) throw new Error(`Не понял «${part}». Пример: 2-50, 55, 60-`);
     let a, b;
@@ -14,13 +15,16 @@ function parseRowSpec(spec, maxRow) {
   return out;
 }
 
-function rowSpecFromSet(set) {
+// maxRow — последняя строка файла: диапазон до неё пишем с открытым концом («60-»), иначе новые строки прайса
+// поставщика потом не попадали бы в обновление
+function rowSpecFromSet(set, maxRow = 0) {
   const nums = [...set].sort((a, b) => a - b);
   const parts = [];
   for (let i = 0; i < nums.length; i++) {
     const start = nums[i];
     while (i + 1 < nums.length && nums[i + 1] === nums[i] + 1) i++;
-    parts.push(start === nums[i] ? `${start}` : `${start}-${nums[i]}`);
+    if (start !== nums[i] && nums[i] === maxRow) parts.push(`${start}-`);
+    else parts.push(start === nums[i] ? `${start}` : `${start}-${nums[i]}`);
   }
   return parts.join(", ");
 }
@@ -156,7 +160,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
       box.checked ? g.selected.add(n) : g.selected.delete(n);
     }
     g.lastClicked = n;
-    el("spec").value = rowSpecFromSet(g.selected);
+    el("spec").value = rowSpecFromSet(g.selected, openEnded ? g.totalRows : 0);
     g.specTouched = true;
     render();
     onChange();

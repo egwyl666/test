@@ -127,19 +127,28 @@ def parse_int(value) -> int | None:
 
 
 _presence_words = {
-    "available": {"available", "в наличии", "в наявності", "есть", "є", "да", "так", "+", "true", "1", "yes"},
-    "order": {"order", "под заказ", "під замовлення", "заказ", "замовлення"},
-    "not_available": {"not_available", "нет в наличии", "немає в наявності", "нет", "ні", "немає", "-", "false", "0", "no"},
+    "available": {"available", "в наличии", "в наявності", "есть", "є", "да", "так", "+", "true", "yes",
+                  "есть в наличии", "є в наявності", "в наявності є", "наличие", "наявність", "на складе", "є на складі",
+                  "in stock", "instock", "много", "багато", "достаточно", "++", "+++"},
+    "order": {"order", "под заказ", "під замовлення", "заказ", "замовлення", "предзаказ", "передзамовлення",
+              "ожидается", "очікується", "preorder", "pre-order", "на заказ", "на замовлення"},
+    "not_available": {"not_available", "нет в наличии", "немає в наявності", "нет", "ні", "немає", "нема", "-", "false",
+                      "no", "нет на складе", "немає на складі", "отсутствует", "відсутній", "відсутня", "відсутнє",
+                      "закончился", "закінчився", "out of stock", "outofstock", "нет в наявности"},
 }
 
 
 def parse_presence(value) -> str | None:
-    text = str(value or "").strip().lower()
+    text = " ".join(str(value or "").lower().split()).strip(" .!")
     if not text:
         return None
     for key, words in _presence_words.items():
         if text in words:
             return key
+    # в колонке «наличие» часто остаток: «5», «>10», «0»
+    m = re.fullmatch(r"[<>≥≤]?\s*(\d+(?:[.,]\d+)?)\s*(?:шт\.?)?", text)
+    if m:
+        return "available" if float(m.group(1).replace(",", ".")) > 0 else "not_available"
     raise ProductError(f"Неизвестное значение наличия: {value!r}")
 
 
