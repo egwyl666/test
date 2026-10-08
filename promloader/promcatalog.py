@@ -164,9 +164,11 @@ async def reconcile(client, seen: set[int]) -> int:
     if missing:
         with db.tx() as c:
             for pid in missing:
-                c.execute("""UPDATE products SET status = 'error', last_error = ?, synced_at = NULL, prom_id = NULL,
-                             pending_fields = '["*"]' WHERE id = ?""", (MISSING, pid))
-                changes.record(c, pid, "prom", "на Prom", "нет на Prom")
+                # пока ждали ответы Prom, товар могли начать удалять или отправлять — такие не трогаем
+                if c.execute("""UPDATE products SET status = 'error', last_error = ?, synced_at = NULL, prom_id = NULL,
+                                pending_fields = '["*"]' WHERE id = ? AND status IN ('synced', 'ready', 'error')""",
+                             (MISSING, pid)).rowcount:
+                    changes.record(c, pid, "prom", "на Prom", "нет на Prom")
         log.warning("Нет на Prom, хотя считались выгруженными: %d", len(missing))
     return len(missing)
 

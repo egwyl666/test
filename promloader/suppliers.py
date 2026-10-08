@@ -389,7 +389,8 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
                 return
             # товар уже был (создан руками, импортом или снова появился после удаления) — привязываем его к поставщику
             product = other
-    if product is None and existing is not None and existing["ignored"]:
+    if (product is None and existing is not None and existing["ignored"]) or \
+            (product is not None and product["status"] == "deleting"):
         # товар удалили вы — не создаём его заново (вернуть: страница поставщика → «Удалённые вами товары»)
         c.execute("UPDATE supplier_items SET data = ?, images_hash = ?, missing = 0, seen_at = ?, seen_run = ? WHERE id = ?",
                   (payload, img_hash, ts, run_id, existing["id"]))
@@ -750,8 +751,11 @@ def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dic
         "SELECT product_id FROM supplier_items WHERE product_id IS NOT NULL GROUP BY product_id HAVING COUNT(*) > 1")}
     for start in range(0, len(rows), CHUNK):
         with db.tx() as c:
-            for p in rows[start:start + CHUNK]:
-                if "price" in json.loads(p["locked_fields"] or "[]"):
+            for old in rows[start:start + CHUNK]:
+                # перечитать в транзакции: за время пересчёта цену могли закрепить руками или товар — удалить
+                p = c.execute("SELECT id, supplier_id, cost_price, rrp, cost_currency, price, currency, group_name, "
+                              "status, locked_fields, synced_at FROM products WHERE id = ?", (old["id"],)).fetchone()
+                if p is None or "price" in json.loads(p["locked_fields"] or "[]"):
                     continue
                 if p["id"] in multi:  # несколько поставщиков — цена по лучшему предложению и его правилу
                     if recompute_offer(c, p["id"], pricer):
@@ -805,8 +809,9 @@ def bulk_prices(ids: list[int], action: str, value: float = 0, currency: str = "
             raise SupplierError("Изменение цены — от -90 до 1000%")
         changed = []
         with db.tx() as c:
-            for p in rows:
-                if not p["price"]:
+            for old in rows:
+                p = c.execute("SELECT id, price, status FROM products WHERE id = ?", (old["id"],)).fetchone()
+                if p is None or not p["price"]:
                     continue
                 new = round(p["price"] * (1 + value / 100), 2)
                 if new != p["price"]:

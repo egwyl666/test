@@ -72,12 +72,12 @@ def request(ids: list[int], from_prom: bool = True) -> dict:
         on_prom = bool(r["synced_at"] or r["prom_id"] or r["id"] in sent)
         if from_prom and r["status"] == "deleting":
             continue  # уже удаляется
-        if from_prom and on_prom:
-            if r["status"] == "sending":
-                rejected.append({"id": r["id"], "name": r["name"],
-                                 "reason": "Сейчас отправляется на Prom — удалите после окончания отправки"})
-            else:
-                remote.append(r["id"])
+        if r["status"] == "sending":
+            # товар уже в файле выгрузки — если убрать его сейчас, сломается вся выгрузка
+            rejected.append({"id": r["id"], "name": r["name"],
+                             "reason": "Сейчас отправляется на Prom — удалите после окончания отправки"})
+        elif from_prom and on_prom:
+            remote.append(r["id"])
         else:
             local.append(r["id"])
     with db.tx() as c:
@@ -133,11 +133,15 @@ def _failed(rows, message: str) -> None:
 
 
 def _done(ids: list[int]) -> None:
+    """Prom подтвердил удаление. Удаляем из программы только то, что всё ещё «Удаляется» (удаление могли отменить)."""
     if not ids:
         return
-    with changes.source("Prom"):
-        products.delete(ids, note="удалён на Prom")
-    log.info("Удалено на Prom и в программе: %d", len(ids))
+    with db.tx():
+        marks = ",".join("?" * len(ids))
+        still = [r["id"] for r in db.query(f"SELECT id FROM products WHERE status = 'deleting' AND id IN ({marks})", ids)]
+        with changes.source("Prom"):
+            products.delete(still, note="удалён на Prom")
+    log.info("Удалено на Prom и в программе: %d", len(still))
 
 
 def _error_text(err) -> str:

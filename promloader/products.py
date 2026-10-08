@@ -472,7 +472,7 @@ def create(data: dict) -> int:
     ts = db.now()
     with db.tx() as c:
         if external_id and c.execute("SELECT 1 FROM products WHERE external_id = ?", (external_id,)).fetchone():
-            raise ProductError(f"Артикул {external_id} уже занят другим товаром")
+            raise ProductError(f"Артикул {external_id} уже занят другим товаром", field="external_id")
         cols = ["created_at", "updated_at"] + list(fields)
         cur = c.execute(
             f"INSERT INTO products ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
@@ -492,15 +492,19 @@ def update(product_id: int, data: dict, lock: bool = True) -> dict:
     """lock=True — правка руками: у товара поставщика изменённые поля закрепляются."""
     fields = normalize(data)
     with db.tx() as c:
-        row = c.execute("SELECT status FROM products WHERE id = ?", (product_id,)).fetchone()
+        row = c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
         if row is None:
             raise KeyError(product_id)
+        # сохранили то же самое — не правка: ни 🔒, ни «Готов к отправке»
+        fields = {k: v for k, v in fields.items() if row[k] != v}
+        if not fields:
+            return get(product_id)
         if "external_id" in fields:
             clash = c.execute(
                 "SELECT 1 FROM products WHERE external_id = ? AND id != ?", (fields["external_id"], product_id)
             ).fetchone()
             if clash:
-                raise ProductError(f"Артикул {fields['external_id']} уже занят другим товаром")
+                raise ProductError(f"Артикул {fields['external_id']} уже занят другим товаром", field="external_id")
         if lock:
             _lock(c, product_id, [f for f in fields if f in LOCKABLE])
         if {"cost_price", "rrp", "cost_currency"} & set(fields) and "price" not in fields:
@@ -552,17 +556,26 @@ def unlock(product_id: int, names: list[str]) -> None:
 NOT_TRACKED = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields"}
 
 
-def _touch(c, product_id: int, fields: dict, status: str) -> None:
+def _touch(c, product_id: int, fields: dict, status: str | None = None) -> None:
     """Любое изменение поднимает ревизию. Уже выгруженный товар снова ждёт отправки.
 
     Запоминаем, какие поля поменялись с последней отправки: если только цена/наличие —
     хватит быстрого обновления вместо полного импорта. Пустой fields — это изменение фото.
+    Статус берётся из базы внутри этой же транзакции: переданный status — устаревший параметр (вызывающий мог
+    прочитать его раньше, а товар за это время начали удалять или отправлять).
     """
     from . import changes
 
-    fields = dict(fields)
-    changes.record_diff(c, product_id, c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone(), fields)
-    changed = [f for f in fields if f not in NOT_TRACKED] or (["images"] if not fields else [])
+    row = c.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+    if row is None:
+        return
+    photos = not fields
+    fields = {k: v for k, v in fields.items() if k not in row.keys() or row[k] != v}  # то же значение — не изменение
+    if not fields and not photos:
+        return
+    changes.record_diff(c, product_id, row, fields)
+    status = row["status"]
+    changed = [f for f in fields if f not in NOT_TRACKED] or (["images"] if photos else [])
     if changed:
         row = c.execute("SELECT pending_fields FROM products WHERE id = ?", (product_id,)).fetchone()
         pending = set(json.loads(row["pending_fields"] or "[]")) if row else set()

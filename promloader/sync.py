@@ -64,12 +64,16 @@ def enqueue(product_ids: list[int]) -> dict:
     job_id = None
     if accepted:
         quick_ids = {pid for pid in accepted if _quick_ok(int(pid))}
-        groups = [("quick", {k: v for k, v in accepted.items() if k in quick_ids}),
-                  ("import", {k: v for k, v in accepted.items() if k not in quick_ids})]
         ts = db.now()
         with db.tx() as c:
-            for pid in accepted:
-                c.execute("UPDATE products SET status = 'sending', last_error = '' WHERE id = ?", (int(pid),))
+            for pid in list(accepted):
+                # статус проверяем ещё раз в момент записи: товар могли начать удалять или уже отправить
+                if not c.execute("UPDATE products SET status = 'sending', last_error = '' WHERE id = ? "
+                                 "AND status NOT IN ('sending', 'deleting')", (int(pid),)).rowcount:
+                    del accepted[pid]
+                    rejected.append({"id": int(pid), "name": "", "reasons": ["Товар уже отправляется или удаляется"]})
+            groups = [("quick", {k: v for k, v in accepted.items() if k in quick_ids}),
+                      ("import", {k: v for k, v in accepted.items() if k not in quick_ids})]
             for kind, group in groups:
                 if not group:
                     continue
@@ -133,14 +137,20 @@ def _update_job(job_id: int, **fields) -> None:
         c.execute(f"UPDATE sync_jobs SET {sets} WHERE id = ?", list(fields.values()) + [job_id])
 
 
-def _finish_products(job_products: dict, ok: bool, message: str = "", per_product: dict | None = None) -> None:
-    """Проставляет итог только тем товарам, которые не меняли за время отправки."""
+def _finish_products(job_products: dict, ok: bool, message: str = "", per_product: dict | None = None,
+                     job_id: int | None = None) -> None:
+    """Проставляет итог только тем товарам, которые не меняли за время отправки и которые всё ещё «Отправляется».
+    Товар, который уже стоит в следующей выгрузке, не трогаем: его итог проставит она."""
     per_product = per_product or {}
     ts = db.now()
     with db.tx() as c:
+        later = set()
+        for r in c.execute("SELECT products FROM sync_jobs WHERE status IN ('pending', 'waiting') AND id != ?",
+                           (job_id or 0,)).fetchall():
+            later |= set(json.loads(r["products"]))
         for pid, revision in job_products.items():
-            row = c.execute("SELECT revision, external_id FROM products WHERE id = ?", (int(pid),)).fetchone()
-            if row is None:
+            row = c.execute("SELECT revision, external_id, status FROM products WHERE id = ?", (int(pid),)).fetchone()
+            if row is None or row["status"] != "sending" or str(pid) in later:
                 continue
             if row["revision"] != revision:
                 c.execute("UPDATE products SET status = 'ready' WHERE id = ? AND status = 'sending'", (int(pid),))
@@ -151,11 +161,11 @@ def _finish_products(job_products: dict, ok: bool, message: str = "", per_produc
             if ok and not own_error:
                 c.execute(
                     "UPDATE products SET status = 'synced', last_error = '', synced_at = ?, pending_fields = '[]' "
-                    "WHERE id = ?", (ts, int(pid))
+                    "WHERE id = ? AND status = 'sending'", (ts, int(pid))
                 )
             else:
                 c.execute(
-                    "UPDATE products SET status = 'error', last_error = ? WHERE id = ?",
+                    "UPDATE products SET status = 'error', last_error = ? WHERE id = ? AND status = 'sending'",
                     (own_error or message, int(pid)),
                 )
 
@@ -252,7 +262,7 @@ def _fail_or_retry(job: dict, err: PromError) -> None:
     count = len(json.loads(job["products"]))
     with db.tx():  # задача и её товары — одной записью: выключение посередине не оставит товары в «Отправляется»
         _update_job(job["id"], status="failed", attempts=attempts, last_error=str(err))
-        _finish_products(json.loads(job["products"]), ok=False, message=str(err))
+        _finish_products(json.loads(job["products"]), ok=False, message=str(err), job_id=job["id"])
     notify.send("sync_failed", f"❗ <b>Отправка на Prom не удалась</b> (товаров: {count})\n{notify.esc(err)}")
 
 
@@ -361,7 +371,7 @@ async def _start_quick(job: dict, client: PromClient) -> None:
     result = {"mode": "quick", "processed": processed, "errors": errors, "requeued": len(fallback_products)}
     with db.tx():
         _update_job(job["id"], status="done", result=json.dumps(result, ensure_ascii=False))
-        _finish_products(finished, ok=True, per_product=errors)
+        _finish_products(finished, ok=True, per_product=errors, job_id=job["id"])
     _requeue_as_import(fallback_products)
     if finished:
         notify.send("sync_done", f"✅ <b>Цены и наличие обновлены на Prom</b>: товаров {len(finished) - len(errors)}"
@@ -516,7 +526,8 @@ async def _poll(job: dict, client: PromClient) -> None:
     with db.tx():  # итог задачи и статусы товаров — одной записью
         _update_job(job["id"], status="done" if ok else "failed", result=json.dumps(result, ensure_ascii=False),
                     last_error=message)
-        _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=per_product)
+        _finish_products(json.loads(job["products"]), ok=ok, message=message, per_product=per_product,
+                         job_id=job["id"])
     if ok:
         count = len(json.loads(job["products"]))
         notify.send("sync_done", f"✅ <b>Выгрузка на Prom выполнена</b>: товаров {max(0, count - len(per_product))}"
