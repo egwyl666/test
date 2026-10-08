@@ -116,3 +116,65 @@ def test_saving_unchanged_values_keeps_status_and_locks():
     assert after["status"] == "synced" and after["locked_fields"] == [] and after["revision"] == p["revision"]
     products.bulk_edit([pid], {"group_name": p["group_name"]})
     assert products.get(pid)["status"] == "synced"
+
+
+# ---------- «пробный прогон» ничего не трогает ----------
+
+def test_preview_keeps_photo_files():
+    """«👁 Что изменится» удалял файлы фото, которые поставщик заменил бы, — а база откатывалась к ним."""
+    from .conftest import make_image
+    sid = make_supplier(make_yml(BASE))
+    pid = products.create({"name": "Кружка", "price": 1, "external_id": "A1"})
+    products.add_image_file(pid, make_image())
+    photo = db.uploads_dir() / db.query_one("SELECT file FROM images WHERE product_id = ?", (pid,))["file"]
+    suppliers.preview(sid)
+    assert photo.exists()
+    assert db.query_one("SELECT file FROM images WHERE product_id = ?", (pid,))["file"] == photo.name
+
+
+def test_preview_blocks_parallel_run(monkeypatch):
+    sid = make_supplier(make_yml(BASE))
+    seen = {}
+
+    def during(fn, *a, **k):
+        with pytest.raises(suppliers.SupplierError, match="обновляется"):
+            suppliers.run(sid)
+        seen["running"] = suppliers.get(sid)["running"]
+        return {"result": ({"total": 0, "valid": 0, "errors": 0, "error_samples": [], "unchanged": 0}, [])}
+    monkeypatch.setattr(changes, "preview", during)
+    suppliers.preview(sid)
+    assert seen["running"] is True and suppliers.get(sid)["running"] is False
+
+
+def test_preview_counts_gone_items_like_real_run(client):
+    """Строки, привязанные импортом файла, предпросмотр не считал «пропавшими», а настоящее обновление — считало."""
+    from promloader import main
+    sid = make_supplier(make_yml(BASE))
+    pid = products.create({"name": "Тарілка з імпорту", "price": 1, "external_id": "Z9", "presence": "available"})
+    main._link_imported(suppliers.get(sid), "Z9", pid, {"data": {"external_id": "Z9"}, "params": [], "image_urls": []})
+    suppliers.update(sid, {"missing_action": "not_available"})
+    p = suppliers.preview(sid)
+    real = run(sid)["stats"]
+    assert real["missing"] == 1 and p["gone"] == 1
+
+
+def test_rate_preview_fetches_nbu_outside_the_transaction(client, monkeypatch):
+    """Запрос к НБУ (до 20 с) не должен идти внутри пробного прогона — вся программа ждала бы его."""
+    from .conftest import REAL_NBU
+    http = []
+
+    class Client:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+        def get(self, *a, **k):
+            http.append(db.in_transaction())
+            return httpx.Response(200, json=[{"rate": 41.0}], request=httpx.Request("GET", "https://bank.gov.ua"))
+    monkeypatch.setattr(rates, "nbu", REAL_NBU)
+    monkeypatch.setattr(rates.httpx, "Client", Client)
+    monkeypatch.setattr(rates, "_failed", {})
+    rates.save_settings({"mode": "manual", "manual": {"USD": 40}})
+    products.create({"name": "Гачок", "cost_price": 1, "cost_currency": "USD", "price": 40, "currency": "UAH"})
+    r = client.post("/api/rates/preview", json={"mode": "nbu"})
+    assert r.status_code == 200 and http == [False]

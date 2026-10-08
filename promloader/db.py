@@ -333,6 +333,11 @@ def tx():
             _conn.execute("COMMIT")
 
 
+def in_transaction() -> bool:
+    """Идёт ли сейчас внешняя транзакция (например, «пробный прогон», который потом откатится)."""
+    return bool(_conn is not None and _conn.in_transaction)
+
+
 def query(sql: str, params=()) -> list[sqlite3.Row]:
     with _lock:
         assert _conn is not None, "db.init() не вызван"

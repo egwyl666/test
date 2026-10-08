@@ -1176,7 +1176,7 @@ def preview_pricing(rules: list[dict] | None = Body(None, embed=True)):
 @app.post("/api/rates/preview")
 def preview_rates(data: dict = Body(...)):
     """Сколько цен изменит новый курс (настройки из формы применяются понарошку)."""
-    rates.prefetch()
+    rates.prefetch(force=True)  # курс НБУ — до пробного прогона, даже если сейчас сохранён «свой» курс
 
     def run():
         rates.save_settings(data)

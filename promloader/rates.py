@@ -159,10 +159,10 @@ class Table:
         return self.general(code)
 
 
-def prefetch() -> None:
+def prefetch(force: bool = False) -> None:
     """Запросить курсы НБУ заранее — до записи в базу. Иначе запрос в интернет (до 20 с) шёл бы внутри записи,
     и всё остальное в программе ждало бы его. Ошибки не страшны: пересчёт потом сообщит о них сам."""
-    if settings()["mode"] != "nbu":
+    if settings()["mode"] != "nbu" and not force:  # force — для предпросмотра, где режим ещё не сохранён
         return
     codes = {r["c"].upper() for r in db.query("SELECT DISTINCT cost_currency AS c FROM products WHERE cost_currency != ''")}
     codes |= {r["c"].upper() for r in db.query("SELECT DISTINCT rate_currency AS c FROM suppliers")}

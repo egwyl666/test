@@ -367,6 +367,6 @@ def test_broken_download_keeps_last_good_price_list():
     r = suppliers.run(sid, transport=broken)
     assert r["status"] == "failed"
     assert suppliers.source_path(sid).read_bytes() == kept          # рабочий прайс на месте
-    assert not list(db.suppliers_dir().glob(f"{sid}.new.*"))         # временный файл убран
+    assert not list(db.suppliers_dir().glob(f"{sid}.new*"))         # временный файл убран
     with pytest.raises(excel.ImportError_):
         suppliers.preview(sid, transport=broken)

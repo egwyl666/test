@@ -13,7 +13,9 @@ import json
 import logging
 import re
 import threading
+import uuid
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -515,8 +517,7 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
         with db.tx() as c:
             for item in valid[start:start + CHUNK]:
                 _apply_one(c, s, item, embedded.get(item["row"], []), ts, run_id, stats, changed, trash, multi)
-        for name in trash:
-            (db.uploads_dir() / name).unlink(missing_ok=True)
+        _drop_files(trash)
 
     with db.tx() as c:
         gone = c.execute(
@@ -568,33 +569,45 @@ def _queue_changed(changed: list[int]) -> int:
 
 def run(supplier_id: int, trigger: str = "manual", force: bool = False, transport=None) -> dict:
     """Полное обновление поставщика. Возвращает запись о запуске."""
-    with _running_lock:
-        if supplier_id in _running:
-            raise SupplierError("Этот поставщик уже обновляется")
-        _running.add(supplier_id)
-    try:
+    with _busy(supplier_id):
         s = _parse(_row(supplier_id))
         with changes.source(f"Поставщик «{s['name']}»"):  # в журнале изменений — кто поменял товары
             return _run(s, trigger, force, transport)
+
+
+def _drop_files(names: list[str]) -> None:
+    """Удалить заменённые файлы фото — только если изменения действительно записаны. Внутри «пробного прогона»
+    (внешняя транзакция, которая откатится) файлы должны остаться: база вернётся к ним."""
+    if db.in_transaction():
+        return
+    for name in names:
+        (db.uploads_dir() / name).unlink(missing_ok=True)
+
+
+@contextmanager
+def _busy(supplier_id: int):
+    """Один поставщик — одно действие за раз: обновление и «Что изменится» не идут параллельно."""
+    with _running_lock:
+        if supplier_id in _running:
+            raise SupplierError("Этот поставщик сейчас обновляется — дождитесь окончания")
+        _running.add(supplier_id)
+    try:
+        yield
     finally:
         with _running_lock:
             _running.discard(supplier_id)
 
 
-def _fetch_source(s: dict, transport=None) -> tuple[Path, bytes | None, str]:
+def _fetch_source(s: dict, transport=None) -> tuple[Path, bytes | None, str, Path | None]:
     """Свежий прайс по ссылке — сначала во временный файл: текущим он станет только после успешного обновления,
-    чтобы битый или пустой прайс не затёр последний рабочий. Без ссылки — сохранённый файл."""
+    чтобы битый или пустой прайс не затёр последний рабочий. Без ссылки — сохранённый файл.
+    Возвращает (путь для разбора, содержимое, имя, временный файл для удаления)."""
     if not s["url"]:
-        return source_path(s["id"]), None, ""
+        return source_path(s["id"]), None, "", None
     content, name = download(s["url"], transport)
-    tmp = db.suppliers_dir() / f"{s['id']}.new{excel.detect_suffix(content, name)}"
+    tmp = db.suppliers_dir() / f"{s['id']}.new-{uuid.uuid4().hex[:8]}{excel.detect_suffix(content, name)}"
     tmp.write_bytes(content)
-    return tmp, content, name
-
-
-def _drop_downloads(supplier_id: int) -> None:
-    for tmp in db.suppliers_dir().glob(f"{supplier_id}.new.*"):
-        tmp.unlink(missing_ok=True)
+    return tmp, content, name, tmp
 
 
 def _parse_items(s: dict, path: Path, images: bool = True) -> tuple[list[dict], dict]:
@@ -612,28 +625,34 @@ def _parse_items(s: dict, path: Path, images: bool = True) -> tuple[list[dict], 
     return items, embedded
 
 
+PREVIEW_RUN = -1
+
+
 def preview(supplier_id: int, force: bool = False, transport=None) -> dict:
     """«👁 Что изменится»: обновление прайса понарошку — посчитать новые товары, изменения цен и пропавшие,
     ничего не записав (и не затронув сохранённый прайс)."""
     s = _parse(_row(supplier_id))
-    if supplier_id in _running:
-        raise SupplierError("Этот поставщик сейчас обновляется — дождитесь окончания")
     if not any(t == "external_id" for t in s["mapping"].values()):
         raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
-    try:
-        path, _, _ = _fetch_source(s, transport)
-        rates.prefetch()
-        items, _ = _parse_items(s, path, images=False)
-        def apply_and_queue():
-            changed: list[int] = []
-            stats, _ = apply_items(s, items, {}, 0, force, changed)
-            if s["auto_sync"]:
-                _queue_changed(changed)  # сколько ушло бы на Prom (очередь тоже откатится)
-            return stats, changed
+    tmp = None
+    with _busy(supplier_id):
+        try:
+            path, _, _, tmp = _fetch_source(s, transport)
+            rates.prefetch()
+            items, _ = _parse_items(s, path, images=False)
 
-        result = changes.preview(apply_and_queue)
-    finally:
-        _drop_downloads(supplier_id)
+            def apply_and_queue():
+                changed: list[int] = []
+                # run_id = -1: ни одна строка прайса не «видена» в этом прогоне — пропавшие считаются как в настоящем
+                stats, _ = apply_items(s, items, {}, PREVIEW_RUN, force, changed)
+                if s["auto_sync"]:
+                    _queue_changed(changed)  # сколько ушло бы на Prom (очередь тоже откатится)
+                return stats, changed
+
+            result = changes.preview(apply_and_queue)
+        finally:
+            if tmp:
+                tmp.unlink(missing_ok=True)
     stats = result.pop("result")[0]
     result.update(total=stats["total"], valid=stats["valid"], errors=stats["errors"],
                   error_samples=stats["error_samples"][:10], unchanged=stats["unchanged"], ignored=stats.get("ignored", 0))
@@ -648,10 +667,11 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
             (supplier_id, trigger, db.now())).lastrowid
     status, stats, message = "ok", {}, ""
     changed: list[int] = []
+    tmp = None
     try:
         if not any(t == "external_id" for t in s["mapping"].values()):
             raise SupplierError("Не выбрана колонка «Артикул / код» — по ней товары узнаются при следующих обновлениях")
-        path, content, name = _fetch_source(s, transport)
+        path, content, name, tmp = _fetch_source(s, transport)
         rates.prefetch()  # курс — до записи в базу
         items, embedded = _parse_items(s, path)
         stats, _ = apply_items(s, items, embedded, run_id, force, changed)
@@ -663,7 +683,8 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
         log.exception("Поставщик %s: сбой обновления", supplier_id)
         status, message = "failed", f"Внутренняя ошибка: {exc}"
     finally:
-        _drop_downloads(supplier_id)
+        if tmp:
+            tmp.unlink(missing_ok=True)
     if s["auto_sync"]:
         # даже если обновление оборвалось на середине: уже изменённое (записано частями) должно уйти на Prom,
         # иначе при следующем обновлении эти товары выглядят «без изменений» и остались бы со старой ценой
@@ -727,8 +748,7 @@ def reapply(product_id: int) -> None:
             products._touch(c, product_id, updates, p["status"])
         if multi:
             recompute_offer(c, product_id, pricing.Pricer())
-    for name in trash:
-        (db.uploads_dir() / name).unlink(missing_ok=True)
+    _drop_files(trash)
 
 
 def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dict:
