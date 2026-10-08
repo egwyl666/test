@@ -353,3 +353,57 @@ console.log(JSON.stringify([rowSpecFromSet(s, 10), rowSpecFromSet(s, 0), [...par
 """
     out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, check=True).stdout
     assert json.loads(out) == ["2, 4-", "2, 4-10", [2, 3, 4]]
+
+
+# ---------- безопасность ----------
+
+def test_public_address_does_not_open_the_interface(client):
+    """Хост публичного адреса (туннель для фото, домен) открывал весь API без пароля — можно было сменить адрес
+    Prom API и увести токен. По публичному адресу открыты только фото и фид."""
+    db.set_setting("public_base_url", "https://shop-photos.trycloudflare.com")
+    host = {"Host": "shop-photos.trycloudflare.com"}
+    assert client.get("/api/settings", headers=host).status_code == 403
+    assert client.post("/api/settings", json={"prom_api_base": "https://evil.example.com"},
+                       headers={**host, "Origin": "https://shop-photos.trycloudflare.com"}).status_code == 403
+    assert client.get("/media/nope.jpg", headers=host).status_code == 404
+
+
+def test_allowed_hosts_with_port(client, monkeypatch):
+    monkeypatch.setenv("PROMLOADER_ALLOWED_HOSTS", "testserver, Shop.Local:8765")
+    assert client.get("/api/settings", headers={"Host": "shop.local:8765"}).status_code == 200
+
+
+def test_origin_behind_reverse_proxy(client):
+    """За nginx Host — внутренний адрес, а Origin — адрес из браузера: все изменения получали 403."""
+    proxied = {"Origin": "https://shop.example.com", "X-Forwarded-Host": "shop.example.com"}
+    assert client.post("/api/products", json={"name": "Гачок"}, headers=proxied).status_code == 200
+    assert client.post("/api/products", json={"name": "Гачок"},
+                       headers={"Origin": "https://shop.example.com"}).status_code == 403
+
+
+def test_cyrillic_password(client, monkeypatch):
+    """compare_digest не принимает строки с кириллицей — такой APP_PASSWORD не подходил никогда."""
+    import base64
+    monkeypatch.setenv("APP_PASSWORD", "пароль")
+    token = base64.b64encode("admin:пароль".encode()).decode()
+    assert client.get("/api/settings", headers={"Authorization": f"Basic {token}"}).status_code == 200
+    bad = base64.b64encode("admin:парол".encode()).decode()
+    assert client.get("/api/settings", headers={"Authorization": f"Basic {bad}"}).status_code == 401
+    assert client.get("/api/settings", headers={"Authorization": "Basic %%%"}).status_code == 401
+
+
+def test_feed_key_with_non_ascii_is_403_not_500(client):
+    assert client.get("/feed/prom.yml", params={"key": "é"}).status_code == 403
+
+
+def test_public_feed_skips_deleting_and_broken_products(client):
+    """Постоянный фид отдавал удаляемые товары (автоимпорт Prom вернул бы их) и товары без цены."""
+    from promloader import config
+    keep = products.create({"name": "Гачок", "price": 100, "external_id": "KEEP"})
+    gone = on_prom(name="Удаляется", ext="GONE")
+    promdelete.request([gone])
+    broken = products.create({"name": "Без ціни", "external_id": "BROKEN"})
+    for pid in (keep, broken):
+        products.set_status([pid], "ready")
+    body = client.get("/feed/prom.yml", params={"key": config.get("feed_key")}).text
+    assert 'id="KEEP"' in body and 'id="GONE"' not in body and 'id="BROKEN"' not in body

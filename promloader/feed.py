@@ -44,11 +44,13 @@ def _fmt_price(value: float) -> str:
 
 
 def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> bytes:
-    """Фид по списку товаров; None — все товары, кроме черновиков."""
+    """Фид по списку товаров; None — постоянный фид: все товары, кроме черновиков, удаляемых и тех, что Prom всё
+    равно не примет (нет названия или цены) — иначе автоимпорт вернул бы на Prom удаляемый товар."""
     if product_ids is None:
-        rows = db.query("SELECT id FROM products WHERE status != 'draft' ORDER BY id")
-        product_ids = [r["id"] for r in rows]
-    items = [products.get(pid) for pid in product_ids]
+        rows = db.query("SELECT id FROM products WHERE status NOT IN ('draft', 'deleting') ORDER BY id")
+        items = [p for p in (products.get(r["id"]) for r in rows) if products.validate(p, image_count=1)["ok"]]
+    else:
+        items = [products.get(pid) for pid in product_ids]
 
     shop_name = shop_name or db.get_setting("shop_name") or "Магазин"
     root = ET.Element("yml_catalog", date=datetime.now().strftime("%Y-%m-%d %H:%M"))

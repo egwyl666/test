@@ -236,13 +236,19 @@ def _host_name(value: str) -> str:
 
 
 def _allowed_hosts() -> set[str]:
-    hosts = set(LOCAL_HOSTS)
+    """Адреса, по которым интерфейс открывается без пароля. Публичного адреса (туннель, домен) здесь нет и быть не
+    должно: по нему Prom забирает только фото и фид, а весь интерфейс без пароля был бы открыт всему интернету."""
     extra = os.environ.get("PROMLOADER_ALLOWED_HOSTS", "")
-    hosts |= {h.strip().lower() for h in extra.split(",") if h.strip()}
-    public = config.public_base_url()
-    if public:
-        hosts.add(_host_name(urlparse(public).netloc))
-    return hosts
+    return LOCAL_HOSTS | {_host_name(h) for h in extra.split(",") if h.strip()}
+
+
+def _same_origin(origin: str, request: Request) -> bool:
+    """Origin страницы совпадает с адресом программы. За обратным прокси (nginx) адрес в Host — внутренний,
+    а адрес из браузера — в X-Forwarded-Host. Подделать эти заголовки чужая страница не может: браузер не даст
+    отправить их без разрешения CORS, а его программа не выдаёт."""
+    netloc = urlparse(origin).netloc.lower()
+    hosts = [request.headers.get("host", "")] + request.headers.get("x-forwarded-host", "").split(",")
+    return any(netloc == h.strip().lower() for h in hosts if h.strip())
 
 
 @app.middleware("http")
@@ -264,7 +270,7 @@ async def same_site_only(request: Request, call_next):
         if request.method in UNSAFE_METHODS:
             origin = request.headers.get("origin")
             site = request.headers.get("sec-fetch-site", "")
-            if site == "cross-site" or (origin is not None and urlparse(origin).netloc.lower() != host.lower()):
+            if site == "cross-site" or (origin is not None and not _same_origin(origin, request)):
                 log.warning("Отклонён запрос %s %s с чужой страницы (%s)", request.method, path, origin or site)
                 return JSONResponse({"detail": "Запрос отклонён: он пришёл не со страницы программы"}, status_code=403)
     return await call_next(request)
@@ -281,10 +287,12 @@ async def basic_auth(request: Request, call_next):
         ok = False
         if header.lower().startswith("basic "):
             try:
-                given_user, _, given_pass = base64.b64decode(header[6:]).decode().partition(":")
-                ok = secrets.compare_digest(given_user, user) and secrets.compare_digest(given_pass, password)
-            except Exception:
-                ok = False
+                raw = base64.b64decode(header[6:])
+            except ValueError:
+                raw = b""
+            given_user, _, given_pass = raw.partition(b":")
+            # байты, а не строки: compare_digest не принимает строки с кириллицей — такой пароль не подходил никогда
+            ok = secrets.compare_digest(given_user, user.encode()) and secrets.compare_digest(given_pass, password.encode())
         if not ok:
             return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Prom Loader"'})
     return await call_next(request)
@@ -347,7 +355,7 @@ async def feed_file(name: str):
 @app.get("/feed/prom.yml")
 def feed_all(key: str = ""):
     """Постоянная ссылка для автоимпорта в кабинете Prom (все товары, кроме черновиков)."""
-    if not secrets.compare_digest(key, config.get("feed_key")):
+    if not secrets.compare_digest(key.encode(), (config.get("feed_key") or "").encode()):
         raise HTTPException(403, "Неверный ключ фида")
     return Response(feed.build(None, config.public_base_url()), media_type="application/xml")
 

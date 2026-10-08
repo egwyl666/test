@@ -233,6 +233,18 @@ const ALLOWED_ATTRS = { A: ["href"], IMG: ["src", "alt"] };
 const DROP_TAGS = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "XML", "META", "TITLE", "HEAD", "LINK",
   "NOSCRIPT", "TEMPLATE", "SVG", "MATH", "FORM", "INPUT", "BUTTON", "SELECT", "TEXTAREA"]);
 
+// Ссылки и картинки в описании — только обычные адреса. Проверка «не javascript:» обходилась: браузер выкидывает
+// из адреса табы и переводы строк, и «java&#9;script:» всё равно выполнялся. Поэтому — белый список схем.
+const SAFE_SCHEMES = new Set(["http:", "https:", "mailto:", "tel:"]);
+
+function safeUrl(value) {
+  try {
+    return SAFE_SCHEMES.has(new URL(value, location.href).protocol);
+  } catch (e) {
+    return false;
+  }
+}
+
 function sanitizeHtml(html) {
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, "text/html");
   const clean = (node) => {
@@ -244,7 +256,8 @@ function sanitizeHtml(html) {
       clean(child);  // сначала вглубь: иначе вложенное в развёрнутый тег не проверится
       if (!ALLOWED_TAGS.has(tag)) { child.replaceWith(...child.childNodes); continue; }
       for (const attr of Array.from(child.attributes)) {
-        const ok = (ALLOWED_ATTRS[tag] || []).includes(attr.name) && !/^\s*(javascript|vbscript):/i.test(attr.value);
+        const isUrl = attr.name === "href" || attr.name === "src";
+        const ok = (ALLOWED_ATTRS[tag] || []).includes(attr.name) && (!isUrl || safeUrl(attr.value));
         if (!ok) child.removeAttribute(attr.name);
       }
     }
