@@ -493,8 +493,47 @@ $("#prom-catalog").addEventListener("click", async () => {
   }
 });
 
+// ---------- первые шаги ----------
+
+const FIRST_STEPS_KEY = "promloader-first-steps-hidden";
+
+function renderFirstSteps() {
+  const f = META.first_steps;
+  let hidden = false;
+  try { hidden = localStorage.getItem(FIRST_STEPS_KEY) === "1"; } catch {}
+  const photo = {
+    r2: [true, "Фото хранятся в Cloudflare R2 — Prom забирает их в любое время."],
+    site: [true, "Фото отдаются по постоянному адресу сайта."],
+    tunnel: [true, "Фото с компьютера Prom забирает через временный адрес — пока компьютер включён. " +
+      "Надёжнее — <a href=\"/settings\">хранилище R2</a> (бесплатно)."],
+    off: [false, "Prom не сможет забрать фото с компьютера: включите временный адрес или R2 в <a href=\"/settings\">Настройках</a>."],
+  }[f.photos] || [false, ""];
+  const steps = [
+    [f.token, "Подключить Prom", f.token ? "API-токен указан." :
+      "Вставьте API-токен из кабинета Prom в <a href=\"/settings\">Настройках</a> — без него товары не отправить."],
+    [photo[0], "Фото для Prom", photo[1]],
+    [f.products > 0, "Добавить товары", f.products > 0
+      ? `Товаров в программе: ${f.products}${f.suppliers ? `, поставщиков: ${f.suppliers}` : ""}.`
+      : `Подключите <a href="/suppliers">поставщика</a> (прайс по ссылке обновляется сам), загрузите
+         <a href="/import">файл Excel</a>, создайте <a href="/product">товар вручную</a> или нажмите «⬇ Каталог с Prom».`],
+    [f.sent, "Отправить первый товар на Prom", f.sent ? "Товары уже есть на Prom." :
+      "Отметьте товар в списке ниже → «Отправить на Prom». Через 1–3 минуты он появится в кабинете Prom."],
+  ];
+  const done = steps.filter(([ok]) => ok).length;
+  $("#first-steps").classList.toggle("hidden", hidden || done === steps.length);
+  $("#first-steps-count").textContent = `сделано ${done} из ${steps.length}`;
+  $("#first-steps-list").innerHTML = steps.map(([ok, title, text]) =>
+    `<li class="${ok ? "done" : ""}"><span class="mark">${ok ? "✓" : ""}</span><div><b>${title}</b>
+      <div class="small muted">${text}</div></div></li>`).join("");
+}
+$("#first-steps-hide").onclick = () => {
+  try { localStorage.setItem(FIRST_STEPS_KEY, "1"); } catch {}
+  $("#first-steps").classList.add("hidden");
+};
+
 (async () => {
   await loadMeta();
+  renderFirstSteps();
   api("/api/prom/catalog").then(showCatalogState).catch(() => {});
   loadAiJobs();
   $("#supplier-filter").innerHTML = `<option value="">Все поставщики</option><option value="none">Без поставщика</option>` +

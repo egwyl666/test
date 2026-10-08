@@ -10,16 +10,7 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/changes">Журнал</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
   </header>
 
   <main style="max-width:820px">
@@ -726,10 +717,10 @@
     });
 
     loadMeta().catch(() => {});
-    loadSchedules().catch(() => {});
+    loadSchedules().catch((err) => toast(`Расписание не загрузилось: ${err.message}`, "error"));
     api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); fillPhotos(s); }).catch((err) => toast(err.message, "error"));
-    loadBackups().catch(() => {});
-    loadRecipients().catch(() => {});
+    loadBackups().catch((err) => toast(`Список копий не загрузился: ${err.message}`, "error"));
+    loadRecipients().catch((err) => toast(`Получатели Telegram не загрузились: ${err.message}`, "error"));
   </script>
 </body>
 </html>

@@ -1,6 +1,6 @@
 # Архитектура
 
-_Обновлено: 2026-10-08 · версия 2.1.0 · сверено с кодом `promloader/`_
+_Обновлено: 2026-10-08 · версия 2.2.0 · сверено с кодом `promloader/`_
 
 Локальное приложение для Windows: FastAPI-сервер + страницы на чистом JS + SQLite. Пользователь работает в браузере
 на `localhost`; Prom.ua получает копию данных через публичное API. Всё введённое сначала сохраняется в базе,
@@ -17,7 +17,7 @@ START.bat → launcher.py (свободный порт, браузер) → tray
    ├ очередь выгрузки  └ suppliers.run         └ schedule              └ aibulk
    └ promdelete.process
    rates_worker (час)  orders_worker (5 мин; при догоне — 20 с)  notify_worker (мин: очередь Telegram)  support_worker  r2_worker
-   maintenance_worker (час: копия, чистка журнала, обновления)
+   maintenance_worker (час: суточная копия → housekeeping.run, обновления)
                      │
                      ▼
                db.py (SQLite, db.tx() — вложенный вызов входит во внешнюю транзакцию)

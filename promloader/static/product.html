@@ -10,16 +10,7 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/changes">Журнал</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
   </header>
 
   <main>
@@ -29,10 +20,15 @@
       <span id="status"></span>
       <span id="save-state" class="save-state"></span>
       <span style="flex:1"></span>
-      <a class="btn" id="btn-on-prom" target="_blank" rel="noopener" hidden title="Открыть этот товар в кабинете Prom">Открыть на Prom ↗</a>
-      <a class="btn" id="btn-diagnose" hidden title="Пошаговая проверка: дойдёт ли этот товар до Prom и на каком шаге проблема">🔍 Проверка выгрузки</a>
-      <button class="btn" id="btn-duplicate" disabled>Дублировать</button>
-      <button class="btn danger" id="btn-delete" disabled>Удалить</button>
+      <details class="actions-menu">
+        <summary class="btn">Действия ▾</summary>
+        <div class="actions-box">
+          <a class="btn" id="btn-on-prom" target="_blank" rel="noopener" hidden title="Открыть этот товар в кабинете Prom">Открыть на Prom ↗</a>
+          <a class="btn" id="btn-diagnose" hidden title="Пошаговая проверка: дойдёт ли этот товар до Prom и на каком шаге проблема">🔍 Проверка выгрузки</a>
+          <button class="btn" id="btn-duplicate" disabled>Дублировать</button>
+          <button class="btn danger" id="btn-delete" disabled>Удалить</button>
+        </div>
+      </details>
       <button class="btn primary" id="btn-send" disabled>Отправить на Prom</button>
     </div>
 

@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, changes, config, db, diagnose, excel, feed, rates, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, autostart, backup, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, promdelete, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -35,13 +35,40 @@ UPDATE_CHECK_HOURS = 12
 log = logging.getLogger("promloader")
 _background: set[asyncio.Task] = set()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_LIMIT = 5 * 1024 * 1024
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+
+def setup_log_file(data_dir: Path) -> logging.Handler:
+    """Журнал программы — data/logs/promloader.log, не больше 5 МБ × 3 файла (раньше рос, пока программа работала).
+    Под значком у часов вывод в консоль не нужен: он уходил бы в тот же журнал второй раз."""
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if getattr(h, "promloader_file", False):
+            root.removeHandler(h)
+            h.close()
+    folder = data_dir / "logs"
+    folder.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(folder / "promloader.log", maxBytes=LOG_LIMIT, backupCount=2, encoding="utf-8",
+                                  delay=True)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.promloader_file = True
+    root.addHandler(handler)
+    if os.environ.get("PROMLOADER_TRAY"):
+        for h in root.handlers:
+            if type(h) is logging.StreamHandler:
+                h.setLevel(logging.WARNING)
+    return handler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # восстановление копии, выбранное в настройках: START.bat делает это сам, а в Docker программа запускается
     # напрямую — без этой строки копия там никогда не применялась
+    setup_log_file(db.default_dir())
     if backup.apply_pending(db.default_dir()):
         log.warning("Данные восстановлены из резервной копии")
     db.init()
@@ -207,7 +234,7 @@ async def maintenance_worker(stop: asyncio.Event) -> None:
         try:
             if backup.due():
                 await asyncio.to_thread(backup.create, "daily")
-                await asyncio.to_thread(changes.cleanup)  # журнал изменений — за полгода
+                await asyncio.to_thread(housekeeping.run)  # после копии: удалённое останется в ней
         except Exception:
             log.exception("Не удалось сделать резервную копию")
         now = asyncio.get_running_loop().time()
@@ -423,6 +450,26 @@ def meta():
             "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
         "groups": [r["group_name"] for r in db.query(
             "SELECT DISTINCT group_name FROM products WHERE group_name != '' ORDER BY group_name")],
+        "first_steps": _first_steps(),
+    }
+
+
+def _first_steps() -> dict:
+    """Для «Первых шагов» на главной: что уже настроено."""
+    if r2.active():
+        photos = "r2"
+    elif config.public_base_url():
+        photos = "site"
+    elif config.get("photo_tunnel") != "0":
+        photos = "tunnel"
+    else:
+        photos = "off"
+    return {
+        "token": bool(config.get("prom_token")),
+        "photos": photos,
+        "products": db.query_one("SELECT COUNT(*) AS n FROM products")["n"],
+        "suppliers": db.query_one("SELECT COUNT(*) AS n FROM suppliers")["n"],
+        "sent": db.query_one("SELECT 1 AS x FROM products WHERE synced_at IS NOT NULL LIMIT 1") is not None,
     }
 
 

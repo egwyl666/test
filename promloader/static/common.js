@@ -13,10 +13,12 @@ async function api(path, options = {}) {
   try {
     response = await fetch(path, opts);
   } catch (e) {
-    const err = new Error("Нет связи с сервером");
+    showOffline(true);
+    const err = new Error("Нет связи с программой");
     err.network = true;
     throw err;
   }
+  showOffline(false);
   let body = null;
   const text = await response.text();
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
@@ -154,6 +156,34 @@ function showUpdateBanner() {
     <a href="/settings#updates">Посмотреть, что нового, и обновить</a>`;
   document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
 }
+
+// Программа выключена или перезапускается: полоска сверху вместо молчащих страниц. Убирается при первом удачном
+// запросе — фоновые обновления страниц (очередь, заказы) сами «увидят», что связь вернулась.
+function showOffline(on) {
+  const bar = document.getElementById("offline-banner");
+  if (!on) { if (bar) bar.remove(); return; }
+  if (bar) return;
+  const el = document.createElement("div");
+  el.id = "offline-banner";
+  el.className = "offline-banner";
+  el.innerHTML = `⚠️ Нет связи с программой — она выключена или перезапускается. Если не пройдёт само за минуту,
+    запустите её ярлыком «Prom Loader». <button class="btn small" type="button">Проверить</button>`;
+  el.querySelector("button").onclick = () => fetch("/api/meta", { cache: "no-store" })
+    .then((r) => { if (r.ok) showOffline(false); }).catch(() => toast("Программа всё ещё не отвечает", "error"));
+  document.body.prepend(el);
+}
+
+// Страховка: ошибка, которую страница забыла обработать, всё равно видна (а не пропадает молча).
+// Нет связи — уже сказано полоской; одинаковые сообщения подряд не повторяем.
+let lastUnhandled = { text: "", at: 0 };
+window.addEventListener("unhandledrejection", (e) => {
+  const err = e.reason;
+  if (!err || err.network) return;
+  const text = err.message || String(err);
+  if (text === lastUnhandled.text && Date.now() - lastUnhandled.at < 5000) return;
+  lastUnhandled = { text, at: Date.now() };
+  toast(text, "error");
+});
 
 // Ждём, пока программа перезапустится (после обновления/восстановления), и перезагружаем страницу.
 function waitForRestart(message, restarting) {
@@ -300,10 +330,29 @@ function descriptionHtml(text) {
   return text.split(/\n\s*\n/).map((p) => `<p>${esc(p.trim()).replace(/\n/g, "<br>")}</p>`).join("");
 }
 
-function initNav() {
+// Меню — одно на все страницы (раньше его копия была в каждом HTML). Новая страница: HTML в static/, строка в
+// main.PAGES и пункт здесь. Третий элемент — адреса, при которых пункт тоже подсвечен (карточка товара — «Товары»).
+const NAV = [
+  ["/", "Товары", ["/product"]],
+  ["/orders", "Заказы"],
+  ["/suppliers", "Поставщики", ["/supplier"]],
+  ["/pricing", "Наценка"],
+  ["/changes", "Журнал"],
+  ["/import", "Импорт файла"],
+  ["/diagnose", "Проверка выгрузки"],
+  ["/settings", "Настройки"],
+  ["/support", "Поддержка"],
+];
+
+function renderNav() {
+  const nav = document.querySelector(".topbar nav");
+  if (!nav || nav.children.length) return;
   const path = location.pathname;
-  $$(".topbar nav a").forEach((a) => a.classList.toggle("active", a.getAttribute("href") === path));
+  nav.innerHTML = NAV.map(([href, label, also = []]) =>
+    `<a href="${href}"${href === path || also.includes(path) ? ' class="active"' : ""}>${esc(label)}</a>`).join("");
 }
+
+function initNav() { renderNav(); }
 
 // Перетаскивание файлов на всю страницу.
 function onPageFileDrop(handler, { accept = (f) => true, text = "Отпустите, чтобы добавить",
@@ -386,4 +435,20 @@ function addHelpButton() {
   document.body.appendChild(a);
 }
 
-document.addEventListener("DOMContentLoaded", () => { initNav(); addHelpButton(); });
+// Второстепенные кнопки (details.actions-menu): на компьютере — в ряд, как обычно; на телефоне — одной кнопкой
+// «Действия ▾», чтобы не занимать три-четыре ряда экрана. Нажатие на действие или мимо меню его закрывает.
+const NARROW = window.matchMedia("(max-width: 640px)");
+function syncActionMenus() {
+  $$("details.actions-menu").forEach((d) => { d.open = !NARROW.matches; });
+}
+NARROW.addEventListener("change", syncActionMenus);
+document.addEventListener("click", (e) => {
+  if (!NARROW.matches) return;
+  $$("details.actions-menu[open]").forEach((d) => {
+    if (!d.contains(e.target) || e.target.closest(".actions-box .btn")) d.open = false;
+  });
+});
+
+renderNav();
+syncActionMenus();
+document.addEventListener("DOMContentLoaded", () => { initNav(); syncActionMenus(); addHelpButton(); });

@@ -38,7 +38,7 @@ h2 { font-size: 17px; margin: 0 0 12px; }
 .topbar .logo { font-weight: 700; font-size: 17px; color: var(--text); }
 .topbar .logo span { color: var(--accent); }
 .topbar nav { display: flex; gap: 4px; }
-.topbar nav a { padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+.topbar nav a { padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; white-space: nowrap; }
 .topbar nav a:hover { background: var(--bg); text-decoration: none; color: var(--text); }
 .topbar nav a.active { background: var(--accent-soft); color: var(--accent); }
 .topbar .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
@@ -418,8 +418,8 @@ details.panel[open] > summary { margin-bottom: 10px; }
 @media (max-width: 640px) { .help-fab { right: 10px; bottom: 10px; } }
 main { padding-bottom: 70px; }
 
-/* узкие окна и телефон: меню переносится и прокручивается, а не вылезает за экран */
-@media (max-width: 1180px) {
+/* узкие окна и телефон: меню — отдельной строкой и прокручивается, а не вылезает за экран и не ломает пункты */
+@media (max-width: 1440px) {
   .topbar { flex-wrap: wrap; height: auto; padding: 8px 16px; gap: 6px 16px; }
   .topbar nav { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
   .topbar nav a { white-space: nowrap; padding: 6px 10px; }
@@ -530,3 +530,28 @@ table.list a.name:hover { color: var(--accent); }
 .preview-box .price-down { color: var(--err); }
 .update-banner.supplier-failed-banner { background: #fff4e0; color: #7a4a00; border-bottom: 1px solid #f3d9a6; }
 .update-banner.supplier-failed-banner a { color: #7a4a00; }
+
+/* ---------- первые шаги ---------- */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.steps li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; }
+.steps .mark { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); display: inline-flex;
+  align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #fff; }
+.steps li.done .mark { background: var(--ok); border-color: var(--ok); }
+.steps li.done b { color: var(--muted); }
+.offline-banner { position: sticky; top: 0; z-index: 300; background: var(--err); color: #fff; padding: 10px 24px;
+  font-size: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.offline-banner .btn { background: #fff; }
+
+/* ---------- «Действия ▾»: на телефоне второстепенные кнопки — в одном меню ---------- */
+.actions-menu { position: relative; display: inline-flex; }
+.actions-menu > summary { list-style: none; display: none; }
+.actions-menu > summary::-webkit-details-marker { display: none; }
+.actions-menu .actions-box { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.actions-menu .actions-box [hidden] { display: none; }
+@media (max-width: 640px) {
+  .actions-menu > summary { display: inline-flex; cursor: pointer; }
+  .actions-menu .actions-box { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; flex-direction: column;
+    align-items: stretch; min-width: 220px; background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .15); }
+  .actions-menu .actions-box .btn { justify-content: flex-start; width: 100%; }
+}

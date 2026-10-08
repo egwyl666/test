@@ -10,16 +10,7 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/changes">Журнал</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
     <div class="right">
       <button class="btn" id="prom-catalog" title="Загрузить в программу товары, которые уже есть в кабинете Prom">⬇ Каталог с Prom</button>
       <a class="btn primary" href="/product">+ Новый товар</a>
@@ -27,6 +18,16 @@
   </header>
 
   <main>
+    <div class="panel first-steps hidden" id="first-steps" style="margin-bottom:16px">
+      <div class="toolbar" style="margin-bottom:6px">
+        <h2 style="margin:0">Первые шаги</h2>
+        <span class="small muted" id="first-steps-count"></span>
+        <span class="spacer"></span>
+        <button class="btn small" id="first-steps-hide" title="Убрать этот блок — настроить всё можно и позже">Скрыть</button>
+      </div>
+      <ol class="steps" id="first-steps-list"></ol>
+    </div>
+
     <div class="panel" id="jobs-panel" style="margin-bottom:16px">
       <div class="toolbar" style="margin-bottom:6px">
         <h2 style="margin:0">Отправка на Prom</h2>
@@ -170,10 +171,15 @@
         <button class="btn" data-action="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
         <button class="btn" data-action="prices" disabled title="Опт → закупка, наценка, курс, ±%">💲 Цены</button>
         <button class="btn" data-action="edit" disabled title="Группа, наличие, количество, производитель, ключевые слова">✏ Изменить</button>
-        <button class="btn" data-action="ready" disabled>Пометить «готов»</button>
-        <button class="btn" data-action="synced" disabled title="Для уже выгруженных товаров: снова считать их «На Prom»">Вернуть «На Prom»</button>
-        <button class="btn" data-action="draft" disabled>В черновики</button>
-        <button class="btn danger" data-action="delete" disabled>Удалить</button>
+        <details class="actions-menu">
+          <summary class="btn">Ещё ▾</summary>
+          <div class="actions-box">
+            <button class="btn" data-action="ready" disabled>Пометить «готов»</button>
+            <button class="btn" data-action="synced" disabled title="Для уже выгруженных товаров: снова считать их «На Prom»">Вернуть «На Prom»</button>
+            <button class="btn" data-action="draft" disabled>В черновики</button>
+            <button class="btn danger" data-action="delete" disabled>Удалить</button>
+          </div>
+        </details>
       </div>
       <div class="dropzone" id="quick-drop" style="margin-bottom:14px">
         <b>Быстрое создание:</b> перетащите сюда фото — на каждое фото создастся черновик товара

@@ -21,16 +21,7 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/changes">Журнал</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
   </header>
 
   <main style="max-width:900px">
@@ -74,7 +65,10 @@
           const p = await api(`/api/products/${want}`);
           $("#product").insertAdjacentHTML("afterbegin",
             `<option value="${p.id}">${esc(p.name)} · ${esc(p.external_id)} · ${esc(META.statuses[p.status] || p.status)}</option>`);
-        } catch {}
+        } catch (err) {
+          toast(err.status === 404 ? "Этот товар не найден — выберите другой" : err.message, "error");
+          return;
+        }
       }
       if (want) $("#product").value = want;
     }

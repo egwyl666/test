@@ -626,8 +626,14 @@ $("#btn-duplicate").addEventListener("click", () => busy($("#btn-duplicate"), as
 }));
 
 $("#btn-delete").addEventListener("click", () => busy($("#btn-delete"), async () => {
-  let onProm = 0;
-  try { onProm = (await api("/api/products/delete/check", { method: "POST", json: { ids: [state.id] } })).on_prom; } catch {}
+  let onProm;
+  try {
+    onProm = (await api("/api/products/delete/check", { method: "POST", json: { ids: [state.id] } })).on_prom;
+  } catch (err) {
+    // не знаем, есть ли товар на Prom, — не спрашиваем «удалить?» с неверным текстом
+    toast(err.message, "error");
+    return;
+  }
   if (!confirm(onProm
     ? "Удалить товар из программы и с Prom?\n\nОн уйдёт из программы, когда Prom подтвердит удаление. Удалить только из программы (оставив на Prom) можно в списке товаров."
     : "Удалить товар? Это действие нельзя отменить.")) return;
