@@ -235,3 +235,49 @@ def test_unicode_minus_and_numbers():
     assert products.parse_number("1 299,50 грн") == 1299.5
     with pytest.raises(products.ProductError):
         products.parse_number("9" * 400)
+
+
+# ---------- цены ----------
+
+def test_no_rule_dollar_price_list_keeps_retail_and_follows_rate():
+    """Без правила наценки товар из долларового прайса продавался по закупке и не менялся при смене курса."""
+    from promloader import excel
+    pricing.save_rules([])
+    rows = [["@id", "cost", "price", "currencyId", "name"], ["1", "2", "3", "USD", "Гачок"]]
+    items = excel.build_products(rows, 1, [2], {"A": "external_id", "B": "cost_price", "C": "price", "D": "currency",
+                                                 "E": "name"}, {}, {}, pricing.Pricer())
+    data = items[0]["data"]
+    assert data["price"] == 120 and data["currency"] == "UAH" and data["rrp"] == 3    # $3 × 40, а не закупка $2
+    pid = products.create({**data, "external_id": "1"})
+    rates.save_settings({"mode": "manual", "manual": {"USD": 44}})
+    suppliers.recalc_prices()
+    assert products.get(pid)["price"] == 132                                          # $3 × 44
+
+
+def test_wholesale_in_dollars_without_rules_becomes_cost_times_rate(client):
+    pricing.save_rules([])
+    pid = products.create({"name": "Гачок", "price": 2.5})
+    client.post("/api/products/prices", json={"ids": [pid], "action": "as_cost", "currency": "USD"})
+    assert products.get(pid)["price"] == 100                                          # 2.5 $ × 40
+
+
+def test_unlocking_price_counts_dollar_cost_in_hryvnia(client):
+    """Снятие 🔒 с цены считало закупку в $ как гривны — цена становилась в 40 раз меньше."""
+    pricing.save_rules([{"markup_percent": 20, "rounding": "none"}])
+    pid = products.create({"name": "Гачок", "cost_price": 2.5, "cost_currency": "USD", "price": 999})
+    client.patch(f"/api/products/{pid}", json={"price": "150"})
+    client.post(f"/api/products/{pid}/unlock", json={"fields": ["price"]})
+    assert products.get(pid)["price"] == 120                                          # 2.5 × 40 × 1.2
+
+
+def test_new_product_with_cost_gets_price():
+    pricing.save_rules([{"markup_percent": 50, "rounding": "none"}])
+    pid = products.create({"name": "Гачок", "cost_price": 2, "cost_currency": "USD"})
+    assert products.get(pid)["price"] == 120 and products.get(pid)["currency"] == "UAH"
+
+
+def test_supplier_own_rate_only_for_its_currency():
+    sid = suppliers.create("Опт")
+    suppliers.update(sid, {"rate_mode": "manual", "rate_value": "41.8", "rate_currency": "USD"})
+    t = rates.Table()
+    assert t.rate("USD", sid) == pytest.approx(41.8) and t.rate("EUR", sid) == 40    # евро — по общему курсу

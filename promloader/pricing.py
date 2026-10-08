@@ -146,7 +146,10 @@ class Pricer:
             if price is not None:
                 data["price"], data["currency"] = price, "UAH"
                 return []
-            if data.get("price") is not None and (data.get("currency") or "UAH").upper() in rates.LOCAL:
+            # без правила: закупка в гривнах — цену не трогаем (её ставили руками или из прайса); закупка в валюте —
+            # цена всегда РРЦ (или закупка) по текущему курсу, иначе при смене курса гривневая цена застыла бы
+            if currency.upper() in rates.LOCAL and data.get("price") is not None \
+                    and (data.get("currency") or "UAH").upper() in rates.LOCAL:
                 return []
             if rrp is not None:
                 data["price"], data["currency"] = self.to_uah(rrp, currency, supplier_id), "UAH"

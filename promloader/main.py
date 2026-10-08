@@ -447,7 +447,8 @@ def _recalc_one(product_id: int) -> None:
     p = products.get(product_id)
     if p["supplier_id"] or (p["cost_price"] is None and p["rrp"] is None):
         return
-    data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"]}
+    data = {k: p[k] for k in ("cost_price", "rrp", "group_name", "price", "currency")}
+    data["cost_currency"] = p["cost_currency"] or p["currency"] or "UAH"
     pricing.Pricer().apply(data)
     if data.get("price") is not None and data["price"] != p["price"]:
         products.update(product_id, {"price": data["price"]}, lock=False)

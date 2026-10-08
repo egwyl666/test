@@ -131,7 +131,7 @@ class Table:
         self.cache: dict[str, float] = {}
         self.errors: dict[str, str] = {}
         self.suppliers = {r["id"]: dict(r) for r in db.query(
-            "SELECT id, rate_mode, rate_value, rate_add FROM suppliers WHERE rate_mode = 'manual' AND rate_value > 0")}
+            "SELECT id, rate_currency, rate_value, rate_add FROM suppliers WHERE rate_mode = 'manual' AND rate_value > 0")}
 
     def general(self, code: str) -> float:
         """Общий курс программы (с надбавкой). RateError — курса нет."""
@@ -158,7 +158,8 @@ class Table:
         if code in LOCAL:
             return None
         own = self.suppliers.get(supplier_id)
-        if own:
+        # свой курс поставщика — только для его валюты; евро в долларовом прайсе считаем по общему курсу
+        if own and (own["rate_currency"] or "USD").upper() == code:
             return own["rate_value"] * (1 + (own["rate_add"] or 0) / 100)
         return self.general(code)
 

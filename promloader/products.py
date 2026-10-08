@@ -267,17 +267,17 @@ def choose_offer(items: list[dict], table=None) -> dict | None:
         else:
             value, currency = d.get("price"), d.get("currency")
         if value is None:
-            return float("inf")
+            return 2, 0
         try:
             rate = table.rate(currency, i.get("supplier_id"))
         except rates.RateError:
-            rate = None
-        return value * rate if rate else value
+            return 1, value  # курса нет — с гривнами не сравнить, такое предложение только после посчитанных
+        return 0, value * rate if rate else value
 
     live = [i for i in items if not i["missing"]]
     in_stock = [i for i in live if i["data"].get("presence", "available") != "not_available"]
     pool = in_stock or live
-    return min(pool, key=lambda i: (cost(i), i["supplier_id"])) if pool else None
+    return min(pool, key=lambda i: (*cost(i), i["supplier_id"])) if pool else None
 
 
 def offer_items(product_id: int) -> list[dict]:
@@ -495,6 +495,8 @@ def validate(p: dict, image_count: int | None = None) -> dict:
 def create(data: dict) -> int:
     fields = normalize(data)
     external_id = fields.pop("external_id", None)
+    if fields.get("price") is None and (fields.get("cost_price") is not None or fields.get("rrp") is not None):
+        fields.update(_initial_price(fields))
     ts = db.now()
     with db.tx() as c:
         if external_id and c.execute("SELECT 1 FROM products WHERE external_id = ?", (external_id,)).fetchone():
@@ -537,6 +539,21 @@ def update(product_id: int, data: dict, lock: bool = True) -> dict:
             fields.update(_priced(c, product_id, fields))
         _touch(c, product_id, fields, row["status"])
     return get(product_id)
+
+
+def _initial_price(fields: dict) -> dict:
+    """Новый товар с закупкой, но без цены — цена сразу по наценке и курсу (иначе он висел бы «без цены»)."""
+    from . import pricing, rates
+
+    data = dict(fields)
+    data.setdefault("cost_currency", fields.get("currency") or "UAH")
+    if data["cost_currency"].upper() not in rates.LOCAL:
+        rates.prefetch()
+    pricing.Pricer().apply(data, fields.get("supplier_id"))
+    out = {"cost_currency": data["cost_currency"]}
+    if data.get("price") is not None:
+        out.update(price=data["price"], currency=data["currency"])
+    return out
 
 
 def _priced(c, product_id: int, fields: dict) -> dict:

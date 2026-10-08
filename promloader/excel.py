@@ -270,7 +270,7 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
 
 def money_currency(data: dict) -> None:
     """Закупка/РРЦ остаются в валюте прайса (переводит в гривны наценка по текущему курсу — и пересчитывает,
-    когда курс меняется). Если в прайсе только розничная цена в $/€ — считаем её РРЦ в этой валюте."""
+    когда курс меняется). Розничная цена в $/€ без отдельной РРЦ — это РРЦ в этой валюте."""
     from . import rates
 
     currency = (data.get("currency") or "UAH").upper()
@@ -278,8 +278,8 @@ def money_currency(data: dict) -> None:
         if data.get("cost_price") is not None or data.get("rrp") is not None:
             data["cost_currency"] = "UAH"
         return
-    if data.get("cost_price") is None and data.get("rrp") is None and data.get("price") is not None:
-        data["rrp"] = data.pop("price")
+    if data.get("rrp") is None and data.get("price") is not None:
+        data["rrp"] = data.pop("price")  # розница в $/€ — это РРЦ: в гривны её переведёт наценка по курсу
     if data.get("cost_price") is not None or data.get("rrp") is not None:
         data["cost_currency"] = currency
 
