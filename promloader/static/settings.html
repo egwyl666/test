@@ -274,16 +274,34 @@
   <script>
     let current = {};
 
-    function fill(s) {
-      current = s;
+    // Каждый раздел заполняет только свои поля: раньше сохранение одного раздела перезаполняло все и стирало
+    // несохранённые правки в остальных
+    function fillMain(s) {
       const f = $("#form");
       f.prom_token.value = "";
       $("#token-state").textContent = s.prom_token_set ? `(сейчас: ${s.prom_token})` : "(не задан)";
       f.public_base_url.value = s.public_base_url;
       f.shop_name.value = s.shop_name;
+    }
+    function fillAdv(s) {
       $("#import-settings").value = s.import_settings;
       $("#api-base").value = s.prom_api_base;
+    }
+    function fillInfo(s) {
+      current = s;
       $("#feed-url").value = s.public_base_url ? s.feed_url : "Сначала укажите публичный адрес сайта";
+      for (const [key, locked] of Object.entries(s.locked)) {
+        const el = document.querySelector(`[name=${key}]`);
+        if (el && locked) { el.disabled = true; el.title = "Задано переменной окружения"; }
+      }
+    }
+    function fill(s) {
+      fillMain(s);
+      fillAdv(s);
+      fillAi(s);
+      fillInfo(s);
+    }
+    function fillAi(s) {
       $("#ai-provider").innerHTML = `<option value="">не подключать</option>` +
         Object.entries(s.ai_providers).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
       $("#ai-provider").value = s.ai_provider;
@@ -296,15 +314,13 @@
       $("#claude-model").value = s.claude_model;
       $("#ai-rate").value = s.ai_rate || "";
       showProvider();
-      for (const [key, locked] of Object.entries(s.locked)) {
-        const el = document.querySelector(`[name=${key}]`);
-        if (el && locked) { el.disabled = true; el.title = "Задано переменной окружения"; }
-      }
     }
 
-    async function save(data) {
+    async function save(data, section = () => {}) {
       try {
-        fill(await api("/api/settings", { method: "POST", json: data }));
+        const s = await api("/api/settings", { method: "POST", json: data });
+        section(s);
+        fillInfo(s);
         toast("Сохранено", "ok");
       } catch (err) {
         toast(err.message, "error");
@@ -313,10 +329,10 @@
 
     $("#save").onclick = () => {
       const f = $("#form");
-      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value });
+      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value }, fillMain);
     };
     $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value,
-                                          quick_updates: $("#quick-updates").checked });
+                                          quick_updates: $("#quick-updates").checked }, fillAdv);
     $("#new-key").onclick = () => {
       if (confirm("Старая ссылка перестанет работать — её нужно будет заменить в кабинете Prom. Продолжить?")) {
         save({ regenerate_feed_key: true });
@@ -353,13 +369,15 @@
         ai_rate: $("#ai-rate").value,
       };
     }
-    $("#ai-save").onclick = () => save(aiBody());
+    $("#ai-save").onclick = () => save(aiBody(), fillAi);
     $("#ai-check").onclick = async () => {
       const out = $("#ai-check-result");
       out.textContent = "Проверяю…";
       out.style.color = "";
       try {
-        fill(await api("/api/settings", { method: "POST", json: aiBody() }));
+        const s = await api("/api/settings", { method: "POST", json: aiBody() });
+        fillAi(s);
+        fillInfo(s);
         const res = await api("/api/ai/check", { method: "POST" });
         out.textContent = res.message;
         out.style.color = res.ok ? "var(--ok)" : "var(--err)";

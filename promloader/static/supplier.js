@@ -5,6 +5,8 @@ let supplier = null;
 let gridOpened = false;
 let items = [];
 let pollTimer;
+let formFilled = false;
+let dirty = false;  // в форме есть несохранённые правки
 const grid = createMappingGrid($("#mapping"), {
   openEnded: true,
   required: ["external_id", "name", ["cost_price", "price", "rrp"]],
@@ -31,9 +33,11 @@ function settingsBody() {
   return body;
 }
 
-function fill(s) {
-  supplier = s;
-  document.title = `${s.name} — Prom Loader`;
+// Форма заполняется только при открытии и после сохранения. Раньше она перезаполнялась при каждом опросе
+// (раз в 2 с во время обновления) и после любого действия — несохранённые правки молча пропадали.
+function fillForm(s) {
+  formFilled = true;
+  dirty = false;
   $("#name").value = s.name;
   $("#url").value = s.url;
   $("#interval").value = String(s.interval_hours);
@@ -52,6 +56,13 @@ function fill(s) {
   $("#rate-mode").value = s.rate_mode === "manual" ? "manual" : "";
   $("#rate-value").value = s.rate_value || "";
   showRate();
+}
+
+// Состояние, которое меняется само: прайс, история запусков, удалённые товары.
+function showState(s) {
+  supplier = s;
+  if (!formFilled) fillForm(s);
+  document.title = `${s.name} — Prom Loader`;
   $("#products-link").href = `/?supplier=${s.id}`;
   $("#source-info").innerHTML = s.source_name
     ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
@@ -128,7 +139,7 @@ function renderRuns(s) {
 async function reload() {
   const s = await api(`/api/suppliers/${sid}`);
   const wasRunning = supplier && supplier.running;
-  fill(s);
+  showState(s);
   if (wasRunning && !s.running && s.runs[0]) {
     const r = s.runs[0];
     toast(r.status === "ok" ? `Обновлено: ${runSummary(r.stats)}` : r.message, r.status === "ok" ? "ok" : "error");
@@ -143,7 +154,7 @@ async function showGrid(res) {
   gridOpened = true;
   $("#mapping-panel").classList.remove("hidden");
   $("#preview-btn").disabled = false;
-  fill(supplier);
+  showState(supplier);
 }
 
 async function openSource(refetch) {
@@ -180,9 +191,23 @@ async function uploadSource(files) {
 
 async function save() {
   const s = await api(`/api/suppliers/${sid}`, { method: "PATCH", json: settingsBody() });
-  fill(s);
+  fillForm(s);
+  showState(s);
   return s;
 }
+
+// «Что изменится» и «Обновить» работают по сохранённым настройкам — несохранённые правки сначала сохраняем
+async function saveIfDirty() {
+  if (dirty) {
+    await save();
+    toast("Настройки сохранены", "ok");
+  }
+}
+const SETTINGS_FIELDS = "#name, #url, #interval, #missing, #prefix, #new-status, #auto-sync, #merge-barcode, " +
+  "#clean-names, #rate-mode, #rate-value, #def-group, #def-currency";
+const markDirty = (e) => { if (e.target.matches(SETTINGS_FIELDS) || e.target.closest("#mapping")) dirty = true; };
+document.addEventListener("input", markDirty);
+document.addEventListener("change", markDirty);
 
 async function runNow(force = false) {
   try {
@@ -205,7 +230,10 @@ $("#save").onclick = async () => {
   try { await save(); toast("Сохранено", "ok"); } catch (err) { toast(err.message, "error"); }
 };
 $("#save-run").onclick = async () => {
-  try { await save(); await runNow(); } catch (err) { toast(err.message, "error"); }
+  try {
+    await save();
+    await (supplier.auto_sync ? previewThenRun(false) : runNow());
+  } catch (err) { toast(err.message, "error"); }
 };
 // «👁 Что изменится»: пробное обновление — посмотреть новые товары и цены было → стало, потом применить
 async function previewThenRun(force = false) {
@@ -213,6 +241,7 @@ async function previewThenRun(force = false) {
   btn.disabled = true;
   btn.textContent = "Считаю…";
   try {
+    await saveIfDirty();
     const p = await api(`/api/suppliers/${sid}/preview`, { method: "POST", json: { force } });
     const note = `В прайсе ${p.total} строк${p.errors ? `, с ошибками ${p.errors}` : ""}${p.ignored ? `, удалённых вами ${p.ignored}` : ""}. ` +
       "Цены и наличие, которые вы поменяли руками (🔒), поставщик не трогает.";
@@ -226,11 +255,18 @@ async function previewThenRun(force = false) {
 }
 $("#preview-run").onclick = () => previewThenRun(false);
 // если изменения сразу уходят на Prom — сначала показываем, что именно уйдёт
-$("#run").onclick = () => (supplier && supplier.auto_sync ? previewThenRun(false) : runNow(false));
+$("#run").onclick = async () => {
+  try {
+    await saveIfDirty();
+    await (supplier && supplier.auto_sync ? previewThenRun(false) : runNow(false));
+  } catch (err) { toast(err.message, "error"); }
+};
 $("#delete").onclick = async () => {
   if (!confirm("Удалить поставщика? Его товары останутся в списке как обычные товары, но перестанут обновляться.")) return;
-  await api(`/api/suppliers/${sid}`, { method: "DELETE" });
-  location.href = "/suppliers";
+  try {
+    await api(`/api/suppliers/${sid}`, { method: "DELETE" });
+    location.href = "/suppliers";
+  } catch (err) { toast(err.message, "error"); }
 };
 
 async function preview() {
@@ -252,9 +288,11 @@ function renderPreview() {
     <div>Строк: <b>${items.length}</b></div>
     <div style="color:var(--ok)">Годных: <b>${items.length - bad.length}</b></div>
     <div style="color:var(--err)">С ошибками (пропустятся): <b>${bad.length}</b></div>`;
-  const shown = items.slice(0, 60).map((i) => (i.data.external_id ? i : { ...i, errors: ["Нет артикула", ...i.errors] }));
+  // «только с ошибками» — по всем строкам, а не по первым 60 (ошибка в 500-й строке раньше не находилась)
+  const pool = $("#only-bad").checked ? bad : items;
+  const shown = pool.slice(0, 60).map((i) => (i.data.external_id ? i : { ...i, errors: ["Нет артикула", ...i.errors] }));
   renderItemsPreview($("#preview"), shown, { token: grid.token, sheet: grid.sheet, onlyBad: $("#only-bad").checked });
-  if (items.length > 60) $("#preview").insertAdjacentHTML("beforeend", `<p class="muted">…и ещё ${items.length - 60}</p>`);
+  if (pool.length > 60) $("#preview").insertAdjacentHTML("beforeend", `<p class="muted">…и ещё ${pool.length - 60}</p>`);
 }
 $("#preview-btn").onclick = preview;
 $("#only-bad").onchange = renderPreview;

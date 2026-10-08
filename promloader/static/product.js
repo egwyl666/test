@@ -66,6 +66,18 @@ function fillForm(p) {
   renderParams(p.params || []);
 }
 
+// Обновить поля из ответа сервера («↩ Вернуть», «🔒 своё»), не трогая то, что пользователь сейчас набирает
+// или ещё не сохранил, и поле с ошибкой: раньше форма заполнялась целиком и затирала набранное
+function fillUntouched(p) {
+  const active = document.activeElement;
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in p) || el === active || el.name in state.pending || el.classList.contains("invalid")) continue;
+    const v = p[el.name];
+    el.value = v === null || v === undefined ? "" : v;
+  }
+  if (!("params" in state.pending) && !$("#params").contains(active)) renderParams(p.params || []);
+}
+
 function readParams() {
   return $$(".param-row", $("#params")).map((row) => ({
     name: row.querySelector("[data-k=name]").value,
@@ -154,7 +166,10 @@ async function save() {
       }
       applyServer(product);
       writeBackup();
-      setSaveState("saved", "Сохранено ✓");
+      // поле с ошибкой не сохранено — «Сохранено ✓» вводило бы в заблуждение
+      const bad = form.querySelector(".invalid");
+      if (bad) setSaveState("failed", `${bad.title || "Ошибка в поле"} — исправьте поле, остальное сохранено`);
+      else setSaveState("saved", "Сохранено ✓");
     } catch (err) {
       // вернуть неотправленное, не затирая то, что ввели за время запроса
       state.pending = { ...payload, ...state.pending };
@@ -208,7 +223,8 @@ function applyServer(product) {
   state.product = product;
   const active = document.activeElement;
   for (const el of form.elements) {
-    if (!el.name || el === active || el.name in state.pending) continue;
+    // поле с ошибкой не заменяем старым значением: пользователь должен видеть, что именно не принято
+    if (!el.name || el === active || el.name in state.pending || el.classList.contains("invalid")) continue;
     if (el.name === "external_id" && product.external_id) el.value = product.external_id;
     // цену и валюту программа могла пересчитать сама (поменяли закупку — цена по наценке и курсу)
     if (["price", "currency", "cost_currency"].includes(el.name)) el.value = product[el.name] ?? "";
@@ -269,7 +285,7 @@ $("#history-list").addEventListener("click", async (e) => {
   try {
     await flush();
     const p = await api(`/api/changes/${btn.dataset.revert}/revert`, { method: "POST" });
-    fillForm(p);
+    fillUntouched(p);
     applyServer(p);
     toast("Прежнее значение возвращено", "ok");
     loadHistory();
@@ -346,8 +362,7 @@ async function unlockField(field) {
   try {
     await flush();
     const p = await api(`/api/products/${state.id}/unlock`, { method: "POST", json: { fields: [field] } });
-    if (field === "params") renderParams(p.params);
-    else if (form.elements[field]) form.elements[field].value = p[field] ?? "";
+    fillUntouched(p);
     applyServer(p);
     toast("Значение возвращено", "ok");
   } catch (err) {
@@ -585,7 +600,7 @@ document.addEventListener("paste", (e) => {
 
 $("#btn-add-param").addEventListener("click", () => addParamRow("", "", true));
 
-$("#btn-send").addEventListener("click", async () => {
+$("#btn-send").addEventListener("click", () => busy($("#btn-send"), async () => {
   try {
     await flush();
     const res = await api("/api/sync", { method: "POST", json: { ids: [state.id] } });
@@ -598,9 +613,9 @@ $("#btn-send").addEventListener("click", async () => {
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}));
 
-$("#btn-duplicate").addEventListener("click", async () => {
+$("#btn-duplicate").addEventListener("click", () => busy($("#btn-duplicate"), async () => {
   try {
     await flush();
     const copy = await api(`/api/products/${state.id}/duplicate`, { method: "POST" });
@@ -608,9 +623,9 @@ $("#btn-duplicate").addEventListener("click", async () => {
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}));
 
-$("#btn-delete").addEventListener("click", async () => {
+$("#btn-delete").addEventListener("click", () => busy($("#btn-delete"), async () => {
   let onProm = 0;
   try { onProm = (await api("/api/products/delete/check", { method: "POST", json: { ids: [state.id] } })).on_prom; } catch {}
   if (!confirm(onProm
@@ -624,7 +639,7 @@ $("#btn-delete").addEventListener("click", async () => {
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}));
 
 let pollTimer = null;
 function pollStatus() {
@@ -744,7 +759,18 @@ async function init() {
   }
 
   // восстановление несохранённого после сбоя/закрытия вкладки
-  const backup = readBackup();
+  let backup = readBackup();
+  // копия в браузере старше изменений на сервере (обновил поставщик, правили в другой вкладке) — не затираем
+  // более новые данные молча, а спрашиваем
+  const serverAt = state.product ? Date.parse(state.product.updated_at) : NaN;
+  if (backup && Object.keys(backup.pending || {}).length && serverAt > (backup.at || 0)) {
+    const when = new Date(backup.at || 0).toLocaleString("ru-RU");
+    if (!confirm(`Есть несохранённые правки этого товара от ${when}, но товар с тех пор уже изменился.\n\n` +
+                 `ОК — вернуть мои правки поверх, Отмена — оставить как сейчас.`)) {
+      try { localStorage.removeItem(backupKey()); } catch {}
+      backup = null;
+    }
+  }
   if (backup && Object.keys(backup.pending || {}).length) {
     const current = formValues();
     fillForm({ ...current, ...backup.pending, params: backup.pending.params || current.params });

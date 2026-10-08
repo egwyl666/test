@@ -222,8 +222,34 @@ function statusBadge(status) {
 function formatDate(iso) {
   if (!iso) return "";
   const d = new Date(iso);
-  return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  // год — если не текущий: иначе «05.10» прошлого года не отличить от этого
+  const year = d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined;
+  return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year, hour: "2-digit", minute: "2-digit" });
 }
+
+// Кнопка «занята», пока идёт её запрос: двойной клик не отправит товары, не удалит и не запустит ИИ дважды.
+// disabled не трогаем — его выставляет сама страница по состоянию товара.
+async function busy(btn, fn) {
+  if (!btn || btn.dataset.busy) return;
+  btn.dataset.busy = "1";
+  btn.classList.add("is-busy");
+  try {
+    return await fn();
+  } finally {
+    delete btn.dataset.busy;
+    btn.classList.remove("is-busy");
+  }
+}
+
+// Окна (.modal с id) закрываются клавишей Esc и кликом по затемнённому фону — как везде
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  const open = [...document.querySelectorAll(".modal[id]:not(.hidden)")].pop();
+  if (open) open.classList.add("hidden");
+});
+document.addEventListener("click", (e) => {
+  if (e.target.matches && e.target.matches(".modal[id]")) e.target.classList.add("hidden");
+});
 
 // Описание: обычный текст -> абзацы; HTML -> только безопасные теги.
 const ALLOWED_TAGS = new Set(["P", "BR", "B", "STRONG", "I", "EM", "U", "UL", "OL", "LI", "H2", "H3", "H4", "TABLE", "TBODY", "THEAD", "TR", "TD", "TH", "SPAN", "DIV", "A", "IMG"]);

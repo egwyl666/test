@@ -550,3 +550,19 @@ def test_update_copy_failure_restores_previous_version(tmp_path, monkeypatch):
     assert (app / "promloader" / "main.py").read_text() == "OLD = 1\n"
     assert (app / "VERSION").read_text() == "1.0.0"
     assert not (db.data_dir() / "updates" / "pending-check").exists()
+
+
+def test_app_starts_in_a_fresh_process(tmp_path):
+    """Запуск как в Docker (uvicorn без START.bat): база ещё не открыта, когда стартует программа.
+    Тесты внутри pytest этого не видят — conftest открывает базу заранее."""
+    import os
+    import subprocess
+    import sys
+    code = ("from fastapi.testclient import TestClient\nfrom promloader.main import app\n"
+            "with TestClient(app) as c:\n    print(c.get('/api/meta').status_code)\n")
+    env = {**os.environ, "PROMLOADER_DATA": str(tmp_path / "fresh"), "PROMLOADER_WORKER": "0",
+           "PROMLOADER_ALLOWED_HOSTS": "testserver"}
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env,
+                         cwd=os.path.dirname(os.path.dirname(__file__)), timeout=120)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip().endswith("200")

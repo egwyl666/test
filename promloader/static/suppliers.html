@@ -66,8 +66,15 @@
           </div>
         </div>`).join("");
       $$("[data-run]").forEach((b) => b.addEventListener("click", async () => {
+        const s = list.find((x) => x.id === Number(b.dataset.run));
         b.disabled = true;
         try {
+          // изменения сразу уходят на Prom — сначала показываем, что именно уйдёт (как на странице поставщика)
+          if (s && s.auto_sync) {
+            b.textContent = "Считаю…";
+            const p = await api(`/api/suppliers/${s.id}/preview`, { method: "POST", json: {} });
+            if (!(await showPreview(`Обновление «${s.name}»: что изменится`, p, { applyLabel: "Обновить" }))) return load();
+          }
           await api(`/api/suppliers/${b.dataset.run}/run`, { method: "POST", json: {} });
           toast("Обновление запущено", "ok");
         } catch (err) {
@@ -81,8 +88,10 @@
     async function add() {
       const name = prompt("Название поставщика");
       if (name === null) return;
-      const s = await api("/api/suppliers", { method: "POST", json: { name } });
-      location.href = `/supplier?id=${s.id}`;
+      try {
+        const s = await api("/api/suppliers", { method: "POST", json: { name } });
+        location.href = `/supplier?id=${s.id}`;
+      } catch (err) { toast(err.message, "error"); }
     }
     $("#add").onclick = add;
     $("#add2").onclick = add;

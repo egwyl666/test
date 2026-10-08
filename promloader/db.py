@@ -265,10 +265,15 @@ def imports_dir() -> Path:
     return data_dir() / "imports"
 
 
+def default_dir() -> Path:
+    """Папка данных из настроек запуска — её можно узнать и до открытия базы."""
+    return Path(os.environ.get("PROMLOADER_DATA", "data")).resolve()
+
+
 def init(path: str | os.PathLike | None = None) -> None:
     """Открывает (или создаёт) базу. Повторный вызов переключает на другой каталог — удобно для тестов."""
     global _conn, _data_dir
-    base = Path(path or os.environ.get("PROMLOADER_DATA", "data")).resolve()
+    base = Path(path).resolve() if path else default_dir()
     base.mkdir(parents=True, exist_ok=True)
     (base / "uploads").mkdir(exist_ok=True)
     (base / "imports").mkdir(exist_ok=True)

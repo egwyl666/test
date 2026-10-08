@@ -43,7 +43,10 @@ async function loadProducts(append = false) {
   // при автообновлении перечитываем столько, сколько уже показано
   const limit = append ? PAGE : Math.max(PAGE, list.items.length);
   const params = new URLSearchParams({ ...filterParams(), sort: list.sort, limit, offset });
+  // номер запроса: ответ на старый фильтр, пришедший позже нового, не должен перерисовать список
+  const seq = (list.seq = (list.seq || 0) + 1);
   const data = await api(`/api/products?${params}`);
+  if (seq !== list.seq) return;
   $("#export-xlsx").href = "/api/products.xlsx?" + new URLSearchParams({ ...filterParams(), sort: list.sort });
   list.items = append ? list.items.concat(data.items) : data.items;
   list.total = data.total;
@@ -55,8 +58,14 @@ async function loadProducts(append = false) {
   renderChips(data.counts);
   renderRows();
   // пока товары удаляются с Prom — обновляем список, чтобы было видно, как они уходят
-  clearTimeout(list.deletingTimer);
-  if (data.counts.deleting) list.deletingTimer = setTimeout(() => loadProducts(), 5000);
+  if (data.counts.deleting) refreshList(5000);
+}
+
+// Фоновое обновление списка (очередь отправки, ИИ, удаление, каталог) — один общий таймер: раньше их было до
+// трёх, и список перечитывался по несколько раз подряд
+function refreshList(delay = 0) {
+  clearTimeout(list.refreshTimer);
+  list.refreshTimer = setTimeout(() => loadProducts().catch(() => {}), delay);
 }
 
 function renderChips(counts) {
@@ -229,7 +238,7 @@ $("#search").addEventListener("input", (e) => {
 $("#more").addEventListener("click", () => loadProducts(true));
 $("#supplier-filter").addEventListener("change", (e) => { list.supplier = e.target.value; applyFilters(); });
 
-$$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () => {
+$$("#bulk [data-action]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
   const sel = selection();
   const action = b.dataset.action;
   try {
@@ -263,7 +272,7 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", async () =>
   } catch (err) {
     toast(err.message, "error");
   }
-}));
+})));
 
 // ---------- быстрое создание из фото ----------
 
@@ -329,7 +338,7 @@ async function loadJobs() {
         ${j.status === "failed" ? `<button class="btn small" data-retry="${j.id}">Повторить</button>` : ""}
       </div>`;
     }).join("");
-    $$("#jobs [data-retry]").forEach((b) => b.addEventListener("click", async () => {
+    $$("#jobs [data-retry]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
       try {
         const res = await api(`/api/sync/jobs/${b.dataset.retry}/retry`, { method: "POST" });
         toast(`Повторно в очереди: ${res.accepted}`, "ok");
@@ -338,10 +347,10 @@ async function loadJobs() {
       }
       loadJobs();
       loadProducts();
-    }));
+    })));
   }
   if (active) {
-    jobsTimer = setTimeout(() => { loadJobs(); loadProducts(); }, 3000);
+    jobsTimer = setTimeout(() => { loadJobs(); refreshList(); }, 3000);
   }
 }
 
@@ -432,15 +441,17 @@ async function loadAiJobs() {
     catch (err) { toast(err.message, "error"); }
     loadAiJobs();
   }));
-  $$("[data-ai-revert]").forEach((b) => b.addEventListener("click", async () => {
+  $$("[data-ai-revert]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
     if (!confirm("Вернуть прежние тексты у всех товаров этого задания?")) return;
-    const r = await api(`/api/ai/bulk/${b.dataset.aiRevert}/revert`, { method: "POST" });
-    toast(`Откачено: ${r.restored}`, "ok");
+    try {
+      const r = await api(`/api/ai/bulk/${b.dataset.aiRevert}/revert`, { method: "POST" });
+      toast(`Откачено: ${r.restored}`, "ok");
+    } catch (err) { toast(err.message, "error"); }  // раньше ошибка отката пропадала молча
     loadAiJobs();
     loadProducts();
-  }));
+  })));
   if (data.items.some((j) => j.status === "running")) {
-    aiTimer = setTimeout(() => { loadAiJobs(); loadProducts(); }, 4000);
+    aiTimer = setTimeout(() => { loadAiJobs(); refreshList(); }, 4000);
   }
 }
 
@@ -456,7 +467,7 @@ async function showCatalogState(state) {
     box.innerHTML = `<span class="badge sending">Загружаю каталог с Prom</span> обработано товаров: ${state.seen || 0}…`;
     catalogTimer = setTimeout(async () => {
       const next = await api("/api/prom/catalog");
-      if (!next.running) { loadProducts(); loadMeta(); }
+      if (!next.running) { refreshList(); loadMeta(); }
       showCatalogState(next);
     }, 1500);
   } else if (state.error) {
@@ -572,10 +583,10 @@ async function doDelete(fromProm) {
   } catch (err) { toast(err.message, "error"); }
 }
 $("#delete-cancel").onclick = () => $("#delete-modal").classList.add("hidden");
-$("#delete-apply").onclick = () => {
+$("#delete-apply").onclick = () => busy($("#delete-apply"), async () => {
+  await doDelete($("input[name=delete-mode]:checked").value === "prom");
   $("#delete-modal").classList.add("hidden");
-  doDelete($("input[name=delete-mode]:checked").value === "prom");
-};
+});
 
 // ---------- ✏ изменить поля у многих товаров ----------
 let editSel = { ids: [] };

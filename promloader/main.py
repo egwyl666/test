@@ -42,7 +42,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(app: FastAPI):
     # восстановление копии, выбранное в настройках: START.bat делает это сам, а в Docker программа запускается
     # напрямую — без этой строки копия там никогда не применялась
-    if backup.apply_pending(db.data_dir()):
+    if backup.apply_pending(db.default_dir()):
         log.warning("Данные восстановлены из резервной копии")
     db.init()
     suppliers.recover()
