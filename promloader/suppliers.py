@@ -146,8 +146,8 @@ def restore_deleted(supplier_id: int, skus: list[str] | None = None) -> int:
     if skus is not None:
         if not skus:
             return 0
-        where += f" AND sku IN ({','.join('?' * len(skus))})"
-        args += [str(x) for x in skus]
+        where += f" AND sku {db.IN_LIST}"
+        args.append(db.as_list(str(x) for x in skus))
     with db.tx() as c:
         return c.execute(f"UPDATE supplier_items SET ignored = 0 WHERE {where}", args).rowcount
 
@@ -232,9 +232,10 @@ def update(supplier_id: int, data: dict) -> dict:
 
 
 def delete(supplier_id: int) -> None:
-    """Поставщик удаляется, его товары остаются как обычные (без привязки)."""
+    """Поставщик удаляется, его товары остаются как обычные (без привязки). Во время обновления — нельзя:
+    обновление дописало бы строки и товары уже удалённому поставщику."""
     row = _row(supplier_id)
-    with db.tx() as c:
+    with _busy(supplier_id), db.tx() as c:
         c.execute("""UPDATE products SET supplier_id = (
                          SELECT si.supplier_id FROM supplier_items si
                          WHERE si.product_id = products.id AND si.supplier_id != ? ORDER BY si.supplier_id LIMIT 1)
@@ -777,8 +778,8 @@ def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dic
     where = "WHERE (cost_price IS NOT NULL OR rrp IS NOT NULL)"
     args: list = []
     if ids is not None:
-        where += f" AND id IN ({','.join('?' * len(ids))})" if ids else " AND 0"
-        args = list(ids)
+        where += f" AND id {db.IN_LIST}" if ids else " AND 0"
+        args = [db.as_list(ids)] if ids else []
     rows = db.query("SELECT id, supplier_id, cost_price, rrp, cost_currency, price, currency, group_name, status, "
                     f"locked_fields, synced_at FROM products {where}", args)
     changed, warnings = [], Counter()
@@ -836,8 +837,7 @@ def bulk_prices(ids: list[int], action: str, value: float = 0, currency: str = "
     ids = [int(i) for i in ids]
     if not ids:
         return {"changed": 0, "queued": 0, "warnings": []}
-    marks = ",".join("?" * len(ids))
-    rows = db.query(f"SELECT * FROM products WHERE id IN ({marks})", ids)
+    rows = db.query(f"SELECT * FROM products WHERE id {db.IN_LIST}", (db.as_list(ids),))
     warnings = []
     if action == "percent":
         if not -90 <= value <= 1000:

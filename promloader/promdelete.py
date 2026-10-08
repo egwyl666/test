@@ -43,8 +43,8 @@ def _ever_sent(ids: set[int]) -> set[int]:
 def _rows(ids: list[int]):
     if not ids:
         return []
-    marks = ",".join("?" * len(ids))
-    return db.query(f"SELECT id, name, status, synced_at, prom_id FROM products WHERE id IN ({marks})", ids)
+    return db.query(f"SELECT id, name, status, synced_at, prom_id FROM products WHERE id {db.IN_LIST}",
+                    (db.as_list(ids),))
 
 
 def check(ids: list[int]) -> dict:
@@ -58,8 +58,7 @@ def check(ids: list[int]) -> dict:
 
 
 def _ignore_supplier_items(c, ids: list[int], ignored: int = 1) -> None:
-    marks = ",".join("?" * len(ids))
-    c.execute(f"UPDATE supplier_items SET ignored = ? WHERE product_id IN ({marks})", [ignored] + ids)
+    c.execute(f"UPDATE supplier_items SET ignored = ? WHERE product_id {db.IN_LIST}", (ignored, db.as_list(ids)))
 
 
 def request(ids: list[int], from_prom: bool = True) -> dict:
@@ -97,10 +96,9 @@ def retry(ids: list[int]) -> int:
     ids = [int(i) for i in ids]
     if not ids:
         return 0
-    marks = ",".join("?" * len(ids))
     with db.tx() as c:
-        return c.execute(f"UPDATE products SET delete_next_at = ?, last_error = '' WHERE status = 'deleting' AND id IN ({marks})",
-                         [db.now()] + ids).rowcount
+        return c.execute(f"UPDATE products SET delete_next_at = ?, last_error = '' WHERE status = 'deleting' "
+                         f"AND id {db.IN_LIST}", (db.now(), db.as_list(ids))).rowcount
 
 
 def cancel(ids: list[int]) -> int:
@@ -108,8 +106,8 @@ def cancel(ids: list[int]) -> int:
     ids = [int(i) for i in ids]
     if not ids:
         return 0
-    marks = ",".join("?" * len(ids))
-    rows = db.query(f"SELECT id, synced_at, pending_fields FROM products WHERE status = 'deleting' AND id IN ({marks})", ids)
+    rows = db.query(f"SELECT id, synced_at, pending_fields FROM products WHERE status = 'deleting' AND id {db.IN_LIST}",
+                    (db.as_list(ids),))
     with db.tx() as c:
         for r in rows:
             status = "synced" if r["synced_at"] and (r["pending_fields"] or "[]") == "[]" else "ready"
@@ -137,8 +135,8 @@ def _done(ids: list[int]) -> None:
     if not ids:
         return
     with db.tx():
-        marks = ",".join("?" * len(ids))
-        still = [r["id"] for r in db.query(f"SELECT id FROM products WHERE status = 'deleting' AND id IN ({marks})", ids)]
+        still = [r["id"] for r in db.query(f"SELECT id FROM products WHERE status = 'deleting' AND id {db.IN_LIST}",
+                                           (db.as_list(ids),))]
         with changes.source("Prom"):
             products.delete(still, note="удалён на Prom")
     log.info("Удалено на Prom и в программе: %d", len(still))

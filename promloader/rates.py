@@ -95,28 +95,30 @@ def _number(value, what: str) -> float:
 
 
 def save_settings(data: dict) -> dict:
-    if "mode" in data:
-        if data["mode"] not in ("nbu", "manual"):
-            raise RateError("Курс: по НБУ или свой")
-        db.set_setting("rate_mode", data["mode"])
-    if "add" in data:
-        add = _number(data["add"], "Надбавка к курсу")
-        if not -50 <= add <= 100:
-            raise RateError("Надбавка к курсу — от -50 до 100%")
-        db.set_setting("rate_add", str(add))
-    if "manual" in data:
-        manual = {}
-        for code, value in (data["manual"] or {}).items():
-            if code.upper() not in CURRENCIES:
-                raise RateError(f"Неизвестная валюта {code}")
-            value = _number(value, f"Курс {code}")
-            if value < 0:
-                raise RateError("Курс не может быть отрицательным")
-            if value:
-                manual[code.upper()] = value
-        db.set_setting("rate_manual", json.dumps(manual))
-    if "auto_send" in data:
-        db.set_setting("rate_auto_send", "1" if data["auto_send"] else "0")
+    """Всё или ничего: неверная надбавка не оставляет сохранённым уже записанный режим."""
+    with db.tx():
+        if "mode" in data:
+            if data["mode"] not in ("nbu", "manual"):
+                raise RateError("Курс: по НБУ или свой")
+            db.set_setting("rate_mode", data["mode"])
+        if "add" in data:
+            add = _number(data["add"], "Надбавка к курсу")
+            if not -50 <= add <= 100:
+                raise RateError("Надбавка к курсу — от -50 до 100%")
+            db.set_setting("rate_add", str(add))
+        if "manual" in data:
+            manual = {}
+            for code, value in (data["manual"] or {}).items():
+                if code.upper() not in CURRENCIES:
+                    raise RateError(f"Неизвестная валюта {code}")
+                value = _number(value, f"Курс {code}")
+                if value < 0:
+                    raise RateError("Курс не может быть отрицательным")
+                if value:
+                    manual[code.upper()] = value
+            db.set_setting("rate_manual", json.dumps(manual))
+        if "auto_send" in data:
+            db.set_setting("rate_auto_send", "1" if data["auto_send"] else "0")
     return settings()
 
 

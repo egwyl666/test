@@ -267,8 +267,8 @@ def _fail_or_retry(job: dict, err: PromError) -> None:
 
 
 def _has_local_photos(product_ids: list[int]) -> bool:
-    marks = ",".join("?" * len(product_ids))
-    row = db.query_one(f"SELECT 1 FROM images WHERE file IS NOT NULL AND product_id IN ({marks}) LIMIT 1", product_ids)
+    row = db.query_one(f"SELECT 1 FROM images WHERE file IS NOT NULL AND product_id {db.IN_LIST} LIMIT 1",
+                       (db.as_list(product_ids),))
     return row is not None
 
 
@@ -293,8 +293,8 @@ async def _photo_base_url(product_ids: list[int]) -> str:
 
 
 def _quick_items(ids: list[int]) -> list[dict]:
-    marks = ",".join("?" * len(ids))
-    rows = db.query(f"SELECT external_id, price, presence, quantity FROM products WHERE id IN ({marks})", ids)
+    rows = db.query(f"SELECT external_id, price, presence, quantity FROM products WHERE id {db.IN_LIST}",
+                    (db.as_list(ids),))
     items = []
     for r in rows:
         item = {"id": r["external_id"], "price": r["price"], "presence": r["presence"]}

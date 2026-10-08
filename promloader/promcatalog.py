@@ -33,6 +33,15 @@ def _set_state(**fields) -> None:
     db.set_setting(STATE_KEY, json.dumps(current, ensure_ascii=False))
 
 
+def recover() -> bool:
+    """При запуске: загрузка каталога, прерванная выключением, не должна «идти» вечно. True — была прервана."""
+    if not state().get("running"):
+        return False
+    _set_state(running=False, error="Загрузка прервана: программа была выключена. Запустите её снова",
+               finished_at=db.now())
+    return True
+
+
 def _text(value) -> str:
     return "" if value is None else str(value).strip()
 

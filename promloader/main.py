@@ -40,6 +40,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # восстановление копии, выбранное в настройках: START.bat делает это сам, а в Docker программа запускается
+    # напрямую — без этой строки копия там никогда не применялась
+    if backup.apply_pending(db.data_dir()):
+        log.warning("Данные восстановлены из резервной копии")
     db.init()
     suppliers.recover()
     fixed = sync.repair_false_success()
@@ -48,6 +52,8 @@ async def lifespan(app: FastAPI):
     stuck = sync.repair_stuck_sending()
     if stuck:
         log.warning("Товары, застрявшие в «Отправляется» после выключения, возвращены в «Готов»: %d", stuck)
+    if promcatalog.recover():
+        log.warning("Загрузка каталога с Prom была прервана выключением")
     stop = asyncio.Event()
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
@@ -56,11 +62,15 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
                  asyncio.create_task(rates_worker(stop))]
-    yield
-    stop.set()
-    for task in tasks:
-        await task
-    phototunnel.tunnel.close()
+    try:
+        yield
+    finally:
+        stop.set()
+        # ошибка одного воркера не должна мешать остановке остальных и закрытию туннеля (иначе cloudflared остаётся)
+        for result in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(result, Exception):
+                log.error("Воркер завершился с ошибкой: %r", result)
+        phototunnel.tunnel.close()
 
 
 async def rates_worker(stop: asyncio.Event) -> None:
@@ -115,14 +125,14 @@ async def support_worker(stop: asyncio.Event) -> None:
 async def orders_worker(stop: asyncio.Event) -> None:
     """Раз в 5 минут забирает заказы с Prom (если указан токен)."""
     while not stop.is_set():
-        if orders.enabled():
-            try:
+        try:
+            if orders.enabled():
                 async with sync.make_client() as client:
                     await orders.poll(client)
-            except PromError:
-                pass  # ошибка сохранена и видна на странице заказов
-            except Exception:
-                log.exception("Сбой опроса заказов")
+        except PromError:
+            pass  # ошибка сохранена и видна на странице заказов
+        except Exception:
+            log.exception("Сбой опроса заказов")
         try:
             await asyncio.wait_for(stop.wait(), timeout=orders.POLL_MINUTES * 60)
         except asyncio.TimeoutError:
@@ -176,8 +186,8 @@ async def schedule_worker(stop: asyncio.Event) -> None:
 
 
 async def maintenance_worker(stop: asyncio.Event) -> None:
-    """Раз в час: суточная резервная копия и (раз в 12 часов) проверка обновлений."""
-    last_update_check = 0.0
+    """Раз в час: суточная резервная копия и (раз в 12 часов, первый раз — сразу после запуска) проверка обновлений."""
+    last_update_check = None  # было 0.0: часы цикла считаются от включения компьютера, и первая проверка ждала 12 ч
     while not stop.is_set():
         try:
             if backup.due():
@@ -186,10 +196,11 @@ async def maintenance_worker(stop: asyncio.Event) -> None:
         except Exception:
             log.exception("Не удалось сделать резервную копию")
         now = asyncio.get_running_loop().time()
-        if not updater.is_dev_checkout() and now - last_update_check > UPDATE_CHECK_HOURS * 3600:
+        if last_update_check is None or now - last_update_check > UPDATE_CHECK_HOURS * 3600:
             last_update_check = now
             try:
-                await asyncio.to_thread(updater.check)
+                if not updater.is_dev_checkout():
+                    await asyncio.to_thread(updater.check)
             except Exception:
                 pass  # нет интернета — проверим в следующий раз
         try:
@@ -201,7 +212,12 @@ async def maintenance_worker(stop: asyncio.Event) -> None:
 async def supplier_worker(stop: asyncio.Event) -> None:
     """Обновляет поставщиков по расписанию. Разбор прайса идёт в отдельном потоке, чтобы не тормозить интерфейс."""
     while not stop.is_set():
-        for supplier_id in suppliers.due():
+        try:
+            due = await asyncio.to_thread(suppliers.due)
+        except Exception:
+            log.exception("Сбой проверки расписания поставщиков")
+            due = []
+        for supplier_id in due:
             if stop.is_set():
                 break
             try:
@@ -321,6 +337,16 @@ async def not_found(request: Request, exc: KeyError):
     return JSONResponse({"detail": "Не найдено"}, status_code=404)
 
 
+@app.exception_handler(ValueError)
+@app.exception_handler(TypeError)
+@app.exception_handler(OverflowError)
+async def bad_input(request: Request, exc: Exception):
+    """Число вместо текста, текст вместо списка, огромный номер страницы — это ошибка запроса (400), а не сбой
+    программы (500). В журнал всё равно пишем: если это ошибка в коде, её будет видно."""
+    log.warning("Неверные данные запроса %s %s: %r", request.method, request.url.path, exc, exc_info=exc)
+    return JSONResponse({"detail": f"Неверные данные запроса: {exc}"}, status_code=400)
+
+
 # ---------- страницы ----------
 
 def _page(name: str):
@@ -334,7 +360,7 @@ for route, filename in PAGES.items():
 
 
 @app.get("/media/{name}", include_in_schema=False)
-async def media(name: str):
+def media(name: str):
     path = db.uploads_dir() / Path(name).name
     if not path.is_file():
         raise HTTPException(404)
@@ -342,7 +368,7 @@ async def media(name: str):
 
 
 @app.get("/feed/{name}.xml")
-async def feed_file(name: str):
+def feed_file(name: str):
     """Файл выгрузки для импорта Prom по ссылке (имя случайное, как у фото)."""
     if not re.fullmatch(r"[0-9a-f]{32}", name):
         raise HTTPException(404)
@@ -426,28 +452,28 @@ def update_product(product_id: int, data: dict = Body(...)):
 
 
 @app.post("/api/products/{product_id}/ai")
-async def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
+def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
     """Предложение ИИ по карточке. Ничего не сохраняет: пользователь сам решает, применять ли."""
     product = products.get(product_id)
-    changes = await asyncio.to_thread(ai.run, product, action, instruction)
+    changes = ai.run(product, action, instruction)
     return {"changes": changes}
 
 
 @app.post("/api/ai/check")
-async def ai_check():
+def ai_check():
     try:
-        return await asyncio.to_thread(ai.check)
+        return ai.check()
     except ai.AIError as exc:
         return {"ok": False, "models": [], "message": str(exc)}
 
 
 @app.post("/api/products/{product_id}/unlock")
-async def unlock_fields(product_id: int, fields: list[str] = Body(..., embed=True)):
+def unlock_fields(product_id: int, fields: list[str] = Body(..., embed=True)):
     """Снять закрепление: поля снова берутся у поставщика / из правил наценки."""
     products.unlock(product_id, fields)
     suppliers.reapply(product_id)
     if "price" in fields:
-        await asyncio.to_thread(_recalc_one, product_id)
+        _recalc_one(product_id)
     return products.get(product_id)
 
 
@@ -463,7 +489,7 @@ def _recalc_one(product_id: int) -> None:
 
 
 @app.post("/api/products/{product_id}/duplicate")
-async def duplicate_product(product_id: int):
+def duplicate_product(product_id: int):
     src = products.get(product_id)
     data = {k: src[k] for k in products.EDITABLE if k != "external_id"}
     data["name"] = (src["name"] + " (копия)").strip()
@@ -471,23 +497,28 @@ async def duplicate_product(product_id: int):
     for img in products.image_rows(product_id):
         if img["url"]:
             products.add_image_url(new_id, img["url"])
-        else:
-            products.add_image_file(new_id, (db.uploads_dir() / img["file"]).read_bytes())
+            continue
+        try:
+            content = (db.uploads_dir() / img["file"]).read_bytes()
+        except OSError:
+            continue  # файл фото пропал с диска — копия без него, а не ошибка посреди копирования
+        products.add_image_file(new_id, content)
     return products.get(new_id)
 
 
 @app.get("/api/suppliers/{supplier_id}/deleted")
-async def supplier_deleted(supplier_id: int):
-    return await asyncio.to_thread(suppliers.deleted_items, supplier_id)
+def supplier_deleted(supplier_id: int):
+    return suppliers.deleted_items(supplier_id)
 
 
 @app.post("/api/suppliers/{supplier_id}/restore-deleted")
 async def supplier_restore_deleted(supplier_id: int, body: dict = Body(default={})):
     """Вернуть удалённые вами товары поставщика: все или skus; run — сразу обновить прайс, чтобы они появились."""
     skus = body.get("skus")
-    count = suppliers.restore_deleted(supplier_id, [str(x) for x in skus] if skus is not None else None)
+    count = await asyncio.to_thread(suppliers.restore_deleted, supplier_id,
+                                    [str(x) for x in skus] if skus is not None else None)
     started = False
-    if count and body.get("run", True) and not suppliers.get(supplier_id)["running"]:
+    if count and body.get("run", True) and not (await asyncio.to_thread(suppliers.get, supplier_id))["running"]:
         task = asyncio.create_task(_run_supplier_bg(supplier_id, False))
         _background.add(task)
         task.add_done_callback(_background.discard)
@@ -505,28 +536,28 @@ def _selected(ids: list[int] | None, flt: dict | None) -> list[int]:
 
 
 @app.post("/api/products/delete")
-async def delete_products(ids: list[int] | None = Body(None), prom: bool = Body(True), filter: dict | None = Body(None)):
+def delete_products(ids: list[int] | None = Body(None), prom: bool = Body(True), filter: dict | None = Body(None)):
     """Удалить товары. prom=True — и на Prom (товар уйдёт из программы, когда Prom подтвердит удаление)."""
-    return await asyncio.to_thread(promdelete.request, _selected(ids, filter), prom)
+    return promdelete.request(_selected(ids, filter), prom)
 
 
 @app.post("/api/products/delete/check")
-async def delete_check(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
-    return await asyncio.to_thread(promdelete.check, _selected(ids, filter))
+def delete_check(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return promdelete.check(_selected(ids, filter))
 
 
 @app.post("/api/products/delete/retry")
-async def delete_retry(ids: list[int] = Body(..., embed=True)):
-    return {"count": await asyncio.to_thread(promdelete.retry, ids)}
+def delete_retry(ids: list[int] = Body(..., embed=True)):
+    return {"count": promdelete.retry(ids)}
 
 
 @app.post("/api/products/delete/cancel")
-async def delete_cancel(ids: list[int] = Body(..., embed=True)):
-    return {"count": await asyncio.to_thread(promdelete.cancel, ids)}
+def delete_cancel(ids: list[int] = Body(..., embed=True)):
+    return {"count": promdelete.cancel(ids)}
 
 
 @app.post("/api/products/status")
-async def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
     return {"ok": True, "changed": products.set_status(_selected(ids, filter), status)}
 
 
@@ -546,19 +577,19 @@ async def upload_images(product_id: int, files: list[UploadFile] = File(...)):
 
 
 @app.post("/api/products/{product_id}/images/url")
-async def add_image_url(product_id: int, url: str = Body(..., embed=True)):
+def add_image_url(product_id: int, url: str = Body(..., embed=True)):
     products.add_image_url(product_id, url)
     return products.get(product_id)
 
 
 @app.delete("/api/products/{product_id}/images/{image_id}")
-async def delete_image(product_id: int, image_id: int):
+def delete_image(product_id: int, image_id: int):
     products.delete_image(product_id, image_id)
     return products.get(product_id)
 
 
 @app.post("/api/products/{product_id}/images/order")
-async def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)):
+def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)):
     products.reorder_images(product_id, ids)
     return products.get(product_id)
 
@@ -566,29 +597,29 @@ async def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)
 # ---------- отправка на Prom ----------
 
 @app.post("/api/sync")
-async def enqueue(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
-    return await asyncio.to_thread(sync.enqueue, _selected(ids, filter))
+def enqueue(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return sync.enqueue(_selected(ids, filter))
 
 
 @app.get("/api/sync/jobs")
-async def jobs():
+def jobs():
     return sync.list_jobs()
 
 
 @app.get("/api/sync/photos")
-async def photo_access():
+def photo_access():
     return {"enabled": phototunnel.enabled(), "r2": r2.active(), **phototunnel.tunnel.status()}
 
 
 @app.post("/api/diagnose")
 async def diagnose_start(product_id: int = Body(..., embed=True)):
     try:
-        products.get(product_id)
+        product = await asyncio.to_thread(products.get, product_id)
     except KeyError:
         raise HTTPException(404, "Товар не найден")
     if any(not r["done"] for r in diagnose.RUNS.values()):
         raise HTTPException(409, "Проверка уже идёт — дождитесь её окончания")
-    run = diagnose.Run(products.get(product_id))
+    run = diagnose.Run(product)
     task = asyncio.create_task(diagnose.execute(run, product_id))
     _background.add(task)
     task.add_done_callback(_background.discard)
@@ -596,43 +627,42 @@ async def diagnose_start(product_id: int = Body(..., embed=True)):
 
 
 @app.get("/api/diagnose/{run_id}")
-async def diagnose_state(run_id: str):
+def diagnose_state(run_id: str):
     if run_id not in diagnose.RUNS:
         raise HTTPException(404)
     return diagnose.RUNS[run_id]
 
 
 @app.get("/api/rates")
-async def rates_view():
-    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current),
-            "coverage": await asyncio.to_thread(rates.coverage)}
+def rates_view():
+    return {"settings": rates.settings(), "current": rates.current(), "coverage": rates.coverage()}
 
 
 @app.put("/api/rates")
-async def rates_save(data: dict = Body(...)):
+def rates_save(data: dict = Body(...)):
     """Сохранить курс и сразу пересчитать цены (изменённые цены товаров на Prom — отправить, если включено)."""
     try:
         rates.save_settings(data)
     except rates.RateError as exc:
         raise HTTPException(400, str(exc))
     with changes.source("Курс валют (изменён вручную)"):
-        result = await asyncio.to_thread(suppliers.recalc_prices)
-    await asyncio.to_thread(rates.mark_applied)
-    return {"settings": rates.settings(), "current": await asyncio.to_thread(rates.current), "result": result,
-            "coverage": await asyncio.to_thread(rates.coverage)}
+        result = suppliers.recalc_prices()
+    rates.mark_applied()
+    return {"settings": rates.settings(), "current": rates.current(), "result": result,
+            "coverage": rates.coverage()}
 
 
 @app.get("/api/changes")
-async def changes_list(period: str = "7d", who: str = "", field: str = "", q: str = "", limit: int = 200,
+def changes_list(period: str = "7d", who: str = "", field: str = "", q: str = "", limit: int = 200,
                        offset: int = 0):
     """Журнал изменений товаров: что, было -> стало, кто и когда."""
-    return await asyncio.to_thread(changes.search, period, who, field, q, None, min(max(limit, 1), 1000),
+    return changes.search(period, who, field, q, None, min(max(limit, 1), 1000),
                                    max(offset, 0))
 
 
 @app.get("/api/changes.csv")
-async def changes_csv(period: str = "7d", who: str = "", field: str = "", q: str = ""):
-    content = await asyncio.to_thread(changes.to_csv, period=period, who=who, field=field, q=q)
+def changes_csv(period: str = "7d", who: str = "", field: str = "", q: str = ""):
+    content = changes.to_csv(period=period, who=who, field=field, q=q)
     return Response(content, media_type="text/csv; charset=utf-8",
                     headers={"Content-Disposition": 'attachment; filename="promloader-izmeneniya.csv"'})
 
@@ -658,54 +688,58 @@ async def prom_link(product_id: int):
         raise HTTPException(400, str(exc))
     if not found or not found.get("id") or str(found.get("status", "")) in ("deleted", "deleted_by_moderator"):
         return {"url": ""}
-    with db.tx() as c:
-        c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (int(found["id"]), product_id))
+    await asyncio.to_thread(_save_prom_id, product_id, int(found["id"]))
     return {"url": products.prom_url(found["id"])}
 
 
+def _save_prom_id(product_id: int, prom_id: int) -> None:
+    with db.tx() as c:
+        c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (prom_id, product_id))
+
+
 @app.get("/api/products/{product_id}/changes")
-async def product_changes(product_id: int, limit: int = 100):
-    return await asyncio.to_thread(changes.search, "all", "", "", "", product_id, min(max(limit, 1), 1000), 0)
+def product_changes(product_id: int, limit: int = 100):
+    return changes.search("all", "", "", "", product_id, min(max(limit, 1), 1000), 0)
 
 
 @app.get("/api/rates/{code}")
-async def rate(code: str):
+def rate(code: str):
     if code.upper() not in rates.CURRENCIES:
         raise HTTPException(404)
     try:
-        return await asyncio.to_thread(rates.nbu, code)
+        return rates.nbu(code)
     except rates.RateError as exc:
         raise HTTPException(400, str(exc))
 
 
 @app.post("/api/r2/check")
-async def r2_check():
+def r2_check():
     try:
-        return {"ok": True, "message": await asyncio.to_thread(r2.check)}
+        return {"ok": True, "message": r2.check()}
     except r2.R2Error as exc:
         raise HTTPException(400, str(exc))
 
 
 @app.get("/api/r2/stats")
-async def r2_stats():
-    return {"active": r2.active(), **await asyncio.to_thread(r2.stats)}
+def r2_stats():
+    return {"active": r2.active(), **r2.stats()}
 
 
 @app.get("/api/sync/jobs/{job_id}/file")
-async def job_file(job_id: int):
+def job_file(job_id: int):
     """Файл выгрузки — чтобы загрузить его в кабинете Prom вручную и увидеть подробный отчёт."""
     job = db.query_one("SELECT products FROM sync_jobs WHERE id = ?", (job_id,))
     if job is None:
         raise HTTPException(404)
     ids = [int(pid) for pid in json.loads(job["products"]) if db.query_one("SELECT 1 FROM products WHERE id = ?", (int(pid),))]
     base = (r2.base_url() if r2.active() else "") or config.public_base_url() or (phototunnel.tunnel.url or "")
-    content = await asyncio.to_thread(feed.build, ids, base)
+    content = feed.build(ids, base)
     return Response(content, media_type="application/xml",
                     headers={"Content-Disposition": f'attachment; filename="promloader-vygruzka-{job_id}.xml"'})
 
 
 @app.post("/api/sync/jobs/{job_id}/retry")
-async def retry(job_id: int):
+def retry(job_id: int):
     try:
         return sync.retry_job(job_id)
     except ValueError as exc:
@@ -754,95 +788,97 @@ def _settings_view() -> dict:
 
 
 @app.get("/api/settings")
-async def get_settings():
+def get_settings():
     return _settings_view()
 
 
 @app.post("/api/settings")
-async def save_settings(data: dict = Body(...)):
-    if data.get("prom_token"):
-        db.set_setting("prom_token", data["prom_token"].strip())
-    if data.get("telegram_token"):
-        db.set_setting("telegram_token", data["telegram_token"].strip())
-    if data.get("support_token"):
-        db.set_setting("support_token", data["support_token"].strip())
-    if data.get("support_token_clear"):
-        db.set_setting("support_token", "")
-    if "support_chat_id" in data:
-        chat = str(data["support_chat_id"] or "").strip()
-        if chat and not chat.lstrip("-").isdigit():
-            raise HTTPException(400, "ID чата поддержки — это число")
-        db.set_setting("support_chat_id", chat)
-    if "quick_updates" in data:
-        db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
-        if data["quick_updates"]:
-            db.set_setting("quick_updates_error", "")
-    if "photo_tunnel" in data:
-        db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
-    if any(k in data for k in r2.FIELDS):
-        fresh = {k: str(data.get(k) or "").strip() for k in r2.FIELDS}
-        fresh["r2_account_id"] = r2.account_id(fresh["r2_account_id"])
-        fresh["r2_public_url"] = r2.public_url(fresh["r2_public_url"])
-        try:
-            r2.validate(fresh)
-        except r2.R2Error as exc:
-            raise HTTPException(400, str(exc))
-        for key, value in fresh.items():
-            if key in data and (value or key not in r2.SECRET_FIELDS):  # пустой ключ = «не менять»
-                db.set_setting(key, value)
-    if "photo_storage" in data:
-        mode = data["photo_storage"]
-        if mode not in ("r2", "tunnel", "off"):
-            raise HTTPException(400, "Неизвестный способ передачи фото")
-        if mode == "r2" and not r2.configured():
-            raise HTTPException(400, "Чтобы выбрать хранилище R2, заполните все поля R2 и нажмите «Проверить»")
-        db.set_setting("photo_storage", "r2" if mode == "r2" else "")
-        if mode != "r2":
-            db.set_setting("photo_tunnel", "1" if mode == "tunnel" else "0")
-    if "auto_update" in data:
-        db.set_setting("auto_update", "1" if data["auto_update"] else "0")
-    if data.get("github_token"):
-        db.set_setting("github_token", data["github_token"].strip())
-    if "update_repo" in data:
-        db.set_setting("update_repo", str(data["update_repo"] or "").strip())
-    for key in ("gemini_key", "anthropic_key"):
-        if data.get(key):
-            db.set_setting(key, data[key].strip())
-    if "ai_provider" in data:
-        if data["ai_provider"] not in ("", *ai.PROVIDERS):
-            raise HTTPException(400, "Неизвестный провайдер ИИ")
-        db.set_setting("ai_provider", data["ai_provider"])
-    if "ai_rate" in data:
-        rate = str(data["ai_rate"] or "").strip()
-        if rate and (not rate.isdigit() or not 1 <= int(rate) <= 1000):
-            raise HTTPException(400, "Запросов в минуту: число от 1 до 1000")
-        db.set_setting("ai_rate", rate)
-    for key in ("gemini_model", "claude_model"):
-        if key in data:
-            db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
-    for key in ("public_base_url", "prom_api_base"):
-        if key in data:
-            url = str(data[key] or "").strip().rstrip("/")
-            if url and not re.match(r"^https?://", url):
-                url = "https://" + url  # «shop.example.com» -> «https://shop.example.com»
-            if url and not re.match(r"^https?://[^\s/]+\.[^\s]+$|^https?://(localhost|127\.0\.0\.1)(:\d+)?(/\S*)?$", url):
-                raise HTTPException(400, f"Не похоже на адрес сайта: {data[key]}")
-            db.set_setting(key, url)
-    if "shop_name" in data:
-        db.set_setting("shop_name", str(data["shop_name"] or "").strip())
-    if "import_settings" in data:
-        raw = (data["import_settings"] or "").strip()
-        if raw:
+def save_settings(data: dict = Body(...)):
+    """Всё или ничего: ошибка в одном поле не оставляет половину настроек сохранённой."""
+    with db.tx():
+        if data.get("prom_token"):
+            db.set_setting("prom_token", data["prom_token"].strip())
+        if data.get("telegram_token"):
+            db.set_setting("telegram_token", data["telegram_token"].strip())
+        if data.get("support_token"):
+            db.set_setting("support_token", data["support_token"].strip())
+        if data.get("support_token_clear"):
+            db.set_setting("support_token", "")
+        if "support_chat_id" in data:
+            chat = str(data["support_chat_id"] or "").strip()
+            if chat and not chat.lstrip("-").isdigit():
+                raise HTTPException(400, "ID чата поддержки — это число")
+            db.set_setting("support_chat_id", chat)
+        if "quick_updates" in data:
+            db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
+            if data["quick_updates"]:
+                db.set_setting("quick_updates_error", "")
+        if "photo_tunnel" in data:
+            db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
+        if any(k in data for k in r2.FIELDS):
+            fresh = {k: str(data.get(k) or "").strip() for k in r2.FIELDS}
+            fresh["r2_account_id"] = r2.account_id(fresh["r2_account_id"])
+            fresh["r2_public_url"] = r2.public_url(fresh["r2_public_url"])
             try:
-                parsed = json.loads(raw)
-                assert isinstance(parsed, dict)
-            except (ValueError, AssertionError):
-                raise HTTPException(400, "Параметры импорта должны быть JSON-объектом")
-            db.set_setting("import_settings", json.dumps(parsed, ensure_ascii=False))
-        else:
-            db.set_setting("import_settings", "")
-    if data.get("regenerate_feed_key"):
-        db.set_setting("feed_key", secrets.token_urlsafe(16))
+                r2.validate(fresh)
+            except r2.R2Error as exc:
+                raise HTTPException(400, str(exc))
+            for key, value in fresh.items():
+                if key in data and (value or key not in r2.SECRET_FIELDS):  # пустой ключ = «не менять»
+                    db.set_setting(key, value)
+        if "photo_storage" in data:
+            mode = data["photo_storage"]
+            if mode not in ("r2", "tunnel", "off"):
+                raise HTTPException(400, "Неизвестный способ передачи фото")
+            if mode == "r2" and not r2.configured():
+                raise HTTPException(400, "Чтобы выбрать хранилище R2, заполните все поля R2 и нажмите «Проверить»")
+            db.set_setting("photo_storage", "r2" if mode == "r2" else "")
+            if mode != "r2":
+                db.set_setting("photo_tunnel", "1" if mode == "tunnel" else "0")
+        if "auto_update" in data:
+            db.set_setting("auto_update", "1" if data["auto_update"] else "0")
+        if data.get("github_token"):
+            db.set_setting("github_token", data["github_token"].strip())
+        if "update_repo" in data:
+            db.set_setting("update_repo", str(data["update_repo"] or "").strip())
+        for key in ("gemini_key", "anthropic_key"):
+            if data.get(key):
+                db.set_setting(key, data[key].strip())
+        if "ai_provider" in data:
+            if data["ai_provider"] not in ("", *ai.PROVIDERS):
+                raise HTTPException(400, "Неизвестный провайдер ИИ")
+            db.set_setting("ai_provider", data["ai_provider"])
+        if "ai_rate" in data:
+            rate = str(data["ai_rate"] or "").strip()
+            if rate and (not rate.isdigit() or not 1 <= int(rate) <= 1000):
+                raise HTTPException(400, "Запросов в минуту: число от 1 до 1000")
+            db.set_setting("ai_rate", rate)
+        for key in ("gemini_model", "claude_model"):
+            if key in data:
+                db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
+        for key in ("public_base_url", "prom_api_base"):
+            if key in data:
+                url = str(data[key] or "").strip().rstrip("/")
+                if url and not re.match(r"^https?://", url):
+                    url = "https://" + url  # «shop.example.com» -> «https://shop.example.com»
+                if url and not re.match(r"^https?://[^\s/]+\.[^\s]+$|^https?://(localhost|127\.0\.0\.1)(:\d+)?(/\S*)?$", url):
+                    raise HTTPException(400, f"Не похоже на адрес сайта: {data[key]}")
+                db.set_setting(key, url)
+        if "shop_name" in data:
+            db.set_setting("shop_name", str(data["shop_name"] or "").strip())
+        if "import_settings" in data:
+            raw = (data["import_settings"] or "").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    assert isinstance(parsed, dict)
+                except (ValueError, AssertionError):
+                    raise HTTPException(400, "Параметры импорта должны быть JSON-объектом")
+                db.set_setting("import_settings", json.dumps(parsed, ensure_ascii=False))
+            else:
+                db.set_setting("import_settings", "")
+        if data.get("regenerate_feed_key"):
+            db.set_setting("feed_key", secrets.token_urlsafe(16))
     return _settings_view()
 
 
@@ -880,7 +916,7 @@ def _sheet(token: str, sheet: str):
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...)):
     content = await _read_price_upload(file)
-    return _new_import_token(content, file.filename or "")
+    return await asyncio.to_thread(_new_import_token, content, file.filename or "")
 
 
 async def _read_price_upload(file: UploadFile) -> bytes:
@@ -910,7 +946,7 @@ def _new_import_token(content: bytes, filename: str) -> dict:
 
 
 @app.get("/api/import/{token}/sheet")
-async def import_sheet(token: str, sheet: str, header_row: int = 1):
+def import_sheet(token: str, sheet: str, header_row: int = 1):
     rows, images = _sheet(token, sheet)
     width = max((len(r) for r in rows), default=0)
     headers = excel.headers_for(rows, header_row)
@@ -925,7 +961,7 @@ async def import_sheet(token: str, sheet: str, header_row: int = 1):
 
 
 @app.get("/api/import/{token}/image")
-async def import_image(token: str, sheet: str, row: int, n: int = 0):
+def import_image(token: str, sheet: str, row: int, n: int = 0):
     """Картинка, вставленная в ячейку Excel, — для предпросмотра карточек до импорта."""
     _, images = _sheet(token, sheet)
     try:
@@ -958,8 +994,8 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
 
 
 @app.post("/api/import/{token}/preview")
-async def import_preview(token: str, body: dict = Body(...)):
-    return await asyncio.to_thread(_import_preview, token, body)
+def import_preview(token: str, body: dict = Body(...)):
+    return _import_preview(token, body)
 
 
 def _import_preview(token: str, body: dict) -> dict:
@@ -971,8 +1007,8 @@ def _import_preview(token: str, body: dict) -> dict:
 
 
 @app.post("/api/import/{token}/commit")
-async def import_commit(token: str, body: dict = Body(...)):
-    return await asyncio.to_thread(_import_commit, token, body)  # большой импорт не подвешивает интерфейс
+def import_commit(token: str, body: dict = Body(...)):
+    return _import_commit(token, body)  # большой импорт не подвешивает интерфейс
 
 
 def _import_commit(token: str, body: dict) -> dict:
@@ -1042,27 +1078,27 @@ def _import_commit_inner(token: str, body: dict) -> dict:
 # ---------- поставщики ----------
 
 @app.get("/api/suppliers")
-async def list_suppliers():
+def list_suppliers():
     return suppliers.list_suppliers()
 
 
 @app.post("/api/suppliers")
-async def create_supplier(name: str = Body("", embed=True)):
+def create_supplier(name: str = Body("", embed=True)):
     return suppliers.get(suppliers.create(name))
 
 
 @app.get("/api/suppliers/{supplier_id}")
-async def get_supplier(supplier_id: int):
+def get_supplier(supplier_id: int):
     return suppliers.get(supplier_id)
 
 
 @app.patch("/api/suppliers/{supplier_id}")
-async def update_supplier(supplier_id: int, data: dict = Body(...)):
+def update_supplier(supplier_id: int, data: dict = Body(...)):
     return suppliers.update(supplier_id, data)
 
 
 @app.delete("/api/suppliers/{supplier_id}")
-async def delete_supplier(supplier_id: int):
+def delete_supplier(supplier_id: int):
     suppliers.delete(supplier_id)
     return {"ok": True}
 
@@ -1071,14 +1107,14 @@ async def delete_supplier(supplier_id: int):
 async def upload_supplier_source(supplier_id: int, file: UploadFile = File(...)):
     """Загрузить прайс файлом: он станет текущим прайсом поставщика."""
     content = await _read_price_upload(file)
-    suppliers.store_source(supplier_id, content, file.filename or "price")
-    return _new_import_token(content, file.filename or "price")
+    await asyncio.to_thread(suppliers.store_source, supplier_id, content, file.filename or "price")
+    return await asyncio.to_thread(_new_import_token, content, file.filename or "price")
 
 
 @app.post("/api/suppliers/{supplier_id}/open")
-async def open_supplier_source(supplier_id: int, refetch: bool = Body(False, embed=True)):
+def open_supplier_source(supplier_id: int, refetch: bool = Body(False, embed=True)):
     """Открыть прайс поставщика для настройки колонок (refetch — скачать свежий по ссылке)."""
-    path = await asyncio.to_thread(suppliers.source_path, supplier_id, refetch)
+    path = suppliers.source_path(supplier_id, refetch)
     row = suppliers.get(supplier_id)
     return _new_import_token(path.read_bytes(), row["source_name"] or path.name)
 
@@ -1095,7 +1131,7 @@ def preview_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
 @app.post("/api/suppliers/{supplier_id}/run")
 async def run_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
     """Запуск обновления в фоне; ход виден в истории запусков поставщика."""
-    s = suppliers.get(supplier_id)
+    s = await asyncio.to_thread(suppliers.get, supplier_id)
     if s["running"]:
         raise HTTPException(409, "Этот поставщик уже обновляется")
     task = asyncio.create_task(_run_supplier_bg(supplier_id, force))
@@ -1117,12 +1153,12 @@ async def _run_supplier_bg(supplier_id: int, force: bool) -> None:
 # ---------- наценка ----------
 
 @app.get("/api/pricing")
-async def get_pricing():
+def get_pricing():
     return {"rules": pricing.list_rules(), "rounding": pricing.ROUNDING}
 
 
 @app.put("/api/pricing")
-async def save_pricing(rules: list[dict] = Body(..., embed=True)):
+def save_pricing(rules: list[dict] = Body(..., embed=True)):
     try:
         return {"rules": pricing.save_rules(rules), "rounding": pricing.ROUNDING}
     except (ValueError, TypeError) as exc:
@@ -1130,7 +1166,7 @@ async def save_pricing(rules: list[dict] = Body(..., embed=True)):
 
 
 @app.post("/api/pricing/test")
-async def test_pricing(body: dict = Body(...)):
+def test_pricing(body: dict = Body(...)):
     cost = products.parse_number(body.get("cost"))
     rrp = products.parse_number(body.get("rrp"))
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
@@ -1142,26 +1178,25 @@ async def test_pricing(body: dict = Body(...)):
 
 
 @app.post("/api/products/currencies")
-async def products_currencies(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+def products_currencies(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
     """В какой валюте сейчас цена у выбранных товаров (закупка/РРЦ — в своей валюте, иначе — валюта цены)."""
     ids = _selected(ids, filter)
     if not ids:
         return {}
-    marks = ",".join("?" * len(ids))
     rows = db.query(f"""SELECT UPPER(CASE WHEN (cost_price IS NOT NULL OR rrp IS NOT NULL) AND cost_currency != ''
                         THEN cost_currency ELSE COALESCE(NULLIF(currency, ''), 'UAH') END) AS c, COUNT(*) AS n
-                        FROM products WHERE id IN ({marks}) GROUP BY c""", [int(i) for i in ids])
+                        FROM products WHERE id {db.IN_LIST} GROUP BY c""", (db.as_list(int(i) for i in ids),))
     return {("UAH" if r["c"] == "ГРН" else r["c"]): r["n"] for r in rows}
 
 
 @app.post("/api/products/prices")
-async def products_prices(action: str = Body(...), value: float = Body(0), currency: str = Body(""),
+def products_prices(action: str = Body(...), value: float = Body(0), currency: str = Body(""),
                           ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
     ids = _selected(ids, filter)
     label = {"as_cost": "опт → закупка", "percent": f"{value:+g}%", "recalc": "пересчёт по наценке"}.get(action, "")
     with changes.source(f"Массово «💲 Цены»: {label}" if label else "Вручную"):
         try:
-            return await asyncio.to_thread(suppliers.bulk_prices, ids, action, value, currency)
+            return suppliers.bulk_prices(ids, action, value, currency)
         except suppliers.SupplierError as exc:
             raise HTTPException(400, str(exc))
 
@@ -1198,58 +1233,58 @@ def preview_rates(data: dict = Body(...)):
 
 
 @app.post("/api/pricing/apply")
-async def apply_pricing():
+def apply_pricing():
     with changes.source("Пересчёт по наценке"):
-        result = await asyncio.to_thread(suppliers.recalc_prices)
-    await asyncio.to_thread(rates.mark_applied)
+        result = suppliers.recalc_prices()
+    rates.mark_applied()
     return result
 
 
 # ---------- обновления и резервные копии ----------
 
 @app.get("/api/update/check")
-async def update_check():
-    return await asyncio.to_thread(updater.check)
+def update_check():
+    return updater.check()
 
 
 @app.post("/api/update/install")
-async def update_install():
-    version = await asyncio.to_thread(updater.update)
+def update_install():
+    version = updater.update()
     restarting = runtime.request_restart()
     return {"version": version, "restarting": restarting}
 
 
 @app.get("/api/backups")
-async def list_backups():
+def list_backups():
     return {"items": backup.list_backups(), "last": db.get_setting("last_backup_at"), "can_restart": runtime.can_restart()}
 
 
 @app.post("/api/backups")
-async def create_backup():
-    return await asyncio.to_thread(backup.create, "manual")
+def create_backup():
+    return backup.create("manual")
 
 
 @app.get("/api/backups/{name}")
-async def download_backup(name: str):
+def download_backup(name: str):
     path = backup.path_of(name)
     return FileResponse(path, filename=name, media_type="application/zip")
 
 
 @app.post("/api/backups/{name}/restore")
-async def restore_backup(name: str):
+def restore_backup(name: str):
     backup.stage_restore(name)
     return {"restarting": runtime.request_restart()}
 
 
 @app.post("/api/backups/upload")
-async def restore_uploaded_backup(file: UploadFile = File(...)):
+def restore_uploaded_backup(file: UploadFile = File(...)):
     # копия может весить гигабайты (фото) — пишем на диск частями, а не читаем целиком в память
-    await asyncio.to_thread(backup.stage_restore_stream, file.file)
+    backup.stage_restore_stream(file.file)
     return {"restarting": runtime.request_restart()}
 
 
 @app.post("/api/shutdown")
-async def shutdown(request: Request):
+def shutdown(request: Request):
     """Выключение из меню значка у часов. Только с этого компьютера."""
     if request.client and request.client.host not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(403)
@@ -1257,7 +1292,7 @@ async def shutdown(request: Request):
 
 
 @app.post("/api/restart")
-async def restart():
+def restart():
     if not runtime.request_restart():
         raise HTTPException(400, "Программа запущена не через START.bat — перезапустите её вручную")
     return {"restarting": True}
@@ -1266,41 +1301,41 @@ async def restart():
 # ---------- расписание и автозапуск ----------
 
 @app.get("/api/schedules")
-async def list_schedules():
+def list_schedules():
     return {"items": schedule.list_schedules(), "missed_actions": schedule.MISSED_ACTIONS, "days": schedule.DAY_NAMES,
             "autostart": {"supported": autostart.supported(), "enabled": autostart.enabled()}}
 
 
 @app.post("/api/schedules")
-async def create_schedule(data: dict = Body(default={})):
+def create_schedule(data: dict = Body(default={})):
     return schedule.create(data)
 
 
 @app.patch("/api/schedules/{schedule_id}")
-async def update_schedule(schedule_id: int, data: dict = Body(...)):
+def update_schedule(schedule_id: int, data: dict = Body(...)):
     return schedule.update(schedule_id, data)
 
 
 @app.delete("/api/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: int):
+def delete_schedule(schedule_id: int):
     schedule.delete(schedule_id)
     return {"ok": True}
 
 
 @app.post("/api/schedules/{schedule_id}/resolve")
-async def resolve_schedule(schedule_id: int, decision: str = Body(..., embed=True)):
-    return await asyncio.to_thread(schedule.resolve, schedule_id, decision)
+def resolve_schedule(schedule_id: int, decision: str = Body(..., embed=True)):
+    return schedule.resolve(schedule_id, decision)
 
 
 @app.post("/api/autostart")
-async def set_autostart(enabled: bool = Body(..., embed=True)):
-    return {"enabled": await asyncio.to_thread(autostart.set_enabled, enabled)}
+def set_autostart(enabled: bool = Body(..., embed=True)):
+    return {"enabled": autostart.set_enabled(enabled)}
 
 
 # ---------- каталог с Prom ----------
 
 @app.get("/api/prom/catalog")
-async def prom_catalog_state():
+def prom_catalog_state():
     return promcatalog.state()
 
 
@@ -1330,30 +1365,30 @@ async def _catalog_bg() -> None:
 # ---------- массовый ИИ ----------
 
 @app.get("/api/ai/bulk")
-async def ai_bulk_jobs():
+def ai_bulk_jobs():
     return {"items": aibulk.list_jobs(), "rate": aibulk.rate_per_minute()}
 
 
 @app.post("/api/ai/bulk")
-async def ai_bulk_create(action: str = Body(...), instruction: str = Body(""), only_empty: bool = Body(True),
+def ai_bulk_create(action: str = Body(...), instruction: str = Body(""), only_empty: bool = Body(True),
                          ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
     return aibulk.create(_selected(ids, filter), action, instruction, only_empty)
 
 
 @app.post("/api/ai/bulk/{job_id}/status")
-async def ai_bulk_status(job_id: int, status: str = Body(..., embed=True)):
+def ai_bulk_status(job_id: int, status: str = Body(..., embed=True)):
     return aibulk.set_status(job_id, status)
 
 
 @app.post("/api/ai/bulk/{job_id}/revert")
-async def ai_bulk_revert(job_id: int):
-    return {"restored": await asyncio.to_thread(aibulk.revert, job_id)}
+def ai_bulk_revert(job_id: int):
+    return {"restored": aibulk.revert(job_id)}
 
 
 # ---------- заказы и Telegram ----------
 
 @app.get("/api/orders")
-async def list_orders(status: str = "", limit: int = 100, offset: int = 0):
+def list_orders(status: str = "", limit: int = 100, offset: int = 0):
     return {**orders.list_orders(status, max(1, min(limit, 500)), max(0, offset)), "statuses": orders.STATUSES,
             "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS, "enabled": orders.enabled()}
 
@@ -1371,8 +1406,9 @@ async def refresh_orders():
 
 
 @app.post("/api/orders/seen")
-async def orders_seen(ids: list[int] = Body(default=[], embed=True)):
-    orders.mark_seen(ids or None)
+def orders_seen(ids: list[int] | None = Body(None, embed=True)):
+    """ids — эти заказы; без ids — все. Пустой список — ни одного (раньше он помечал все)."""
+    orders.mark_seen(ids)
     return {"ok": True}
 
 
@@ -1386,41 +1422,41 @@ async def order_status(order_id: int, status: str = Body(...), reason: str = Bod
 
 
 @app.get("/api/telegram/recipients")
-async def telegram_recipients():
+def telegram_recipients():
     return {"items": notify.recipients(), "events": notify.EVENTS, "token_set": bool(notify.token())}
 
 
 @app.post("/api/telegram/candidates")
-async def telegram_candidates():
+def telegram_candidates():
     """Кто недавно писал боту — чтобы добавить в получатели одним нажатием."""
     known = {r["chat_id"] for r in notify.recipients()}
-    chats = await asyncio.to_thread(notify.recent_chats, notify.token())
+    chats = notify.recent_chats(notify.token())
     return {"items": [c for c in chats if c["chat_id"] not in known]}
 
 
 @app.post("/api/telegram/recipients")
-async def telegram_add(chat_id: str = Body(...), name: str = Body(""), events: list[str] | None = Body(None)):
+def telegram_add(chat_id: str = Body(...), name: str = Body(""), events: list[str] | None = Body(None)):
     return notify.add_recipient(chat_id, name, events)
 
 
 @app.patch("/api/telegram/recipients/{rid}")
-async def telegram_update(rid: int, events: list[str] | None = Body(None), name: str | None = Body(None)):
+def telegram_update(rid: int, events: list[str] | None = Body(None), name: str | None = Body(None)):
     notify.update_recipient(rid, events, name)
     return {"items": notify.recipients()}
 
 
 @app.delete("/api/telegram/recipients/{rid}")
-async def telegram_remove(rid: int):
+def telegram_remove(rid: int):
     notify.remove_recipient(rid)
     return {"items": notify.recipients()}
 
 
 @app.post("/api/telegram/recipients/{rid}/test")
-async def telegram_test(rid: int):
+def telegram_test(rid: int):
     r = next((x for x in notify.recipients() if x["id"] == rid), None)
     if r is None:
         raise HTTPException(404)
-    await asyncio.to_thread(notify.send_to, r["chat_id"], "✅ Prom Loader: уведомления подключены. "
+    notify.send_to(r["chat_id"], "✅ Prom Loader: уведомления подключены. "
                             "Подписки: " + ", ".join(notify.EVENTS[e] for e in r["events"]))
     return {"ok": True}
 
@@ -1428,14 +1464,14 @@ async def telegram_test(rid: int):
 # ---------- поддержка ----------
 
 @app.get("/api/support")
-async def support_list():
+def support_list():
     return {"items": support.list_tickets(), "configured": support.configured()}
 
 
 @app.get("/api/support/diagnostics")
-async def support_diagnostics():
+def support_diagnostics():
     """Что именно уйдёт вместе с обращением (показываем пользователю)."""
-    d = await asyncio.to_thread(support.diagnostics)
+    d = support.diagnostics()
     d["log_tail"] = d["log_tail"][-20:]
     return d
 
@@ -1463,24 +1499,24 @@ async def support_create(description: str = Form(""), contact: str = Form(""), p
 
 
 @app.post("/api/support/{ticket_id}/send")
-async def support_send(ticket_id: int):
-    return await asyncio.to_thread(support.send, ticket_id)
+def support_send(ticket_id: int):
+    return support.send(ticket_id)
 
 
 @app.get("/api/support/{ticket_id}/archive")
-async def support_archive(ticket_id: int):
-    content = await asyncio.to_thread(support.archive, ticket_id)
+def support_archive(ticket_id: int):
+    content = support.archive(ticket_id)
     return Response(content, media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="promloader-obrashchenie-{ticket_id}.zip"'})
 
 
 @app.delete("/api/support/{ticket_id}")
-async def support_delete(ticket_id: int):
+def support_delete(ticket_id: int):
     support.delete(ticket_id)
     return {"ok": True}
 
 
 @app.post("/api/support/channel/chats")
-async def support_chats(token: str = Body("", embed=True)):
+def support_chats(token: str = Body("", embed=True)):
     """Для разработчика: найти свой чат, написав боту поддержки (можно до сохранения токена)."""
-    return {"items": await asyncio.to_thread(notify.recent_chats, token.strip() or support.channel()["token"])}
+    return {"items": notify.recent_chats(token.strip() or support.channel()["token"])}

@@ -6,10 +6,12 @@
 """
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -156,14 +158,16 @@ def stage_restore_upload(content: bytes) -> None:
 
 
 def stage_restore_stream(source) -> None:
+    """Загруженная копия сначала пишется рядом и проверяется: неудачная загрузка не стирает уже выбранную ранее."""
     target = db.data_dir() / "restore-pending.zip"
-    with open(target, "wb") as out:
-        shutil.copyfileobj(source, out, 1024 * 1024)
+    upload = target.with_name(f"restore-upload-{uuid.uuid4().hex}.zip")
     try:
-        _validate(target)
-    except BackupError:
-        target.unlink(missing_ok=True)
-        raise
+        with open(upload, "wb") as out:
+            shutil.copyfileobj(source, out, 1024 * 1024)
+        _validate(upload)
+        os.replace(upload, target)
+    finally:
+        upload.unlink(missing_ok=True)
 
 
 DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update")

@@ -1,5 +1,6 @@
 """SQLite-хранилище. Всё, что пользователь ввёл, сразу попадает сюда — Prom лишь получает копию."""
 
+import json
 import os
 import sqlite3
 import threading
@@ -336,6 +337,15 @@ def tx():
 def in_transaction() -> bool:
     """Идёт ли сейчас внешняя транзакция (например, «пробный прогон», который потом откатится)."""
     return bool(_conn is not None and _conn.in_transaction)
+
+
+# Список значений одним параметром: «id IN_LIST» + as_list(ids). Вместо «IN (?, ?, …)»: в SQLite не больше 32 766
+# параметров в запросе (а в старых версиях — 999), и «все товары по фильтру» в большом магазине давали ошибку.
+IN_LIST = "IN (SELECT value FROM json_each(?))"
+
+
+def as_list(values) -> str:
+    return json.dumps(list(values), ensure_ascii=False)
 
 
 def query(sql: str, params=()) -> list[sqlite3.Row]:

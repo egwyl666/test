@@ -729,10 +729,9 @@ def set_status(ids: list[int], status: str) -> int:
     Неотправленные изменения при этом не теряются — уйдут со следующей отправкой."""
     if status == "synced":
         with db.tx() as c:
-            marks = ",".join("?" * len(ids))
             return c.execute(f"UPDATE products SET status = 'synced', last_error = '', updated_at = ? "
-                             f"WHERE id IN ({marks}) AND synced_at IS NOT NULL AND status NOT IN ('sending', 'deleting')",
-                             [db.now(), *ids]).rowcount if ids else 0
+                             f"WHERE id {db.IN_LIST} AND synced_at IS NOT NULL AND status NOT IN ('sending', 'deleting')",
+                             (db.now(), db.as_list(ids))).rowcount if ids else 0
     if status not in ("draft", "ready"):
         raise ProductError("Вручную можно ставить только «черновик» или «готов»")
     with db.tx() as c:

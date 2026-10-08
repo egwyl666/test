@@ -81,8 +81,9 @@ def list_orders(status: str = "", limit: int = 100, offset: int = 0) -> dict:
 
 
 def mark_seen(ids: list[int] | None = None) -> None:
+    """ids — эти заказы; None — все."""
     with db.tx() as c:
-        if ids:
+        if ids is not None:
             c.executemany("UPDATE orders SET seen = 1 WHERE id = ?", [(i,) for i in ids])
         else:
             c.execute("UPDATE orders SET seen = 1 WHERE seen = 0")

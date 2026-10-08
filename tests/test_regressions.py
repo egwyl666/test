@@ -407,3 +407,146 @@ def test_public_feed_skips_deleting_and_broken_products(client):
         products.set_status([pid], "ready")
     body = client.get("/feed/prom.yml", params={"key": config.get("feed_key")}).text
     assert 'id="KEEP"' in body and 'id="GONE"' not in body and 'id="BROKEN"' not in body
+
+
+# ---------- надёжность сервера ----------
+
+# Обработчики, которым действительно нужен цикл событий (await сети, загрузка файла, фоновая задача).
+# Остальные — обычные def: FastAPI выполняет их в отдельном потоке, и долгая запись в базу не подвешивает программу.
+ASYNC_OK = {"supplier_restore_deleted", "upload_images", "diagnose_start", "prom_link", "check_connection",
+            "import_upload", "upload_supplier_source", "run_supplier", "prom_catalog_load", "refresh_orders",
+            "order_status", "support_create", "handler"}  # handler — отдача страниц (FileResponse)
+
+
+def test_blocking_endpoints_do_not_run_on_the_event_loop():
+    """async-обработчики с записью в базу/курсом НБУ занимали цикл событий: пока поставщик обновлялся,
+    не открывалась ни одна страница."""
+    import inspect
+
+    from fastapi.routing import APIRoute
+
+    from promloader.main import app
+    async_routes = {r.endpoint.__name__ for r in app.routes
+                    if isinstance(r, APIRoute) and inspect.iscoroutinefunction(r.endpoint)}
+    assert async_routes - ASYNC_OK == set()
+
+
+def test_settings_are_saved_all_or_nothing(client):
+    """Ошибка в одном поле оставляла сохранёнными поля, записанные до него."""
+    r = client.post("/api/settings", json={"quick_updates": False, "ai_rate": "абв"})
+    assert r.status_code == 400 and db.get_setting("quick_updates") != "0"
+
+
+def test_rate_settings_all_or_nothing(client):
+    rates.save_settings({"mode": "nbu"})
+    r = client.put("/api/rates", json={"mode": "manual", "add": "999"})
+    assert r.status_code == 400 and rates.settings()["mode"] == "nbu"
+
+
+def test_interrupted_catalog_load_is_not_running_forever():
+    promcatalog._set_state(running=True, seen=10)
+    assert promcatalog.recover() and not promcatalog.state()["running"]
+    assert "прервана" in promcatalog.state()["error"]
+    assert not promcatalog.recover()
+
+
+def test_thousands_of_ids_in_one_request(client):
+    """«Все по фильтру» в большом магазине: запрос с десятками тысяч «?» падал (в SQLite на Windows — максимум 32 766)."""
+    db._conn.setlimit(__import__("sqlite3").SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+    try:
+        with db.tx() as c:
+            c.executemany("INSERT INTO products (external_id, name, price, cost_price, created_at, updated_at) "
+                          "VALUES (?, 'Гачок', 100, 50, ?, ?)", [(f"BIG-{i}", db.now(), db.now()) for i in range(1500)])
+        ids = [r["id"] for r in db.query("SELECT id FROM products")]
+        assert promdelete.check(ids)["total"] == 1500
+        assert products.set_status(ids, "synced") == 0
+        suppliers.recalc_prices(ids)
+        assert client.post("/api/products/currencies", json={"filter": {}}).json() == {"UAH": 1500}
+        assert len(sync._quick_items(ids)) == 1500
+    finally:
+        db._conn.setlimit(__import__("sqlite3").SQLITE_LIMIT_VARIABLE_NUMBER, 32766)
+
+
+def test_empty_seen_list_marks_nothing(client):
+    from promloader import orders
+    with db.tx() as c:
+        c.execute("INSERT INTO orders (id, data, status, updated_at, seen) VALUES (1, '{}', 'pending', ?, 0)",
+                  (db.now(),))
+    client.post("/api/orders/seen", json={"ids": []})
+    assert db.query_one("SELECT seen FROM orders WHERE id = 1")["seen"] == 0
+    orders.mark_seen()
+    assert db.query_one("SELECT seen FROM orders WHERE id = 1")["seen"] == 1
+
+
+def test_bad_input_is_400_not_500(client):
+    assert client.get("/api/products", params={"offset": 10 ** 20}).status_code == 400
+
+
+def test_supplier_cannot_be_deleted_while_updating(client):
+    sid = suppliers.create("Опт")
+    suppliers._running.add(sid)
+    try:
+        assert client.delete(f"/api/suppliers/{sid}").status_code == 400
+    finally:
+        suppliers._running.discard(sid)
+    assert client.delete(f"/api/suppliers/{sid}").status_code == 200
+
+
+def test_duplicate_with_lost_photo_file(client):
+    from .conftest import make_image
+    pid = products.create({"name": "Гачок", "price": 100})
+    img = products.add_image_file(pid, make_image())
+    (db.uploads_dir() / img["src"].removeprefix("/media/")).unlink()
+    r = client.post(f"/api/products/{pid}/duplicate")
+    assert r.status_code == 200 and r.json()["name"] == "Гачок (копия)"
+
+
+def test_failed_backup_upload_keeps_the_staged_one(tmp_path):
+    from promloader import backup
+    products.create({"name": "Гачок", "price": 100})
+    good = backup.path_of(backup.create("manual")["name"])
+    with open(good, "rb") as f:
+        backup.stage_restore_stream(f)
+    staged = db.data_dir() / "restore-pending.zip"
+    before = staged.read_bytes()
+    with pytest.raises(backup.BackupError):
+        backup.stage_restore_stream(__import__("io").BytesIO(b"not a zip"))
+    assert staged.read_bytes() == before
+    assert not list(db.data_dir().glob("restore-upload-*"))
+
+
+def test_docker_start_applies_staged_backup(data_dir):
+    """В Docker программа запускается без START.bat — выбранная копия раньше не применялась никогда."""
+    from fastapi.testclient import TestClient
+
+    from promloader import backup
+    from promloader.main import app
+    products.create({"name": "З копії", "price": 100, "external_id": "FROM-BACKUP"})
+    with open(backup.path_of(backup.create("manual")["name"]), "rb") as f:
+        backup.stage_restore_stream(f)
+    products.create({"name": "Після копії", "price": 100, "external_id": "AFTER"})
+    with TestClient(app):
+        assert products.find_by_external_id("FROM-BACKUP") and not products.find_by_external_id("AFTER")
+    assert not (data_dir / "restore-pending.zip").exists()
+
+
+def test_update_copy_failure_restores_previous_version(tmp_path, monkeypatch):
+    """pending-check писался после копирования: сбой посередине оставлял смесь версий без отката."""
+    import shutil
+
+    from promloader import updater
+
+    from .test_updates import make_app, make_zip
+    app = make_app(tmp_path)
+    real_copy = shutil.copy2
+
+    def flaky(src, dst, *a, **kw):
+        if str(dst).endswith("added.py") and "app" in str(dst):
+            raise OSError("Диск заполнен")
+        return real_copy(src, dst, *a, **kw)
+    monkeypatch.setattr(shutil, "copy2", flaky)
+    with pytest.raises(updater.UpdateError, match="возвращена прежняя версия"):
+        updater.install(make_zip(), app)
+    assert (app / "promloader" / "main.py").read_text() == "OLD = 1\n"
+    assert (app / "VERSION").read_text() == "1.0.0"
+    assert not (db.data_dir() / "updates" / "pending-check").exists()
