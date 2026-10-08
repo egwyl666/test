@@ -143,6 +143,7 @@
         <span class="small" id="tg-result"></span>
       </div>
       <h3 style="margin:14px 0 6px">Получатели</h3>
+      <div class="err-text hidden" id="tg-outbox" style="margin-bottom:8px"></div>
       <div id="tg-recipients"></div>
       <div id="tg-candidates"></div>
       <div class="toolbar" style="margin-top:8px">
@@ -593,6 +594,23 @@
       const r = await api("/api/telegram/recipients");
       tgEvents = r.events;
       renderRecipients(r.items);
+      renderOutbox(r.outbox);
+    }
+    // уведомления, которые не дошли (нет связи): программа повторяет сама, здесь — видно и можно повторить сразу
+    function renderOutbox(o) {
+      const box = $("#tg-outbox");
+      box.classList.toggle("hidden", !o || !o.pending);
+      if (!o || !o.pending) return;
+      box.innerHTML = `Не доставлено уведомлений: ${o.pending}${o.error ? ` — ${esc(o.error)}` : ""}.
+        Программа повторит сама${o.next_at ? ` (${esc(formatDate(o.next_at))})` : ""}.
+        <button class="btn small" id="tg-retry">Повторить сейчас</button>`;
+      $("#tg-retry").onclick = () => busy($("#tg-retry"), async () => {
+        try {
+          const r = await api("/api/telegram/retry", { method: "POST" });
+          renderOutbox(r.outbox);
+          toast(r.sent ? `Отправлено: ${r.sent}` : "Пока не получилось — программа повторит сама", r.sent ? "ok" : "error");
+        } catch (err) { toast(err.message, "error"); }
+      });
     }
     function renderRecipients(items) {
       $("#tg-recipients").innerHTML = items.length ? items.map((r) => `

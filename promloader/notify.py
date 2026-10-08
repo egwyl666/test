@@ -10,6 +10,7 @@ import html
 import json
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -139,25 +140,101 @@ def send_to(chat_id: str, text: str, transport=None) -> None:
          disable_web_page_preview=True)
 
 
+RETRY_SECONDS = (60, 120, 300, 900, 1800, 3600)
+GIVE_UP_HOURS = 48  # дольше двух суток уведомление о заказе уже бесполезно
+KEEP_DAYS = 30
+_flush_lock = threading.Lock()
+
+
+def _later(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
 def send(event: str, text: str, background: bool = True) -> None:
-    """Отправить уведомление всем, кто подписан на событие. Никогда не бросает исключений."""
-    if not token():
-        return
-    targets = [r["chat_id"] for r in recipients() if event in r["events"]]
-    if not targets:
-        return
+    """Уведомление всем, кто подписан на событие: в очередь и сразу попытка отправить. Не дошло (нет интернета,
+    Telegram недоступен) — программа повторит сама (раньше такое уведомление терялось). Не бросает исключений.
 
-    def go():
-        for chat_id in targets:
-            try:
-                send_to(chat_id, text)
-            except NotifyError as exc:
-                log.warning("Уведомление Telegram для %s не отправлено: %s", chat_id, exc)
-
+    Внутри пробного прогона («Что изменится») запись в очередь откатывается вместе со всем остальным."""
+    try:
+        if not token():
+            return
+        targets = [r["chat_id"] for r in recipients() if event in r["events"]]
+        if not targets:
+            return
+        now = db.now()
+        with db.tx() as c:
+            c.executemany("INSERT INTO tg_outbox (chat_id, event, text, created_at, next_at) VALUES (?, ?, ?, ?, ?)",
+                          [(chat_id, event, text, now, now) for chat_id in targets])
+    except Exception:
+        log.exception("Уведомление «%s» не поставлено в очередь", event)
+        return
     if background:
-        threading.Thread(target=go, daemon=True).start()
+        threading.Thread(target=flush, daemon=True).start()
     else:
-        go()
+        flush()
+
+
+def flush(transport=None) -> int:
+    """Отправить очередь. Сообщения одному получателю уходят по порядку: если одно не дошло, следующие ему ждут.
+    Возвращает, сколько отправлено."""
+    if not _flush_lock.acquire(blocking=False):
+        return 0  # уже отправляет другой поток
+    try:
+        sent = 0
+        for _ in range(5):  # что поставили в очередь, пока отправляли, — следующим кругом, а не через минуту
+            done = _flush_round(transport)
+            sent += done
+            if not done:
+                break
+        old = (datetime.now(timezone.utc) - timedelta(days=KEEP_DAYS)).isoformat(timespec="seconds")
+        with db.tx() as c:
+            c.execute("DELETE FROM tg_outbox WHERE (sent_at IS NOT NULL OR failed = 1) AND created_at < ?", (old,))
+        return sent
+    finally:
+        _flush_lock.release()
+
+
+def _flush_round(transport=None) -> int:
+    now = db.now()
+    rows = db.query("SELECT * FROM tg_outbox WHERE sent_at IS NULL AND failed = 0 ORDER BY id LIMIT 500")
+    waiting, sent = set(), 0
+    for r in rows:
+        if r["chat_id"] in waiting:
+            continue
+        if r["next_at"] > now:
+            waiting.add(r["chat_id"])
+            continue
+        try:
+            send_to(r["chat_id"], r["text"], transport)
+        except NotifyError as exc:
+            waiting.add(r["chat_id"])
+            _retry_later(r, str(exc))
+            continue
+        with db.tx() as c:
+            c.execute("UPDATE tg_outbox SET sent_at = ?, last_error = '' WHERE id = ?", (db.now(), r["id"]))
+        sent += 1
+    return sent
+
+
+def _retry_later(row, error: str) -> None:
+    attempts = row["attempts"] + 1
+    created = datetime.fromisoformat(row["created_at"])
+    give_up = datetime.now(timezone.utc) - created > timedelta(hours=GIVE_UP_HOURS)
+    log.warning("Уведомление Telegram для %s не отправлено (попытка %d): %s", row["chat_id"], attempts, error)
+    with db.tx() as c:
+        c.execute("UPDATE tg_outbox SET attempts = ?, next_at = ?, last_error = ?, failed = ? WHERE id = ?",
+                  (attempts, _later(RETRY_SECONDS[min(attempts - 1, len(RETRY_SECONDS) - 1)]), error,
+                   1 if give_up else 0, row["id"]))
+
+
+def outbox_state() -> dict:
+    """Для «Настроек»: сколько уведомлений ждут повтора и почему."""
+    pending = db.query_one("SELECT COUNT(*) AS n FROM tg_outbox WHERE sent_at IS NULL AND failed = 0")["n"]
+    stuck = db.query_one("SELECT last_error, next_at FROM tg_outbox WHERE sent_at IS NULL AND failed = 0 "
+                         "AND attempts > 0 ORDER BY id LIMIT 1")
+    failed = db.query_one("SELECT COUNT(*) AS n FROM tg_outbox WHERE failed = 1")["n"]
+    return {"pending": pending, "failed": failed, "error": stuck["last_error"] if stuck else "",
+            "next_at": stuck["next_at"] if stuck else ""}
 
 
 def esc(value) -> str:

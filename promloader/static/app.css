@@ -380,6 +380,9 @@ table.offers tr.active td { font-weight: 600; color: var(--accent); }
 /* ---------- заказы ---------- */
 .nav-badge { background: var(--err); color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; margin-left: 3px; }
 .order.is-new { outline: 2px solid var(--accent); }
+.seen-btn { border: none; cursor: pointer; font: inherit; font-size: 12px; }
+.orders-filters input[type=date] { width: auto; padding: 6px 8px; }
+.orders-filters label { display: flex; gap: 6px; align-items: center; }
 .order-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 20px; }
 .order-item { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
 .order-item:first-child { border-top: none; }

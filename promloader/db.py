@@ -163,6 +163,21 @@ CREATE TABLE IF NOT EXISTS tg_recipients (
     created_at  TEXT NOT NULL
 );
 
+-- Очередь уведомлений Telegram: не дошло (нет связи) — повтор с паузой, порядок для каждого получателя сохраняется
+CREATE TABLE IF NOT EXISTS tg_outbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     TEXT NOT NULL,
+    event       TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    next_at     TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT NOT NULL DEFAULT '',
+    sent_at     TEXT,
+    failed      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS tg_outbox_pending ON tg_outbox(sent_at, failed, id);
+
 CREATE TABLE IF NOT EXISTS support_tickets (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     description  TEXT NOT NULL,

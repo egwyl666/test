@@ -1,6 +1,6 @@
 # Данные (`promloader/db.py`)
 
-_Обновлено: 2026-10-08 · версия 2.0.0_
+_Обновлено: 2026-10-08 · версия 2.1.0_
 
 SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), рядом `uploads/` (фото) и файлы прайсов.
 Новые колонки добавляются через `MIGRATIONS` (только `ADD COLUMN`); при первом запуске новой версии миграция идёт сама.
@@ -19,6 +19,7 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `ai_jobs`, `ai_items` | Массовый ИИ и откат |
 | `orders` | Заказы Prom |
 | `tg_recipients` | Получатели Telegram и их события |
+| `tg_outbox` | Очередь уведомлений Telegram: `chat_id`, `text`, `next_at`, `attempts`, `last_error`, `sent_at`, `failed` (через 48 ч без доставки); отправленные хранятся 30 дней |
 | `support_tickets` | Обращения в поддержку |
 | `r2_objects` | Фото, загруженные в Cloudflare R2 |
 | `settings` | Ключ → значение (см. ниже) |
@@ -27,5 +28,5 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 
 - Prom и фото: `prom_token`, `prom_api_base`, `public_base_url`, настройки R2, `import_method`, `import_plain_v2`, `import_settings`, `quick_updates`
 - Курс: `rate_mode` (`nbu`/`manual`), `rate_add`, `rate_manual` (JSON), `rate_auto_send`, `rate_applied` (курс последнего пересчёта), `nbu_rate_<КОД>` (кеш на день)
-- Состояния: `prom_catalog_state` (ход и итог загрузки каталога, в т. ч. `missing_on_prom`)
+- Состояния: `prom_catalog_state` (ход и итог загрузки каталога, в т. ч. `missing_on_prom`); заказы — `orders_synced_at` (начало последней полной проверки), `orders_cursor` (незаконченная загрузка), `orders_initialized`, `orders_last_poll`, `orders_error`
 - Переменные окружения важнее сохранённых значений (`config.py`).

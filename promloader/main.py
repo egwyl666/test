@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
-                 asyncio.create_task(rates_worker(stop))]
+                 asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop))]
     try:
         yield
     finally:
@@ -122,6 +122,19 @@ async def support_worker(stop: asyncio.Event) -> None:
             pass
 
 
+async def notify_worker(stop: asyncio.Event) -> None:
+    """Досылает уведомления Telegram, которые не ушли сразу (нет связи, Telegram недоступен)."""
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(notify.flush)
+        except Exception:
+            log.exception("Сбой отправки уведомлений Telegram")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def orders_worker(stop: asyncio.Event) -> None:
     """Раз в 5 минут забирает заказы с Prom (если указан токен)."""
     while not stop.is_set():
@@ -133,8 +146,10 @@ async def orders_worker(stop: asyncio.Event) -> None:
             pass  # ошибка сохранена и видна на странице заказов
         except Exception:
             log.exception("Сбой опроса заказов")
+        # загружаются все заказы магазина (первый раз или после долгого простоя) — продолжаем без долгой паузы
+        catching_up = bool(db.get_setting("orders_cursor"))
         try:
-            await asyncio.wait_for(stop.wait(), timeout=orders.POLL_MINUTES * 60)
+            await asyncio.wait_for(stop.wait(), timeout=20 if catching_up else orders.POLL_MINUTES * 60)
         except asyncio.TimeoutError:
             pass
 
@@ -1388,9 +1403,12 @@ def ai_bulk_revert(job_id: int):
 # ---------- заказы и Telegram ----------
 
 @app.get("/api/orders")
-def list_orders(status: str = "", limit: int = 100, offset: int = 0):
-    return {**orders.list_orders(status, max(1, min(limit, 500)), max(0, offset)), "statuses": orders.STATUSES,
-            "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS, "enabled": orders.enabled()}
+def list_orders(status: str = "", q: str = "", date_from: str = "", date_to: str = "", limit: int = 50,
+                offset: int = 0):
+    flt = {"status": status, "q": q, "date_from": date_from, "date_to": date_to}
+    return {**orders.list_orders(flt, max(1, min(limit, 200)), max(0, min(offset, 10 ** 9))),
+            "statuses": orders.STATUSES, "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS,
+            "enabled": orders.enabled()}
 
 
 @app.post("/api/orders/refresh")
@@ -1418,12 +1436,21 @@ async def order_status(order_id: int, status: str = Body(...), reason: str = Bod
         async with sync.make_client() as client:
             return await orders.set_status(client, order_id, status, reason, text)
     except PromError as exc:
-        raise HTTPException(400 if exc.status in (None, 400, 422) else 502, str(exc))
+        raise HTTPException(502 if exc.retryable else 400, str(exc))
 
 
 @app.get("/api/telegram/recipients")
 def telegram_recipients():
-    return {"items": notify.recipients(), "events": notify.EVENTS, "token_set": bool(notify.token())}
+    return {"items": notify.recipients(), "events": notify.EVENTS, "token_set": bool(notify.token()),
+            "outbox": notify.outbox_state()}
+
+
+@app.post("/api/telegram/retry")
+def telegram_retry():
+    """«Повторить сейчас» для уведомлений, которые не дошли."""
+    with db.tx() as c:
+        c.execute("UPDATE tg_outbox SET next_at = ? WHERE sent_at IS NULL AND failed = 0", (db.now(),))
+    return {"sent": notify.flush(), "outbox": notify.outbox_state()}
 
 
 @app.post("/api/telegram/candidates")

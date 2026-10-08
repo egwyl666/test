@@ -1,18 +1,18 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-08 · версия 2.0.0_
+_Обновлено: 2026-10-08 · версия 2.1.0_
 
 ## Модули
 
 | Модуль | Строк | Назначение · ключевое |
 |---|---|---|
-| `main.py` | 1522 | FastAPI: маршруты, страницы (`PAGES`), фоновые задачи (`*_worker`), `lifespan` |
+| `main.py` | 1549 | FastAPI: маршруты, страницы (`PAGES`), фоновые задачи (`*_worker`), `lifespan` |
 | `suppliers.py` | 887 | Поставщики: `run`/`_run`, `apply_items`/`_apply_one` (пропуск `ignored`), `recompute_offer` (несколько поставщиков), `recalc_prices`, `bulk_prices` (`as_cost`/`percent`/`recalc`), `link_item` (строка прайса ↔ товар, снимает `ignored`, кроме удаляемого товара), `_busy` (одно действие с поставщиком за раз: обновление, предпросмотр, удаление), `preview` (что изменит обновление), `failed` (сбойные поставщики), `_fetch_source` (скачанный прайс — во временный файл до успеха), `deleted_items`/`restore_deleted(skus)`, защита от битого прайса |
 | `products.py` | 862 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products(flt, sort, …)` / `_rows` (фильтры `FILTER_KEYS`, сортировки `SORTS`; «с ошибками» — через `validate` в Python; + закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `bulk_edit` (`BULK_FIELDS`), `export_xlsx`, `set_status`, фото |
 | `sync.py` | 594 | Очередь выгрузки: `enqueue`, `run_once`, `_start`/`_start_quick`/`_poll`, ожидание чужого импорта (`BUSY_RETRY_SECONDS`), `repair_false_success`, `worker` (+ `promdelete.process`) |
 | `excel.py` | 455 | Разбор файлов и XML в таблицу, `build_products`, `money_currency`, `clean_name`/`clean_names` |
 | `ai.py` | 373 | Gemini/Claude, `ACTIONS`, авто-выбор модели Gemini |
-| `db.py` | 377 | Схема, `MIGRATIONS` (ALTER TABLE ADD COLUMN), `tx()` (вложенный — часть внешнего), `in_transaction`, `query`, `get/set_setting`, SQL-функция `lower_u`, `IN_LIST` + `as_list` (список id одним параметром), `default_dir` (папка данных до открытия базы) |
+| `db.py` | 392 | Схема, `MIGRATIONS` (ALTER TABLE ADD COLUMN), `tx()` (вложенный — часть внешнего), `in_transaction`, `query`, `get/set_setting`, SQL-функция `lower_u`, `IN_LIST` + `as_list` (список id одним параметром), `default_dir` (папка данных до открытия базы) |
 | `r2.py` | 267 | Cloudflare R2 (SigV4), загрузка фото, постоянные ссылки |
 | `support.py` | 260 | Обращения в поддержку: скриншоты, архив, отправка в Telegram |
 | `tray.py` | 247 | Значок у часов, перезапуск, присмотр |
@@ -25,8 +25,8 @@ _Обновлено: 2026-10-08 · версия 2.0.0_
 | `promcatalog.py` | 204 | Каталог с Prom: `load` (страницы по `last_id`), `_upsert`, `reconcile`, `recover` (прерванная загрузка при запуске) |
 | `prom_api.py` | 183 | `PromClient`, `PromError(retryable, busy)`, `DEFAULT_IMPORT_SETTINGS` (`mark_missing_product_as: none`), `import_state` |
 | `aibulk.py` | 177 | Массовый ИИ, откат |
-| `orders.py` | 166 | Заказы: опрос, статусы |
-| `notify.py` | 164 | Telegram-уведомления по получателям |
+| `orders.py` | 289 | Заказы: `poll` (всё изменённое с прошлой полной проверки — `last_modified_from` с запасом `OVERLAP`, страницы по `last_id`, незаконченная загрузка продолжается по `orders_cursor`), `_where` (поиск: номер, телефон, имя, товар; даты), `TRANSITIONS` (допустимые переходы), `set_status` (проверяет `processed_ids`), уведомления о новых — `_notify` |
+| `notify.py` | 231 | Telegram-уведомления по получателям: `send` кладёт в очередь `tg_outbox`, `flush` отправляет по порядку для каждого получателя, повтор с паузой до часа, через 48 ч — отказ; `outbox_state` |
 | `backup.py` | 235 | zip-копии базы, фото и прайсов |
 | `pricing.py` | 160 | `Pricer`: `to_uah`, `price`, `apply`; правила наценки и округление |
 | `launcher.py` | 140 | Запуск сервера и браузера |
@@ -48,10 +48,10 @@ _Обновлено: 2026-10-08 · версия 2.0.0_
 | Выгрузка | `POST /api/sync`, `GET /api/sync/jobs`, `…/jobs/{id}/file`, `…/jobs/{id}/retry`, `GET /api/sync/photos`, `POST /api/diagnose`, `GET /api/diagnose/{run_id}`, `GET /feed/prom.yml`, `GET /feed/{name}.xml` |
 | Импорт файла | `POST /api/import/upload`, `GET /api/import/{token}/sheet`, `…/image`, `POST …/preview`, `…/commit` |
 | Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`), `POST …/preview` |
-| Prom | `GET/POST /api/prom/catalog`, `GET /api/orders`, `POST /api/orders/refresh`, `…/seen`, `…/{id}/status` |
+| Prom | `GET/POST /api/prom/catalog`, `GET /api/orders` (`status, q, date_from, date_to, limit, offset` → `items, total, counts`), `POST /api/orders/refresh`, `…/seen` (`ids`; без них — все), `…/{id}/status` |
 | ИИ | `POST /api/ai/check`, `GET/POST /api/ai/bulk`, `…/{job_id}/status`, `…/{job_id}/revert` |
 | Настройки и сервис | `GET/POST /api/settings`, `…/check`, `GET /api/meta`, `/api/update/check`, `/api/update/install`, `/api/backups*`, `/api/shutdown`, `/api/restart`, `/api/autostart`, `/api/schedules*`, `/api/r2/check`, `/api/r2/stats` |
-| Telegram и поддержка | `/api/telegram/recipients*`, `/api/telegram/candidates`, `/api/support*`, `/api/support/channel/chats` |
+| Telegram и поддержка | `/api/telegram/recipients*` (+ `outbox`), `POST /api/telegram/retry`, `/api/telegram/candidates`, `/api/support*`, `/api/support/channel/chats` |
 
 ## Правила, которые легко нарушить
 
@@ -79,3 +79,4 @@ _Обновлено: 2026-10-08 · версия 2.0.0_
 - «Что изменится» — только через `changes.preview(fn)`: внутри fn никаких запросов в интернет и записи файлов (курс — `rates.prefetch()` заранее, картинки — `embedded={}`).
 - Поиск — только через `products.search_clause` (`lower_u(...) LIKE`): обычный `LIKE` в SQLite не понимает регистр кириллицы.
 - `sync.enqueue` без токена Prom ничего не ставит в очередь (в тестах токен задаёт `conftest.py`).
+- Уведомления — только через `notify.send` (очередь): прямой `send_to` — лишь для «проверить получателя».
