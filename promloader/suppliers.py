@@ -11,6 +11,7 @@
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import uuid
@@ -185,9 +186,12 @@ def update(supplier_id: int, data: dict) -> dict:
                 raise SupplierError("Строка с заголовками — это номер строки, например 1")
         elif key == "interval_hours":
             try:
-                value = max(0.0, float(value or 0))
+                value = float(value or 0)
             except (TypeError, ValueError):
                 raise SupplierError("Интервал обновления — число часов")
+            value = max(0.0, value) if math.isfinite(value) else -1
+            if value < 0 or value > 24 * 366:
+                raise SupplierError("Интервал обновления — число часов, не больше года")
         elif key in ("auto_sync", "merge_by_barcode", "clean_names"):
             value = 1 if value else 0
         elif key == "rate_mode":
@@ -202,6 +206,8 @@ def update(supplier_id: int, data: dict) -> dict:
                 value = float(str(value or 0).replace(",", "."))
             except ValueError:
                 raise SupplierError("Курс и надбавка к курсу — числа, например 41.5 и 2")
+            if not math.isfinite(value) or value > 1e6:
+                raise SupplierError("Курс и надбавка к курсу — обычные числа, например 41.5 и 2")
             if key == "rate_value" and value < 0 or key == "rate_add" and not -50 <= value <= 100:
                 raise SupplierError("Курс не может быть отрицательным, надбавка — от -50 до 100%")
         elif key == "new_status" and value not in NEW_STATUSES:

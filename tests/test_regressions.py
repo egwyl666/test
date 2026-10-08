@@ -178,3 +178,60 @@ def test_rate_preview_fetches_nbu_outside_the_transaction(client, monkeypatch):
     products.create({"name": "Гачок", "cost_price": 1, "cost_currency": "USD", "price": 40, "currency": "UAH"})
     r = client.post("/api/rates/preview", json={"mode": "nbu"})
     assert r.status_code == 200 and http == [False]
+
+
+# ---------- числа и валюты ----------
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "1e309", "-inf"])
+def test_non_finite_numbers_rejected(client, bad):
+    """«nan»/«inf» сохранялись: цена становилась бесконечной, список товаров и курс отдавали ошибку 500."""
+    assert client.put("/api/rates", json={"mode": "manual", "manual": {"USD": bad}}).status_code == 400
+    sid = suppliers.create("Опт")
+    assert client.patch(f"/api/suppliers/{sid}", json={"rate_value": bad}).status_code == 400
+    assert client.patch(f"/api/suppliers/{sid}", json={"interval_hours": bad}).status_code == 400
+    assert client.put("/api/pricing", json={"rules": [{"markup_percent": bad}]}).status_code == 400
+    pid = products.create({"name": "Гачок", "price": 1})
+    r = client.patch(f"/api/products/{pid}", json={"price": bad})
+    assert r.status_code == 400 and r.json().get("field") == "price"
+    assert client.get("/api/products").status_code == 200 and client.get("/api/rates").status_code == 200
+
+
+def test_journal_keeps_exact_numbers_for_revert(client):
+    """Журнал хранил числа с 6 знаками: «↩ Вернуть» 10999.99 возвращал 11000."""
+    pid = products.create({"name": "Гачок", "price": 10999.99})
+    client.patch(f"/api/products/{pid}", json={"price": "12000"})
+    ch = [r for r in client.get(f"/api/products/{pid}/changes").json()["items"] if r["field"] == "price"][0]
+    assert ch["old"] == "10999.99"
+    assert client.post(f"/api/changes/{ch['id']}/revert").json()["price"] == 10999.99
+    big = products.create({"name": "Котушка", "price": 1234567})
+    client.patch(f"/api/products/{big}", json={"price": "1"})
+    ch = [r for r in client.get(f"/api/products/{big}/changes").json()["items"] if r["field"] == "price"][0]
+    assert ch["old"] == "1234567"
+
+
+def test_text_of_exactly_400_chars_is_revertable(client):
+    pid = products.create({"name": "Гачок", "price": 1, "description": "д" * 400})
+    client.patch(f"/api/products/{pid}", json={"description": "коротко"})
+    ch = [r for r in client.get(f"/api/products/{pid}/changes").json()["items"] if r["field"] == "description"][0]
+    assert ch["revertable"]
+
+
+@pytest.mark.parametrize("text,code", [("грн", "UAH"), ("грн.", "UAH"), ("₴", "UAH"), ("Гривня", "UAH"),
+                                       ("$", "USD"), ("usd", "USD"), ("€", "EUR"), ("євро", "EUR"), ("zł", "PLN")])
+def test_currency_synonyms(text, code):
+    """«грн.», «₴», «$» из прайсов не узнавались: товар уходил в РРЦ, курс НБУ не находился, строка с ошибкой."""
+    assert products.normalize({"currency": text})["currency"] == code
+    assert products.normalize({"cost_currency": text})["cost_currency"] == code
+
+
+def test_unknown_currency_is_an_error():
+    with pytest.raises(products.ProductError) as exc:
+        products.normalize({"currency": "тугрики"})
+    assert exc.value.field == "currency"
+
+
+def test_unicode_minus_and_numbers():
+    assert products.parse_number("−100") == -100      # U+2212 из Excel/сайтов
+    assert products.parse_number("1 299,50 грн") == 1299.5
+    with pytest.raises(products.ProductError):
+        products.parse_number("9" * 400)

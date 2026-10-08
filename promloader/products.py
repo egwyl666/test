@@ -2,6 +2,7 @@
 
 import io
 import json
+import math
 import re
 import uuid
 
@@ -55,6 +56,28 @@ _currency_words = re.compile(r"грн\.?|uah|usd|eur|руб\.?|₴|\$|€", re.I
 _xml_bad = re.compile("[\x00-\x08\x0c\x0e-\x1f\ufffe\uffff]")
 
 
+MAX_NUMBER = 1e12
+# как валюту пишут в прайсах → код, который понимают Prom и НБУ
+CURRENCY_CODES = {
+    "UAH": "UAH", "ГРН": "UAH", "ГРН.": "UAH", "₴": "UAH", "ГРИВНА": "UAH", "ГРИВНЯ": "UAH", "ГРИВЕНЬ": "UAH",
+    "USD": "USD", "$": "USD", "US$": "USD", "ДОЛ": "USD", "ДОЛ.": "USD", "ДОЛАР": "USD", "ДОЛЛАР": "USD",
+    "EUR": "EUR", "€": "EUR", "ЄВРО": "EUR", "ЕВРО": "EUR",
+    "PLN": "PLN", "ZŁ": "PLN", "ZL": "PLN", "ЗЛ": "PLN", "ЗЛОТИЙ": "PLN",
+    "GBP": "GBP", "£": "GBP",
+}
+
+
+def currency_code(value, field: str = "currency") -> str:
+    """'грн.' → 'UAH', '$' → 'USD'; пустое → ''. Неизвестная валюта — ошибка поля, а не странный код в файле Prom."""
+    text = str(value or "").strip().upper()
+    if not text:
+        return ""
+    code = CURRENCY_CODES.get(text)
+    if code is None:
+        raise ProductError(f"Неизвестная валюта «{value}»: UAH, USD, EUR, PLN или GBP", field)
+    return code
+
+
 def clean_text(value) -> str:
     """Убирает невидимые управляющие символы; перенос строки Excel (Alt+Enter) превращает в обычный."""
     return _xml_bad.sub("", str(value).replace("\x0b", "\n"))
@@ -65,8 +88,10 @@ def parse_number(value) -> float | None:
     if value is None:
         return None
     if isinstance(value, (int, float)):
+        if not math.isfinite(value) or abs(value) > MAX_NUMBER:
+            raise ProductError(f"Не похоже на число: {value!r}")
         return float(value)
-    original = str(value).strip()
+    original = str(value).strip().replace("\u2212", "-")  # «−100» (юникод-минус из Excel и сайтов)
     if original in {"", "-", "—", "–"}:
         return None
     if _sci.match(original):  # 1,2E+03 — так Excel иногда сохраняет числа в CSV
@@ -88,9 +113,12 @@ def parse_number(value) -> float | None:
     else:
         text = text.replace(",", ".")
     try:
-        return float(text)
+        number = float(text)
     except ValueError:
         raise ProductError(f"Не похоже на число: {value!r}")
+    if not math.isfinite(number) or abs(number) > MAX_NUMBER:
+        raise ProductError(f"Не похоже на число: {value!r}")
+    return number
 
 
 def parse_int(value) -> int | None:
@@ -158,11 +186,9 @@ def normalize(data: dict) -> dict:
     if "presence" in out:
         out["presence"] = parse_presence(out["presence"]) or "available"
     if "currency" in out:
-        out["currency"] = (out["currency"] or "UAH").upper()
+        out["currency"] = currency_code(out["currency"], "currency") or "UAH"
     if "cost_currency" in out:
-        out["cost_currency"] = (out["cost_currency"] or "").upper()
-        if out["cost_currency"] not in ("", "UAH", "USD", "EUR", "PLN", "GBP"):
-            raise ProductError("Валюта закупки: UAH, USD, EUR, PLN или GBP", "cost_currency")
+        out["cost_currency"] = currency_code(out["cost_currency"], "cost_currency")
     if out.get("external_id") == "":
         out.pop("external_id")
     return out

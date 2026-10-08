@@ -52,15 +52,21 @@ def save_rules(rules: list[dict]) -> list[dict]:
         rounding = r.get("rounding") or "none"
         if rounding not in ROUNDING:
             raise ValueError(f"Неизвестное округление: {rounding}")
-        num = lambda v: None if v in (None, "") else float(v)  # noqa: E731
+        def num(v):
+            if v in (None, ""):
+                return None
+            number = float(str(v).replace(",", "."))
+            if not math.isfinite(number) or abs(number) > 1e9:
+                raise ValueError(f"не число: {v}")
+            return number
         clean.append((
             i,
             int(r["supplier_id"]) if r.get("supplier_id") not in (None, "") else None,
             str(r.get("category") or "").strip(),
             num(r.get("cost_from")),
             num(r.get("cost_to")),
-            float(r.get("markup_percent") or 0),
-            float(r.get("markup_fixed") or 0),
+            num(r.get("markup_percent")) or 0,
+            num(r.get("markup_fixed")) or 0,
             rounding,
             1 if r.get("use_rrp") else 0,
         ))

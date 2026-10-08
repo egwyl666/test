@@ -47,7 +47,8 @@ def current_source() -> str:
 def _text(value) -> str:
     if value is None:
         return ""
-    text = f"{value:g}" if isinstance(value, float) else str(value)
+    # числа — без округления: «↩ Вернуть» должен вернуть 10999.99, а не 11000
+    text = format(value, ".15g") if isinstance(value, float) else str(value)
     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + "…"
 
 
@@ -87,7 +88,7 @@ class RevertError(Exception):
 def revertable(row) -> bool:
     """Значение «было» сохранено целиком (длинные тексты в журнале обрезаны — их вернуть нельзя)."""
     old = row["old"] or ""
-    return row["field"] in REVERTABLE and len(old) < MAX_TEXT and row["product_id"] is not None
+    return row["field"] in REVERTABLE and len(old) <= MAX_TEXT and row["product_id"] is not None
 
 
 def revert(change_id: int) -> dict:

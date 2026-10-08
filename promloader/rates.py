@@ -11,6 +11,7 @@
 
 import json
 import logging
+import math
 import time
 from datetime import date
 
@@ -85,9 +86,12 @@ def settings() -> dict:
 
 def _number(value, what: str) -> float:
     try:
-        return float(str(value if value is not None else 0).replace(",", ".").strip() or 0)
+        number = float(str(value if value is not None else 0).replace(",", ".").strip() or 0)
     except ValueError:
         raise RateError(f"{what}: нужно число, например 41.5")
+    if not math.isfinite(number) or abs(number) > 1e6:
+        raise RateError(f"{what}: нужно обычное число, например 41.5")
+    return number
 
 
 def save_settings(data: dict) -> dict:
