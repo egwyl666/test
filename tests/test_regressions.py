@@ -566,3 +566,19 @@ def test_app_starts_in_a_fresh_process(tmp_path):
                          cwd=os.path.dirname(os.path.dirname(__file__)), timeout=120)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().endswith("200")
+
+
+def test_import_does_not_bring_back_a_product_being_deleted(client):
+    """Импорт с поставщиком снимал «удалён вами» у товара, который ещё удалялся с Prom: после удаления
+    поставщик создавал его заново."""
+    from promloader import main
+    sid = make_supplier(make_yml(BASE), prefix="PO-")
+    run(sid)
+    pid = products.find_by_external_id("PO-A1")
+    with db.tx() as c:
+        c.execute("UPDATE products SET status = 'synced', synced_at = ?, prom_id = 77 WHERE id = ?", (db.now(), pid))
+    promdelete.request([pid])
+    main._link_imported(suppliers.get(sid), "A1", pid, {"data": {"external_id": "A1"}, "params": [], "image_urls": []})
+    promdelete._done([pid])
+    run(sid)
+    assert products.find_by_external_id("PO-A1") is None

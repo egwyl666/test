@@ -1,6 +1,6 @@
 # Данные (`promloader/db.py`)
 
-_Обновлено: 2026-10-05 · версия 1.6.1_
+_Обновлено: 2026-10-08 · версия 2.0.0_
 
 SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), рядом `uploads/` (фото) и файлы прайсов.
 Новые колонки добавляются через `MIGRATIONS` (только `ADD COLUMN`); при первом запуске новой версии миграция идёт сама.
@@ -10,8 +10,8 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `products` | Товар. `external_id` (артикул = id оффера на Prom), тексты RU/UA, `price`/`currency` (розница), `cost_price`/`rrp` + `cost_currency` (закупка в своей валюте), `presence`, `quantity`, `params` (JSON), `status`, `last_error`, `revision`, `synced_at`, `prom_id`, `supplier_id`, `locked_fields` (🔒), `pending_fields` (что не отправлено), `vendor_code`, `barcode`, `delete_next_at`/`delete_attempts` |
 | `images` | Фото товара: `file` (в `uploads/`) или `url`, `position` |
 | `sync_jobs` | Задачи выгрузки: `kind` (`import`/`quick`), `status` (`pending`/`waiting`/`done`/`failed`), `products` (JSON {id: revision}), `import_id`, `attempts`, `next_run_at`, `result`, `started_at`, `sent` |
-| `suppliers` | Поставщик: источник, `mapping`, `header_row`, `prefix`, `interval_hours`, `new_status`, `auto_sync`, `missing_action`, `merge_by_barcode`, `rate_mode`/`rate_value`/`rate_add`, `clean_names` |
-| `supplier_items` | Строка прайса ↔ товар: `(supplier_id, sku)` уникально, `product_id` (SET NULL при удалении товара), `data`, `images_hash`, `missing`, `seen_run`, `ignored` (удалён вами — не создавать заново; снимается возвратом или когда товар с тем же артикулом снова есть) |
+| `suppliers` | Поставщик: источник, `mapping`, `header_row`, `prefix`, `interval_hours`, `new_status`, `auto_sync`, `missing_action`, `merge_by_barcode`, `rate_mode`/`rate_currency`/`rate_value`/`rate_add` (свой курс — только для `rate_currency`), `clean_names` |
+| `supplier_items` | Строка прайса ↔ товар: `(supplier_id, sku)` уникально, `product_id` (SET NULL при удалении товара), `data`, `images_hash`, `missing`, `seen_run`, `ignored` (удалён вами — не создавать заново; снимается возвратом или когда товар с тем же артикулом снова есть, но не пока товар удаляется с Prom) |
 | `supplier_runs` | История обновлений поставщика: `status`, `stats` (JSON), `message` |
 | `price_rules` | Наценка: поставщик, группа, диапазон закупки, `markup_percent`, округление |
 | `product_changes` | Журнал: `product_id`, `at`, `source` (кто), `field`, `old`, `new`; хранится 180 дней |

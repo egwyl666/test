@@ -472,14 +472,17 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
 
 
 def link_item(c, supplier_id: int, sku: str, product_id: int, payload: str, img_hash: str, ts: str, run_id: int) -> None:
-    """Строка прайса ↔ товар. Привязанная строка больше не считается удалённой вами."""
+    """Строка прайса ↔ товар. Привязанная строка больше не считается удалённой вами — если только товар не
+    удаляется прямо сейчас: иначе, когда Prom подтвердит удаление, поставщик создал бы его заново."""
+    row = c.execute("SELECT status FROM products WHERE id = ?", (product_id,)).fetchone()
+    ignored = 1 if row is not None and row["status"] == "deleting" else 0
     c.execute(
-        """INSERT INTO supplier_items (supplier_id, sku, product_id, data, images_hash, missing, seen_at, seen_run)
-           VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+        """INSERT INTO supplier_items (supplier_id, sku, product_id, data, images_hash, missing, seen_at, seen_run, ignored)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
            ON CONFLICT(supplier_id, sku) DO UPDATE SET product_id = excluded.product_id, data = excluded.data,
                images_hash = excluded.images_hash, missing = 0, seen_at = excluded.seen_at, seen_run = excluded.seen_run,
-               ignored = 0""",
-        (supplier_id, sku, product_id, payload, img_hash, ts, run_id),
+               ignored = excluded.ignored""",
+        (supplier_id, sku, product_id, payload, img_hash, ts, run_id, ignored),
     )
 
 

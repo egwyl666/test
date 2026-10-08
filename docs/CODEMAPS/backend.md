@@ -1,37 +1,37 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-05 · версия 1.9.0_
+_Обновлено: 2026-10-08 · версия 2.0.0_
 
 ## Модули
 
 | Модуль | Строк | Назначение · ключевое |
 |---|---|---|
-| `main.py` | 1289 | FastAPI: маршруты, страницы (`PAGES`), фоновые задачи (`*_worker`), `lifespan` |
-| `suppliers.py` | 738 | Поставщики: `run`/`_run`, `apply_items`/`_apply_one` (пропуск `ignored`), `recompute_offer` (несколько поставщиков), `recalc_prices`, `bulk_prices` (`as_cost`/`percent`/`recalc`), `link_item` (строка прайса ↔ товар, снимает `ignored`), `preview` (что изменит обновление), `failed` (сбойные поставщики), `_fetch_source` (скачанный прайс — во временный файл до успеха), `deleted_items`/`restore_deleted(skus)`, защита от битого прайса |
-| `products.py` | 631 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products(flt, sort, …)` / `_rows` (фильтры `FILTER_KEYS`, сортировки `SORTS`; «с ошибками» — через `validate` в Python; + закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `bulk_edit` (`BULK_FIELDS`), `export_xlsx`, `set_status`, фото |
-| `sync.py` | 544 | Очередь выгрузки: `enqueue`, `run_once`, `_start`/`_start_quick`/`_poll`, ожидание чужого импорта (`BUSY_RETRY_SECONDS`), `repair_false_success`, `worker` (+ `promdelete.process`) |
-| `excel.py` | 442 | Разбор файлов и XML в таблицу, `build_products`, `money_currency`, `clean_name`/`clean_names` |
+| `main.py` | 1522 | FastAPI: маршруты, страницы (`PAGES`), фоновые задачи (`*_worker`), `lifespan` |
+| `suppliers.py` | 887 | Поставщики: `run`/`_run`, `apply_items`/`_apply_one` (пропуск `ignored`), `recompute_offer` (несколько поставщиков), `recalc_prices`, `bulk_prices` (`as_cost`/`percent`/`recalc`), `link_item` (строка прайса ↔ товар, снимает `ignored`, кроме удаляемого товара), `_busy` (одно действие с поставщиком за раз: обновление, предпросмотр, удаление), `preview` (что изменит обновление), `failed` (сбойные поставщики), `_fetch_source` (скачанный прайс — во временный файл до успеха), `deleted_items`/`restore_deleted(skus)`, защита от битого прайса |
+| `products.py` | 862 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products(flt, sort, …)` / `_rows` (фильтры `FILTER_KEYS`, сортировки `SORTS`; «с ошибками» — через `validate` в Python; + закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `bulk_edit` (`BULK_FIELDS`), `export_xlsx`, `set_status`, фото |
+| `sync.py` | 594 | Очередь выгрузки: `enqueue`, `run_once`, `_start`/`_start_quick`/`_poll`, ожидание чужого импорта (`BUSY_RETRY_SECONDS`), `repair_false_success`, `worker` (+ `promdelete.process`) |
+| `excel.py` | 455 | Разбор файлов и XML в таблицу, `build_products`, `money_currency`, `clean_name`/`clean_names` |
 | `ai.py` | 373 | Gemini/Claude, `ACTIONS`, авто-выбор модели Gemini |
-| `db.py` | 357 | Схема, `MIGRATIONS` (ALTER TABLE ADD COLUMN), `tx()`, `query`, `get/set_setting`, SQL-функция `lower_u` |
+| `db.py` | 377 | Схема, `MIGRATIONS` (ALTER TABLE ADD COLUMN), `tx()` (вложенный — часть внешнего), `in_transaction`, `query`, `get/set_setting`, SQL-функция `lower_u`, `IN_LIST` + `as_list` (список id одним параметром), `default_dir` (папка данных до открытия базы) |
 | `r2.py` | 267 | Cloudflare R2 (SigV4), загрузка фото, постоянные ссылки |
 | `support.py` | 260 | Обращения в поддержку: скриншоты, архив, отправка в Telegram |
 | `tray.py` | 247 | Значок у часов, перезапуск, присмотр |
 | `schedule.py` | 235 | Выгрузка по расписанию, пропущенные запуски |
-| `updater.py` | 233 | Самообновление с GitHub по `VERSION` |
+| `updater.py` | 260 | Самообновление с GitHub по `VERSION`; `pending-check` пишется до копирования, `_put_back` — откат при сбое |
 | `phototunnel.py` | 229 | Временный публичный адрес для фото, `/feed/<hex>.xml` |
-| `rates.py` | 224 | Курс НБУ (кеш на день), настройки курса, `Table.rate` (свой курс поставщика), `coverage`, `check_changed`, `mark_applied` |
+| `rates.py` | 259 | Курс НБУ (кеш на день), настройки курса, `Table.rate` (свой курс поставщика), `coverage`, `check_changed`, `mark_applied` |
 | `diagnose.py` | 213 | «Проверка выгрузки» одного товара по шагам |
-| `promdelete.py` | 194 | Удаление с Prom: `check`, `request`, `process`, `retry`, `cancel` |
-| `promcatalog.py` | 193 | Каталог с Prom: `load` (страницы по `last_id`), `_upsert`, `reconcile` |
+| `promdelete.py` | 196 | Удаление с Prom: `check`, `request`, `process`, `retry`, `cancel` |
+| `promcatalog.py` | 204 | Каталог с Prom: `load` (страницы по `last_id`), `_upsert`, `reconcile`, `recover` (прерванная загрузка при запуске) |
 | `prom_api.py` | 183 | `PromClient`, `PromError(retryable, busy)`, `DEFAULT_IMPORT_SETTINGS` (`mark_missing_product_as: none`), `import_state` |
 | `aibulk.py` | 177 | Массовый ИИ, откат |
-| `orders.py` | 165 | Заказы: опрос, статусы |
+| `orders.py` | 166 | Заказы: опрос, статусы |
 | `notify.py` | 164 | Telegram-уведомления по получателям |
-| `backup.py` | 161 | zip-копии базы, фото и прайсов |
-| `pricing.py` | 151 | `Pricer`: `to_uah`, `price`, `apply`; правила наценки и округление |
+| `backup.py` | 235 | zip-копии базы, фото и прайсов |
+| `pricing.py` | 160 | `Pricer`: `to_uah`, `price`, `apply`; правила наценки и округление |
 | `launcher.py` | 140 | Запуск сервера и браузера |
-| `changes.py` | 171 | Журнал: `source()` (contextvar «кто»), `record`, `record_diff`, `search` (+ `revertable`), `revert` (`REVERTABLE`), `preview(fn)` (пробный прогон: выполнить и откатить, итог по журналу), `to_csv`, `cleanup` (180 дней) |
-| `feed.py` | 105 | YML-фид для импорта Prom |
+| `changes.py` | 232 | Журнал: `source()` (contextvar «кто»), `record`, `record_diff`, `search` (+ `revertable`), `revert` (`REVERTABLE`), `preview(fn)` (пробный прогон: выполнить и откатить, итог по журналу), `to_csv`, `cleanup` (180 дней) |
+| `feed.py` | 107 | YML-фид для импорта Prom |
 | `config.py` | 58 | Настройки: переменные окружения важнее сохранённых |
 | `autostart.py`, `runtime.py` | 48, 38 | Автозапуск Windows; перезапуск из веб-сервера |
 
@@ -56,13 +56,25 @@ _Обновлено: 2026-10-05 · версия 1.9.0_
 ## Правила, которые легко нарушить
 
 - Доступ: middleware `same_site_only` (`main.py`) — только `localhost` (или `APP_PASSWORD` / `PROMLOADER_ALLOWED_HOSTS`), изменяющие запросы только с Origin своей страницы; `/media/` и `/feed/` открыты для Prom. В тестах `conftest.py` разрешает адрес `testserver`.
-- Никаких запросов в интернет внутри `db.tx()`: курс заранее — `rates.prefetch()`; тяжёлые эндпоинты — `def` (пул потоков) или `asyncio.to_thread`.
+- Никаких запросов в интернет внутри `db.tx()`: курс заранее — `rates.prefetch()`.
+- Эндпоинты — обычные `def` (FastAPI выполняет их в пуле потоков). `async def` — только если нужен цикл событий
+  (запрос к Prom через `PromClient`, чтение загружаемого файла, фоновая задача); тогда работа с базой — через
+  `asyncio.to_thread`. Список разрешённых `async` — `ASYNC_OK` в `tests/test_regressions.py`.
+- Публичный адрес (`public_base_url`, туннель) открывает только `/media/` и `/feed/`; в `_allowed_hosts` его нет.
+  Origin сверяется с `Host` и `X-Forwarded-Host` (`_same_origin`).
+- Список id в SQL — `f"id {db.IN_LIST}"` + `db.as_list(ids)`, а не `IN (?, ?, …)` (в SQLite на Windows не больше 32 766 параметров).
+- Настройки (`POST /api/settings`, `rates.save_settings`) — одной транзакцией: ошибка в поле не оставляет половину записанной.
+- Ошибки ввода `ValueError`/`TypeError`/`OverflowError` → 400 (`bad_input`), `KeyError` → 404.
+- `lifespan`: `backup.apply_pending(db.default_dir())` до `db.init()` (Docker без START.bat), `promcatalog.recover()`, остановка воркеров через `gather(return_exceptions=True)` и закрытие туннеля.
 - Восстановление копии: `backup._allowed` (только база, `uploads/`, `suppliers/`), `integrity_check`, настройки обновлений (`DEVICE_SETTINGS`) берутся с этого компьютера.
 
 - Все изменения товара — через `products.update`/`_touch`: иначе нет журнала, `pending_fields` и смены статуса.
 - «Кто поменял» задаётся `with changes.source("…")` вокруг операции (поставщик, курс, ИИ, импорт, Prom).
 - Prom запускает импорты по одному: `sync` ждёт и не шлёт второй. Импорт закончен, только когда счётчики покрыли все товары файла (`prom_api.import_counted`).
 - Товары `sending` не удаляются, `deleting` не отправляются; кнопки статусов их не трогают.
+- Статус пишется только с условием на текущий (`AND status = 'sending'`, `NOT IN ('sending', 'deleting')`); `products._touch` сам читает статус внутри транзакции — переданный аргумент устарел.
+- Цена без правила наценки: закупка в гривнах — цена не трогается; закупка в валюте — РРЦ (или закупка) по курсу. Розница в $/€ из прайса — это РРЦ (`excel.money_currency`). Свой курс поставщика — только для его `rate_currency`.
+- Строка прайса с непонятной ячейкой не выбрасывается: `build_products` отдаёт `field_errors`, `apply_items` пропускает только строки с ошибками проверки (`validate`).
 - Удалённые вами товары поставщика помечаются `supplier_items.ignored = 1` и при обновлении прайса не создаются заново; если товар с тем же артикулом снова есть — поставщик привязывает его и метку снимает (`_apply_one`).
 - «Что изменится» — только через `changes.preview(fn)`: внутри fn никаких запросов в интернет и записи файлов (курс — `rates.prefetch()` заранее, картинки — `embedded={}`).
 - Поиск — только через `products.search_clause` (`lower_u(...) LIKE`): обычный `LIKE` в SQLite не понимает регистр кириллицы.
