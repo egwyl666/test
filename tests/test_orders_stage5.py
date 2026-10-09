@@ -276,3 +276,19 @@ def test_upgrade_from_last_100_does_not_flood_old_orders(sent):
     assert [t for _, t in sent] and "№301" in sent[0][1] and len(sent) == 1
     assert db.query_one("SELECT COUNT(*) AS n FROM orders")["n"] == 301
     assert orders.list_orders()["unseen"] == 1
+
+
+def test_shop_without_api_is_not_called_a_token_problem():
+    """С 2026-10-09 Prom отвечает магазину 403 «Api is not available for free premium service» (пакет без API).
+    Программа писала «Prom отклонил токен» / «у токена нет права менять заказы» — и человек искал не там."""
+    orders.store([order(7)], notify_new=False)
+    fake = FakeProm([order(7)])
+    page = "<html><h1>403 Forbidden</h1>Access was denied to this resource.<br />Api is not available for free premium service</html>"
+    fake.status_reply = httpx.Response(403, text=page)
+    with pytest.raises(PromError, match="пакет") as exc:
+        asyncio.run(orders.set_status(fake.client(), 7, "received"))
+    assert exc.value.no_api and "токен" not in str(exc.value).split(".")[0]
+    fake.handler = lambda request: httpx.Response(403, text=page)
+    with pytest.raises(PromError, match="платных пакетах"):
+        poll(fake)
+    assert "платных пакетах" in db.get_setting("orders_error")

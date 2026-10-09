@@ -274,7 +274,7 @@ async def set_status(client, order_id: int, status: str, reason: str = "", text:
         body = await client.set_order_status([order_id], status, reason if status == "canceled" else "",
                                              text.strip() if status == "canceled" else "")
     except PromError as exc:
-        if exc.status == 403:
+        if exc.status == 403 and not exc.no_api:
             raise PromError("Prom не дал изменить заказ: у API-токена нет права менять заказы (кабинет Prom → "
                             "Настройки → Управление API-токенами → права «Заказы»)", status=403)
         raise

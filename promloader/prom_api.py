@@ -31,12 +31,21 @@ IMPORT_DONE_FAIL = {"fatal", "error", "failed"}
 BUSY_MARKERS = ("одновременн", "одночасн", "ограничение на запуск", "обмеження на запуск")
 
 
+# Проверено на живом кабинете (2026-10-09): все методы API отвечают 403 с текстом
+# «Api is not available for free premium service», когда у магазина пакет без доступа к API.
+NO_API_MARKER = "api is not available"
+NO_API_MESSAGE = ("Prom закрыл доступ к API для вашего магазина: «Api is not available for free premium service». "
+                  "API работает только на платных пакетах Prom — проверьте пакет услуг в кабинете Prom. Токен в порядке")
+
+
 class PromError(Exception):
-    def __init__(self, message: str, retryable: bool = False, status: int | None = None, busy: bool = False):
+    def __init__(self, message: str, retryable: bool = False, status: int | None = None, busy: bool = False,
+                 no_api: bool = False):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
         self.busy = busy  # Prom занят другим импортом — просто подождать
+        self.no_api = no_api  # у магазина пакет без API — повторы не помогут
 
 
 class PromClient:
@@ -65,6 +74,9 @@ class PromClient:
             raise PromError(f"Нет связи с Prom: {exc}", retryable=True)
 
         code = response.status_code
+        if code in (401, 403) and NO_API_MARKER in response.text.lower():
+            # «Api is not available for free premium service»: дело не в токене — у магазина пакет без API
+            raise PromError(NO_API_MESSAGE, status=code, no_api=True)
         if code in (401, 403):
             raise PromError("Prom отклонил токен: проверьте токен и его права в кабинете", status=code)
         if code == 429 or code >= 500:
