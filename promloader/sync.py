@@ -14,7 +14,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 from . import changes, config, db, feed, notify, phototunnel, products, promdelete, r2, updater
-from .prom_api import BUSY_MARKERS, DEFAULT_IMPORT_SETTINGS, PromClient, PromError, import_state
+from .prom_api import BUSY_MARKERS, DEFAULT_IMPORT_SETTINGS, PromClient, PromError, error_positions, import_state
 
 log = logging.getLogger("promloader.sync")
 
@@ -238,8 +238,9 @@ def _per_product_errors(result: dict) -> dict:
             continue
         key = item.get("external_id") or item.get("offer_id") or item.get("id")
         message = item.get("message") or item.get("error") or json.dumps(item, ensure_ascii=False)
-        if key is not None:
+        if key is not None and "positions" not in json.dumps(item):
             found[str(key)] = str(message)
+    found.update(error_positions(result))  # формат с позициями (ошибки валидации строк файла)
     return found
 
 

@@ -183,6 +183,30 @@ def import_state(status_body: dict) -> str:
     return "running"
 
 
+# Ошибки строк файла. Проверено на живом кабинете (2026-10-09): счётчик with_errors_count при этом 0, а ошибки
+# приходят списком по категориям, с номерами позиций (в YML — id оффера, в Excel — «Унікальний_ідентифікатор»):
+#   "errors": [{"category": "validation", "errors": [{"code": 1001, "field_code": "name", "positions": ["3228575013"]}]}]
+FIELD_NAMES = {"name": "название", "price": "цена", "currency": "валюта", "description": "описание", "group": "группа",
+               "presence": "наличие", "images": "фото", "sku": "код товара", "external_id": "внешний ID"}
+ERROR_CODES = {1001: "обязательное поле не заполнено"}
+
+
+def error_positions(body: dict) -> dict:
+    """{позиция: текст ошибки} из ответа /products/import/status."""
+    out: dict[str, str] = {}
+    groups = body.get("errors") if isinstance(body, dict) else None
+    for group in groups if isinstance(groups, list) else []:
+        for e in (group.get("errors") if isinstance(group, dict) else None) or []:
+            if not isinstance(e, dict):
+                continue
+            field = str(e.get("field_code") or "")
+            what = ERROR_CODES.get(e.get("code")) or str(e.get("message") or "ошибка")
+            text = f"Prom: {FIELD_NAMES.get(field, field)} — {what} (код {e.get('code')})" if field else f"Prom: {what}"
+            for pos in e.get("positions") or []:
+                out[str(pos)] = f"{out[str(pos)]}; {text}" if str(pos) in out else text
+    return out
+
+
 def import_counted(body: dict) -> bool:
     """Prom отчитался по всем товарам файла: создано + обновлено + без изменений + с ошибками = всего."""
     total = body.get("total")
@@ -191,5 +215,6 @@ def import_counted(body: dict) -> bool:
     if total == 0:
         return False  # файл ещё не разобран (или товаров нет — это решает ожидание в sync)
     n = lambda key: body.get(key) or 0  # noqa: E731
-    done = max(n("imported"), n("created") + n("updated")) + n("not_changed") + n("with_errors_count")
+    errors = max(n("with_errors_count"), len(error_positions(body)))
+    done = max(n("imported"), n("created") + n("updated")) + n("not_changed") + errors
     return done >= total

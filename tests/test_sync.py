@@ -393,6 +393,36 @@ def test_import_state_rules():
     assert import_state({"status": "PARTIAL", "total": 1, "imported": 0, "updated": 0}) == "running"
     assert import_state({"status": "SUCCESS", "imported": 1}) == "ok"  # без счётчика total — верим статусу
     assert import_state({"status": "FATAL"}) == "failed"
+    # ошибки строк приходят списком с позициями, а with_errors_count при этом 0 (живой ответ Prom, 2026-10-09)
+    stuck = {"status": "PARTIAL", "total": 2, "imported": 0, "updated": 0, "with_errors_count": 0, "errors": [
+        {"category": "validation", "errors": [{"message": "1001", "code": 1001, "field_code": "name",
+                                               "positions": ["3228575013", "3228575014"], "extra": {}}]}]}
+    assert import_state(stuck) == "ok"
+
+
+def test_error_positions_format():
+    from promloader.prom_api import error_positions
+    body = {"errors": [{"category": "validation", "errors": [
+        {"code": 1001, "field_code": "name", "positions": ["A", "B"]},
+        {"code": 7, "field_code": "price", "message": "bad price", "positions": ["B"]}]}]}
+    assert error_positions(body) == {"A": "Prom: название — обязательное поле не заполнено (код 1001)",
+                                     "B": "Prom: название — обязательное поле не заполнено (код 1001); Prom: цена — bad price (код 7)"}
+    assert error_positions({"errors": [{"external_id": "B", "message": "Плохое фото"}]}) == {}
+    assert error_positions({"errors": "oops"}) == {}
+
+
+def test_validation_errors_mark_products():
+    a, b = ready_product(external_id="A"), ready_product(external_id="B")
+    sync.enqueue([a, b])
+    fake = FakeProm(statuses=[(200, {"status": "PARTIAL", "total": 2, "created": 1, "with_errors_count": 0, "errors": [
+        {"category": "validation", "errors": [{"code": 1001, "field_code": "name", "positions": ["B"]}]}]})])
+    run(fake)
+    make_due()
+    run(fake)
+    assert job()["status"] == "done"
+    assert products.get(a)["status"] == "synced"
+    pb = products.get(b)
+    assert pb["status"] == "error" and "название — обязательное поле не заполнено" in pb["last_error"]
 
 
 def test_no_prom_token_rejects_send_with_reason(client):
