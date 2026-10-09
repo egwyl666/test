@@ -523,6 +523,12 @@ function renderAiChip() {
     right.prepend(chip);
   }
   chip.classList.toggle("off", !ai.enabled);
+  chip.classList.toggle("bad", !!(ai.enabled && ai.key_error));
+  if (ai.enabled && ai.key_error) {
+    chip.innerHTML = `✨ ИИ <span class="ai-chip-spent">ключ не принят</span>`;
+    chip.title = "Сервис ИИ не принял ключ — нажмите, чтобы узнать, что сделать";
+    return;
+  }
   if (!ai.enabled) {
     chip.innerHTML = `✨ ИИ <span class="ai-chip-spent">не подключён</span>`;
     chip.title = "ИИ-помощник не подключён — нажмите, чтобы узнать, как подключить";
@@ -583,6 +589,7 @@ async function loadAiWindow(withModels) {
     } catch (err) {
       aiWin.models = [];
       aiWin.modelsError = err.message;
+      try { aiWin.status = await api("/api/ai/status"); } catch { /* покажем то, что есть */ }  // ключ не принят — полоса сверху
     }
     renderAiWindow();
   }
@@ -610,7 +617,10 @@ function renderAiWindow() {
       <a href="/settings#ai">Настройках</a> — потом модель, цены и расходы будут здесь, на любой странице.</p>`;
     return;
   }
+  const keyError = st.key_error ? `<div class="ai-key-error">⚠️ ${esc(st.key_error.message)}
+    <a href="/settings#ai">Открыть «Настройки»</a></div>` : "";
   body.innerHTML = `
+    ${keyError}
     ${providerSelect}
     ${st.enabled ? `
     <section><h3>Модель</h3>
@@ -652,7 +662,12 @@ function renderAiModels() {
   };
   const statusOf = (m) => {
     if (!m.status) return `<span class="ai-st muted">не проверялась</span>`;
-    const [icon, label] = AI_STATUS[m.status] || ["", m.status];
+    let [icon, label] = AI_STATUS[m.status] || ["", m.status];
+    if (m.status === "limit" && m.limit_until) {
+      const until = new Date(m.limit_until);
+      label = until > new Date() ? `лимит до ${until.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}` : "лимит сброшен";
+      if (until <= new Date()) icon = "↻";
+    }
     return `<span class="ai-st st-${esc(m.status)}" title="${esc(m.status_message || "")}${m.checked_at ? ` · ${esc(formatDate(m.checked_at))}` : ""}">${icon} ${esc(label)}</span>`;
   };
   const row = (value, title, sub, price, status, missing = false) => `
@@ -670,7 +685,7 @@ function renderAiModels() {
   html += aiWin.models.map((m) => row(m.id, esc(m.name && m.name !== m.id ? m.name : aiModelName(m.id)),
     `${esc(m.id)}${m.price_in !== null ? ` · вход ${fmtRate(m.price_in)} · выход ${fmtRate(m.price_out)} за 1 млн токенов${m.price_exact ? "" : " (оценка по семейству)"}` : ""}${m.missing ? " · <b>ключу эта модель не видна</b>" : ""}`,
     priceOf(m), statusOf(m), m.missing)).join("");
-  if (aiWin.modelsError) html += `<p class="err-text small">${esc(aiWin.modelsError)}</p>`;
+  if (aiWin.modelsError && !st.key_error) html += `<p class="err-text small">${esc(aiWin.modelsError)}</p>`;
   return html;
 }
 

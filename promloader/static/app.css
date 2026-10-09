@@ -566,6 +566,11 @@ table.list a.name:hover { color: var(--accent); }
 .ai-chip .ai-chip-spent { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
 .ai-chip.off { background: #fff; border-color: var(--line); color: var(--muted); }
 .ai-chip.off .ai-chip-spent { color: var(--muted); }
+.ai-chip.bad { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+.ai-chip.bad .ai-chip-spent { color: var(--err); }
+.ai-key-error { background: var(--err-soft); color: var(--err); border-radius: 8px; padding: 10px 12px; font-size: 14px;
+  line-height: 1.5; margin-bottom: 12px; }
+.ai-key-error a { font-weight: 600; }
 .modal-box.ai-window { width: 720px; padding: 0; }
 .ai-win-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px;
   background: #fff; padding: 16px 22px 10px; border-bottom: 1px solid var(--line); }

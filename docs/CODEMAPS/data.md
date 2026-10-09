@@ -1,6 +1,6 @@
 # Данные (`promloader/db.py`)
 
-_Обновлено: 2026-10-09 · версия 2.3.0_
+_Обновлено: 2026-10-09 · версия 2.3.1_
 
 SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), рядом `uploads/` (фото) и файлы прайсов.
 Новые колонки добавляются через `MIGRATIONS` (только `ADD COLUMN`); при первом запуске новой версии миграция идёт сама.
@@ -28,7 +28,7 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 ## Ключи `settings` (основные)
 
 - Prom и фото: `prom_token`, `prom_api_base`, `public_base_url`, настройки R2, `import_method`, `import_plain_v2`, `import_settings`, `quick_updates`
-- ИИ: `ai_provider`, `gemini_key`, `anthropic_key`, `gemini_model` (пусто — авто), `gemini_model_used`, `claude_model`, `ai_rate`, `gemini_free_tier` (`1`/`0`/пусто — не знаем), `ai_model_status` (JSON `provider:model` → статус), `ai_limits` (JSON: Claude — остаток из заголовков, Gemini — `last_limit`)
+- ИИ: `ai_provider`, `gemini_key`, `anthropic_key`, `gemini_model` (пусто — авто), `gemini_model_used`, `claude_model`, `ai_rate`, `gemini_free_tier` (`1`/`0`/пусто — не знаем), `ai_model_status` (JSON `provider:model` → статус, у лимита — `until`), `ai_key_error` (JSON provider → текст: ключ не принят), `ai_limits` (JSON: Claude — остаток из заголовков, Gemini — `last_limit`)
 - Курс: `rate_mode` (`nbu`/`manual`), `rate_add`, `rate_manual` (JSON), `rate_auto_send`, `rate_applied` (курс последнего пересчёта), `nbu_rate_<КОД>` (кеш на день)
 - Состояния: `prom_catalog_state` (ход и итог загрузки каталога, в т. ч. `missing_on_prom`); заказы — `orders_synced_at` (начало последней полной проверки), `orders_cursor` (незаконченная загрузка), `orders_initialized`, `orders_last_poll`, `orders_error`
 - Переменные окружения важнее сохранённых значений (`config.py`).

@@ -76,15 +76,22 @@ def typical_cost(provider: str, model: str) -> float | None:
 # ---------- учёт ----------
 
 def record(provider: str, model: str, action: str, source: str, tokens_in: int = 0, tokens_out: int = 0,
-           ok: bool = True, error: str = "", job_id: int | None = None) -> dict:
+           ok: bool = True, error: str = "", job_id: int | None = None, key_error: bool = False,
+           retry_after: float | None = None) -> dict:
+    """key_error — сервис не принял ключ: это про ключ, а не про модель, статус модели не трогаем.
+    retry_after — через сколько секунд снова можно (лимит модели): до этого «авто» её не выбирает первой."""
     value = cost(provider, model, tokens_in, tokens_out) if ok else 0.0
     with db.tx() as c:
         c.execute("""INSERT INTO ai_usage (at, provider, model, action, source, job_id, tokens_in, tokens_out, cost_usd,
                                            ok, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                   (db.now(), provider, model, action, source, job_id, tokens_in, tokens_out, value, 1 if ok else 0,
                    error[:300]))
-    if model:
-        set_model_status(provider, model, "ok" if ok else _status_from_error(error), error)
+    if ok:
+        clear_key_error(provider)
+    if key_error:
+        set_key_error(provider, error)
+    elif model:
+        set_model_status(provider, model, "ok" if ok else _status_from_error(error), error, retry_after)
     return {"provider": provider, "model": model, "tokens_in": tokens_in, "tokens_out": tokens_out, "cost_usd": value,
             "free": provider == "gemini" and free_tier()}
 
@@ -92,7 +99,7 @@ def record(provider: str, model: str, action: str, source: str, tokens_in: int =
 def _status_from_error(error: str) -> str:
     """Статус модели по тексту ошибки: unavailable — ключу недоступна, limit — лимит, busy — перегружена."""
     text = error.lower()
-    if any(s in text for s in ("недоступна на вашем ключе", "не найдена", "нет доступа", "отклонил ключ")):
+    if any(s in text for s in ("недоступна на вашем ключе", "не найдена", "нет доступа")):
         return "unavailable"
     if "лимит" in text or "quota" in text:
         return "limit"
@@ -169,10 +176,41 @@ def model_statuses() -> dict:
         return {}
 
 
-def set_model_status(provider: str, model: str, status: str, message: str = "") -> None:
+def set_model_status(provider: str, model: str, status: str, message: str = "", retry_after: float | None = None) -> None:
     data = model_statuses()
-    data[f"{provider}:{model}"] = {"status": status, "message": message[:200], "at": db.now()}
+    info = {"status": status, "message": message[:300], "at": db.now()}
+    if retry_after:
+        info["until"] = (datetime.now(timezone.utc) + timedelta(seconds=retry_after)).isoformat(timespec="seconds")
+    data[f"{provider}:{model}"] = info
     db.set_setting("ai_model_status", json.dumps(data, ensure_ascii=False))
+
+
+def limited_now(provider: str, model: str) -> bool:
+    """У модели исчерпан лимит, и он ещё не сбросился."""
+    info = model_statuses().get(f"{provider}:{model}") or {}
+    return info.get("status") == "limit" and info.get("until", "") > datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ---------- ключ не принят ----------
+
+def key_errors() -> dict:
+    try:
+        return json.loads(db.get_setting("ai_key_error") or "{}")
+    except ValueError:
+        return {}
+
+
+def set_key_error(provider: str, message: str) -> None:
+    data = key_errors()
+    data[provider] = {"message": message[:500], "at": db.now()}
+    db.set_setting("ai_key_error", json.dumps(data, ensure_ascii=False))
+
+
+def clear_key_error(provider: str) -> None:
+    data = key_errors()
+    if provider in data:
+        del data[provider]
+        db.set_setting("ai_key_error", json.dumps(data, ensure_ascii=False))
 
 
 def limits() -> dict:

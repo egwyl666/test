@@ -141,6 +141,9 @@ def _mark(item_id: int, status: str, message: str = "", old=None, new=None) -> N
                    json.dumps(new, ensure_ascii=False) if new is not None else None, item_id))
 
 
+last_limit: ai.AIError | None = None  # последний лимит/перегрузка — для паузы и сообщения у задания
+
+
 def process_one(runner=ai.run) -> str:
     """Обработать один товар. Возвращает 'idle' | 'done' | 'skipped' | 'error' | 'rate_limited'."""
     item = _next_item()
@@ -161,6 +164,8 @@ def process_one(runner=ai.run) -> str:
             changes = runner(p, item["action"], item["instruction"])
     except ai.AIError as exc:
         if exc.temporary:
+            global last_limit
+            last_limit = exc
             return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим этот же товар
         _mark(item["id"], "error", str(exc))
         return "error"

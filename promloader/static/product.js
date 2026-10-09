@@ -694,7 +694,11 @@ async function askAi(action, instruction = "") {
     const res = await api(`/api/products/${state.id}/ai`, { method: "POST", json: { action, instruction } });
     showAiResult(res.changes, res.usage);
   } catch (err) {
-    box.innerHTML = `<div class="err-text" style="font-size:14px">${esc(err.message)}</div>`;
+    const settings = /«Настройки»/.test(err.message) ? ` <a href="/settings#ai">Открыть «Настройки»</a>` : "";
+    const other = /«✨ ИИ»/.test(err.message) ? ` <a href="#" data-open-ai>Открыть окно «✨ ИИ»</a>` : "";
+    box.innerHTML = `<div class="err-text" style="font-size:14px">${esc(err.message)}${settings}${other}</div>`;
+    const link = box.querySelector("[data-open-ai]");
+    if (link) link.onclick = (e) => { e.preventDefault(); openAiWindow(); };
   } finally {
     buttons.forEach((b) => (b.disabled = false));
     refreshAiMeta();  // расход за сегодня в значке «✨» (и неудачный запрос виден в окне «ИИ»)

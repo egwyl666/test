@@ -195,8 +195,10 @@ async def ai_worker(stop: asyncio.Event) -> None:
                     pacer.mark()
                     result = await asyncio.to_thread(aibulk.process_one)
                     if result == "rate_limited":
-                        aibulk.pause_running("ИИ-сервис занят (лимит запросов или перегрузка) — продолжу через минуту")
-                        delay = aibulk.RATE_LIMIT_PAUSE
+                        # лимит на сутки ждём до сброса (но проверяем раз в полчаса), перегрузку — минуту
+                        err = aibulk.last_limit
+                        delay = min(max(aibulk.RATE_LIMIT_PAUSE, (err.retry_after or 0) if err else 0), 1800)
+                        aibulk.pause_running(f"{err or 'ИИ-сервис занят'} — продолжу сам через {ai.human_wait(delay)}")
                     elif result == "skipped":
                         pacer.last = 0.0  # пропуск не тратит лимит
                         delay = 0.05
@@ -483,6 +485,7 @@ def _ai_meta() -> dict:
             "model": s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else ""),
             "auto": s["provider"] == "gemini" and not s["model"], "free": s["provider"] == "gemini" and aiprice.free_tier(),
             "today_usd": today["cost_usd"], "today_uah": aiprice.to_uah(today["cost_usd"]), "today_requests": today["requests"],
+            "key_error": bool(aiprice.key_errors().get(s["provider"])),
             "actions": {k: v[0] for k, v in ai.ACTIONS.items()}}
 
 
@@ -566,6 +569,7 @@ def ai_status():
         "model": s["model"], "model_used": db.get_setting("gemini_model_used") if s["provider"] == "gemini" else s["model"],
         "free_tier": aiprice.free_tier(), "free_tier_setting": db.get_setting("gemini_free_tier"),
         "summary": summary, "limits": aiprice.limits().get(s["provider"], {}),
+        "key_error": aiprice.key_errors().get(s["provider"]),
         "pace_per_minute": aibulk.rate_per_minute(), "prices_checked": aiprice.PRICES_CHECKED,
         "usd_rate": aiprice.usd_rate(), "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
     }
@@ -995,9 +999,13 @@ def save_settings(data: dict = Body(...)):
             db.set_setting("github_token", data["github_token"].strip())
         if "update_repo" in data:
             db.set_setting("update_repo", str(data["update_repo"] or "").strip())
-        for key in ("gemini_key", "anthropic_key"):
-            if data.get(key):
-                db.set_setting(key, data[key].strip())
+        key_warning = ""
+        for key, provider in (("gemini_key", "gemini"), ("anthropic_key", "claude")):
+            value = ai.clean_key(data.get(key) or "")
+            if value:
+                db.set_setting(key, value)
+                aiprice.clear_key_error(provider)  # новый ключ — прежняя «ключ не принят» к нему не относится
+                key_warning = key_warning or ai.key_warning(provider, value)
         if "ai_provider" in data:
             if data["ai_provider"] not in ("", *ai.PROVIDERS):
                 raise HTTPException(400, "Неизвестный провайдер ИИ")
@@ -1033,7 +1041,7 @@ def save_settings(data: dict = Body(...)):
                 db.set_setting("import_settings", "")
         if data.get("regenerate_feed_key"):
             db.set_setting("feed_key", secrets.token_urlsafe(16))
-    return _settings_view()
+    return {**_settings_view(), "ai_key_warning": key_warning}
 
 
 @app.post("/api/settings/check")

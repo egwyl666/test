@@ -1,10 +1,10 @@
 # Страницы и JS (`promloader/static/`)
 
-_Обновлено: 2026-10-09 · версия 2.3.0_
+_Обновлено: 2026-10-09 · версия 2.3.1_
 
 Чистый JS без сборки. Каждая страница подключает `common.js` (`api()`, `$`/`$$`, `esc`, `toast`, `formatPrice`,
 `formatDate`, `statusBadge`, `loadMeta` → `META` (+ полоски: обновление, нет токена Prom, сбой поставщика, пропущенная выгрузка), `showPreview` (окно «Что изменится»), `busy(btn, fn)` (кнопка занята на время запроса — без двойных действий), `sanitizeHtml` + `safeUrl` (в описании только http/https/mailto/tel), закрытие окон `.modal[id]` по Esc и клику по фону, `initNav`, кнопка «🆘 Не получается?»). `formatDate` показывает год, если он не текущий. Стили — `app.css`
-(мобильная вёрстка до 640 px: `.hide-sm`/`.show-sm`). Меню — `NAV` в `common.js` (`renderNav`), в HTML пустой `<nav></nav>`. ИИ на любой странице: значок `#ai-chip` в `.topbar .right` (`renderAiChip` из `META.ai`, вызывается в `loadMeta`), окно `#ai-window` (`openAiWindow` → `/api/ai/status` + `/api/ai/models`: сервис, модели с ценой и статусом, «Проверить модели», бесплатный Gemini, расходы, лимиты, последние запросы); `refreshAiMeta` обновляет значок и шлёт событие `ai-changed`; деньги — `aiMoney`/`fmtUah`/`fmtUsd`, `aiUsageLine`, имена — `aiModelName`. Там же: `showOffline` (полоска «Нет связи», ставится и снимается в `api()`), страховка `unhandledrejection` → toast, `details.actions-menu` (на ≤ 640 px — кнопка «Действия ▾», `syncActionMenus`).
+(мобильная вёрстка до 640 px: `.hide-sm`/`.show-sm`). Меню — `NAV` в `common.js` (`renderNav`), в HTML пустой `<nav></nav>`. ИИ на любой странице: значок `#ai-chip` в `.topbar .right` (`renderAiChip` из `META.ai`, вызывается в `loadMeta`), окно `#ai-window` (`openAiWindow` → `/api/ai/status` + `/api/ai/models`: сервис, модели с ценой и статусом, «Проверить модели», бесплатный Gemini, расходы, лимиты, последние запросы); значок `.bad` и полоса `.ai-key-error` — ключ не принят (`META.ai.key_error`); `refreshAiMeta` обновляет значок и шлёт событие `ai-changed`; деньги — `aiMoney`/`fmtUah`/`fmtUsd`, `aiUsageLine`, имена — `aiModelName`. Там же: `showOffline` (полоска «Нет связи», ставится и снимается в `api()`), страховка `unhandledrejection` → toast, `details.actions-menu` (на ≤ 640 px — кнопка «Действия ▾», `syncActionMenus`).
 
 | Адрес | Файлы | Что там |
 |---|---|---|
@@ -25,7 +25,7 @@ _Обновлено: 2026-10-09 · версия 2.3.0_
 
 - Ответ сервера не перезаписывает то, что пользователь набирает: карточка — `fillUntouched` и `applyServer` пропускают
   активное поле, поля из `state.pending` и поле с ошибкой (`.invalid`); поставщик — `fillForm` только при открытии и
-  после сохранения, опрос обновляет `showState`; настройки — каждый раздел заполняет свои поля (`fillMain`, `fillAdv`, `fillAi`).
+  после сохранения, опрос обновляет `showState`; настройки — каждый раздел заполняет свои поля (`fillMain`, `fillAdv`, `fillAi`); новый ключ ИИ проверяется сразу после «Сохранить» (`runAiCheck`), предупреждение о формате — `#ai-key-warning`.
 - Перед «Что изменится» и «Обновить» поставщика несохранённая форма сохраняется (`saveIfDirty`).
 - Список: номер запроса `list.seq` (устаревший ответ отбрасывается), фоновое обновление — один таймер `refreshList`.
 - Действие с запросом — через `busy(кнопка, …)`.

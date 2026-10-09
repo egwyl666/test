@@ -188,9 +188,9 @@ def test_gemini_free_tier_limit_parsed_and_remembered():
     transport = httpx.MockTransport(lambda r: httpx.Response(
         429, json=quota_429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 250)))
     with pytest.raises(ai.AIError, match="лимит 250 запросов в сутки для gemini-3.8-flash .бесплатный ключ. — "
-                                         "повторить можно через 31 с") as err:
+                                         "снова можно через 31 с. Чтобы программа сама переходила") as err:
         ai.run(PRODUCT, "improve", transport=transport)
-    assert err.value.temporary
+    assert err.value.temporary and err.value.retry_after == 31
     q = aiprice.limits()["gemini"]["last_limit"]
     assert (q["period"], q["kind"], q["limit"], q["free_tier"]) == ("day", "requests", 250, True)
     assert aiprice.free_tier()  # Google сам сказал, что ключ бесплатный — цена 0
@@ -400,3 +400,121 @@ def test_housekeeping_drops_year_old_usage():
     add_usage(db.now(), 0.01)
     assert housekeeping.run()["ai_usage"] == 1
     assert len(usage_rows()) == 1
+
+
+# ---------- ключ не принят, лимиты по моделям (2.3.1) ----------
+
+BAD_KEY = {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT",
+                     "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "API_KEY_INVALID"}]}}
+
+
+def test_clean_key_and_warning():
+    assert ai.clean_key(' "GEMINI_API_KEY=AQ.Ab8​RN 6 x" ') == "AQ.Ab8RN6x"
+    assert ai.clean_key("«AIzaSyX»\n") == "AIzaSyX"
+    assert ai.key_warning("gemini", "AIza" + "x" * 35) == "" and ai.key_warning("gemini", "AQ.Ab8RN6I8") == ""
+    assert "токен Prom" in ai.key_warning("gemini", "a" * 40)
+    assert "AIza" in ai.key_warning("gemini", "sk-ant-123")
+    assert "sk-ant-" in ai.key_warning("claude", "AIza123")
+
+
+def test_invalid_key_is_about_key_not_model(client):
+    use("gemini", key="AIzaSy-wrong-key-1234", model="gemini-3.8-flash")
+    aiprice.set_model_status("gemini", "gemini-3.8-flash", "ok")
+    transport = httpx.MockTransport(lambda r: httpx.Response(400, json=BAD_KEY))
+    with pytest.raises(ai.AIError, match="Google не принял ключ Gemini .ключ программы заканчивается на «…1234».") as err:
+        ai.run(PRODUCT, "improve", transport=transport)
+    assert err.value.key_error and not err.value.temporary and "aistudio.google.com/apikey" in str(err.value)
+    assert aiprice.model_statuses()["gemini:gemini-3.8-flash"]["status"] == "ok"  # модель ни при чём
+    assert client.get("/api/meta").json()["ai"]["key_error"] is True
+    assert "Google не принял" in client.get("/api/ai/status").json()["key_error"]["message"]
+
+    transport, _ = gemini_ok()
+    ai.run(PRODUCT, "improve", transport=transport)  # удачный запрос снимает «ключ не принят»
+    assert client.get("/api/meta").json()["ai"]["key_error"] is False
+
+    aiprice.set_key_error("gemini", "плохой ключ")
+    s = client.post("/api/settings", json={"gemini_key": " AIzaSy​new-key-56789012345678901234567 "}).json()
+    assert db.get_setting("gemini_key") == "AIzaSynew-key-56789012345678901234567" and s["ai_key_warning"] == ""
+    assert aiprice.key_errors() == {}  # новый ключ — старая ошибка к нему не относится
+    s = client.post("/api/settings", json={"gemini_key": "b" * 40}).json()
+    assert "токен Prom" in s["ai_key_warning"]
+
+
+def test_invalid_key_from_environment(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy-env-key-9876")
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_model", "gemini-3.8-flash")
+    transport = httpx.MockTransport(lambda r: httpx.Response(400, json=BAD_KEY))
+    with pytest.raises(ai.AIError, match="переменной Windows GEMINI_API_KEY"):
+        ai.run(PRODUCT, "improve", transport=transport)
+
+
+def test_check_with_invalid_key_sets_and_clears():
+    use("gemini")
+    with pytest.raises(ai.AIError, match="не принял ключ"):
+        ai.check(httpx.MockTransport(lambda r: httpx.Response(400, json=BAD_KEY)))
+    assert "gemini" in aiprice.key_errors()
+    ai.check(httpx.MockTransport(lambda r: httpx.Response(200, json={"models": []})))
+    assert aiprice.key_errors() == {}
+
+
+def test_claude_invalid_key():
+    use("claude", key="sk-ant-wrong-abcd")
+    transport, _ = claude_server(status=401, error={"type": "authentication_error", "message": "invalid x-api-key"})
+    with pytest.raises(ai.AIError, match="Anthropic не принял ключ Claude .ключ программы заканчивается на «…abcd».") as err:
+        ai.run(PRODUCT, "keywords", transport=transport)
+    assert err.value.key_error and "claude" in aiprice.key_errors()
+    assert "claude:claude-opus-5-5" not in aiprice.model_statuses()
+
+
+def per_model_server(exhausted, retry="23385s"):
+    calls = []
+
+    def handler(r):
+        if r.method == "GET":
+            return httpx.Response(200, json={"models": [{"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
+                                                        for m in ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash")]})
+        model = r.url.path.rsplit("/", 1)[-1].split(":")[0]
+        calls.append(model)
+        if model in exhausted:
+            return httpx.Response(429, json=quota_429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 20, retry, model))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps({"description": "<p>Да</p>"})}]}}]})
+    return httpx.MockTransport(handler), calls
+
+
+def test_auto_moves_to_next_model_when_daily_limit_is_used_up():
+    use("gemini")
+    transport, calls = per_model_server({"gemini-3.8-flash", "gemini-3.7-flash"})
+    assert ai.run(PRODUCT, "improve", transport=transport) == {"description": "<p>Да</p>"}
+    assert calls == ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]
+    assert db.get_setting("gemini_model_used") == "gemini-3.6-flash"
+    assert aiprice.limited_now("gemini", "gemini-3.8-flash") and not aiprice.limited_now("gemini", "gemini-3.6-flash")
+    ai.run(PRODUCT, "improve", transport=transport)  # до сброса лимита исчерпанные модели не пробует первыми
+    assert calls[3:] == ["gemini-3.6-flash"]
+
+
+def test_auto_all_models_used_up():
+    use("gemini")
+    transport, calls = per_model_server({"gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"})
+    with pytest.raises(ai.AIError, match="исчерпаны лимиты моделей gemini-3.8-flash, gemini-3.7-flash, gemini-3.6-flash"
+                                         " — снова можно через 6 ч 30 мин") as err:
+        ai.run(PRODUCT, "improve", transport=transport)
+    assert err.value.temporary and err.value.retry_after == 23385
+
+
+def test_limit_status_expires():
+    aiprice.set_model_status("gemini", "gemini-3.8-flash", "limit", "лимит", retry_after=3600)
+    assert aiprice.limited_now("gemini", "gemini-3.8-flash")
+    aiprice.set_model_status("gemini", "gemini-3.8-flash", "limit", "лимит", retry_after=-5)
+    assert not aiprice.limited_now("gemini", "gemini-3.8-flash")
+
+
+def test_bulk_remembers_limit_for_pause():
+    use("gemini")
+    pid = products.create({"name": "Кружка", "price": 1})
+    aibulk.create([pid], "improve", only_empty=False)
+
+    def limited(p, action, instruction=""):
+        raise ai.AIError("Gemini: исчерпан лимит", temporary=True, retry_after=600)
+    assert aibulk.process_one(limited) == "rate_limited"
+    assert aibulk.last_limit.retry_after == 600

@@ -183,6 +183,7 @@
         <button class="btn" id="ai-check">Проверить</button>
         <span id="ai-check-result" class="small"></span>
       </div>
+      <p class="small err-text hidden" id="ai-key-warning"></p>
     </div>
 
     <div class="panel" id="updates">
@@ -365,16 +366,29 @@
         ai_rate: $("#ai-rate").value,
       };
     }
-    $("#ai-save").onclick = () => save(aiBody(), (s) => { fillAi(s); refreshAiMeta(); });
+    function showKeyWarning(s) {
+      $("#ai-key-warning").textContent = s.ai_key_warning || "";
+      $("#ai-key-warning").classList.toggle("hidden", !s.ai_key_warning);
+    }
+    // вставили новый ключ — сразу проверяем (бесплатно: список моделей), а не узнаём о проблеме в карточке
+    $("#ai-save").onclick = async () => {
+      const body = aiBody();
+      const newKey = Boolean(body.gemini_key || body.anthropic_key);
+      let ok = false;
+      await save(body, (s) => { fillAi(s); showKeyWarning(s); refreshAiMeta(); ok = true; });
+      if (ok && newKey && body.ai_provider) runAiCheck();
+    };
     $("#open-ai-window").onclick = (e) => { e.preventDefault(); openAiWindow(); };
-    $("#ai-check").onclick = async () => {
+    $("#ai-check").onclick = () => runAiCheck(true);
+    async function runAiCheck(saveFirst) {
       const out = $("#ai-check-result");
-      out.textContent = "Проверяю…";
+      out.textContent = "Проверяю ключ…";
       out.style.color = "";
       try {
-        const s = await api("/api/settings", { method: "POST", json: aiBody() });
+        const s = saveFirst ? await api("/api/settings", { method: "POST", json: aiBody() }) : await api("/api/settings");
         fillAi(s);
         fillInfo(s);
+        if (saveFirst) showKeyWarning(s);
         const res = await api("/api/ai/check", { method: "POST" });
         out.textContent = res.message;
         out.style.color = res.ok ? "var(--ok)" : "var(--err)";
