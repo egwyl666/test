@@ -26,6 +26,24 @@ def test_menu_is_defined_once():
     assert ("/diagnose", "Проверка выгрузки", "") in items
 
 
+def test_browser_never_mixes_new_page_with_old_scripts(client, monkeypatch):
+    """После обновления до 2.2.0 браузер взял старые common.js и app.css из кеша к новому HTML — пропало меню.
+    Ссылки на скрипты и стили — с номером версии, а сами файлы браузер сверяет каждый раз."""
+    from promloader import updater
+    version = updater.current_version()
+    for path in main.PAGES:
+        html = client.get(path).text
+        assets = re.findall(r'(?:src|href)="(/static/[^"]+\.(?:js|css)[^"]*)"', html)
+        assert assets and all(a.endswith(f"?v={version}") for a in assets), (path, assets)
+    assert f'/static/common.js?v={version}"' in client.get("/").text
+    monkeypatch.setattr(updater, "current_version", lambda *a, **k: "9.9.9")
+    assert '/static/common.js?v=9.9.9"' in client.get("/").text      # новая версия — новые адреса
+    r = client.get("/static/common.js")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-cache"
+    again = client.get("/static/common.js", headers={"If-None-Match": r.headers["etag"]})
+    assert again.status_code == 304 and again.headers["cache-control"] == "no-cache"
+
+
 def test_first_steps(client):
     from promloader import products, suppliers
     db.set_setting("prom_token", "")

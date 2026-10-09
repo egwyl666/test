@@ -12,10 +12,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (ai, aibulk, autostart, backup, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
@@ -274,8 +274,18 @@ async def supplier_worker(stop: asyncio.Event) -> None:
             pass
 
 
+class StaticNoCache(StaticFiles):
+    """Скрипты и стили: браузер каждый раз сверяет их с программой (ответ 304 — на localhost мгновенно). Без этого
+    после обновления он часами брал старые common.js и app.css из кеша к новому HTML — например, пропадало меню."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="Prom Loader", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", StaticNoCache(directory=STATIC), name="static")
 
 
 # ---------- доступ ----------
@@ -391,9 +401,22 @@ async def bad_input(request: Request, exc: Exception):
 
 # ---------- страницы ----------
 
+_ASSET = re.compile(r'((?:src|href)="/static/[^"?]+\.(?:js|css))"')
+
+
+@lru_cache(maxsize=32)
+def _page_html(name: str, mtime_ns: int, version: str) -> str:
+    """Ссылки на скрипты и стили — с номером версии: после обновления у них новые адреса, и браузер не может
+    подставить файлы прошлой версии из кеша, даже если они там ещё лежат."""
+    html = (STATIC / name).read_text(encoding="utf-8")
+    return _ASSET.sub(lambda m: f'{m.group(1)}?v={quote(version)}"', html)
+
+
 def _page(name: str):
-    async def handler():
-        return FileResponse(STATIC / name, headers={"Cache-Control": "no-cache"})
+    def handler():
+        path = STATIC / name
+        html = _page_html(name, path.stat().st_mtime_ns, updater.current_version())
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
     return handler
 
 
