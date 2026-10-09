@@ -35,6 +35,7 @@ async function api(path, options = {}) {
 
 async function loadMeta() {
   Object.assign(META, await api("/api/meta"));
+  renderAiChip();
   showUpdateBanner();
   showTokenBanner();
   showFailedSuppliers();
@@ -448,6 +449,350 @@ document.addEventListener("click", (e) => {
     if (!d.contains(e.target) || e.target.closest(".actions-box .btn")) d.open = false;
   });
 });
+
+// ---------- ИИ: значок в шапке и окно «✨ ИИ» на любой странице ----------
+// Здесь — выбор провайдера и модели, цена запроса, расходы и лимиты. Ключи (секрет) вводятся только в «Настройках».
+
+const AI_STATUS = {
+  ok: ["✓", "работает"], unavailable: ["✗", "недоступна"], limit: ["⏳", "лимит"], busy: ["⚠", "перегружена"],
+  error: ["⚠", "ошибка"],
+};
+const AI_SOURCE = { card: "карточка", bulk: "массовый", check: "проверка" };
+
+// claude-opus-5-5 → Claude Opus 5.5; gemini-3.8-flash-lite → Gemini 3.8 Flash-Lite
+function aiModelName(id) {
+  if (!id) return "";
+  const m = String(id).replace(/^models\//, "").replace(/-\d{8}$/, "");
+  const c = m.match(/^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?$/);
+  const cap = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+  if (c) return `Claude ${cap(c[1])} ${c[2]}${c[3] ? "." + c[3] : ""}`;
+  return m.split("-").map((w) => (/^\d/.test(w) ? w : cap(w))).join(" ").replace("Flash Lite", "Flash-Lite");
+}
+
+function fmtUsd(v) {
+  if (v === null || v === undefined) return "";
+  if (v === 0) return "$0";
+  if (v < 0.0001) return "< $0.0001";
+  return "$" + v.toFixed(v < 0.01 ? 4 : v < 1 ? 3 : 2);
+}
+
+function fmtUah(v) {
+  if (v === null || v === undefined) return "";
+  if (v === 0) return "0 грн";
+  if (v < 0.01) return "< 0,01 грн";
+  return v.toLocaleString("uk-UA", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " грн";
+}
+
+// цена за 1 млн токенов: $0.75, $4, $0.1
+function fmtRate(v) { return v === null || v === undefined ? "" : "$" + parseFloat(v.toFixed(3)); }
+
+// «≈ 0,13 грн ($0.0032)»; без курса — только доллары
+function aiMoney(usd, uah, { free = false, withUsd = true } = {}) {
+  if (free) return "бесплатно";
+  if (usd === null || usd === undefined) return "цена неизвестна";
+  const about = (text) => (text.startsWith("<") ? text : "≈ " + text);
+  if (uah === null || uah === undefined) return about(fmtUsd(usd));
+  return `${about(fmtUah(uah))}${withUsd && usd ? ` (${fmtUsd(usd)})` : ""}`;
+}
+
+function fmtTokens(n) { return Number(n || 0).toLocaleString("ru-RU"); }
+
+// Строка под ответом ИИ: «Gemini 3.8 Flash · 1 240 + 610 токенов · ≈ 0,13 грн ($0.0032)»
+function aiUsageLine(u) {
+  if (!u) return "";
+  return `${aiModelName(u.model)} · ${fmtTokens(u.tokens_in)} + ${fmtTokens(u.tokens_out)} токенов · ${aiMoney(u.cost_usd, u.cost_uah, { free: u.free })}`;
+}
+
+function renderAiChip() {
+  const ai = META.ai;
+  const bar = document.querySelector(".topbar");
+  if (!bar || !ai) return;
+  let chip = document.getElementById("ai-chip");
+  if (!chip) {
+    let right = bar.querySelector(".right");
+    if (!right) {
+      right = document.createElement("div");
+      right.className = "right";
+      bar.appendChild(right);
+    }
+    chip = document.createElement("button");
+    chip.type = "button";
+    chip.id = "ai-chip";
+    chip.className = "ai-chip";
+    chip.addEventListener("click", openAiWindow);
+    right.prepend(chip);
+  }
+  chip.classList.toggle("off", !ai.enabled);
+  if (!ai.enabled) {
+    chip.innerHTML = `✨ ИИ <span class="ai-chip-spent">не подключён</span>`;
+    chip.title = "ИИ-помощник не подключён — нажмите, чтобы узнать, как подключить";
+    return;
+  }
+  const model = aiModelName(ai.model) || "авто";
+  const spent = ai.free ? "бесплатно" : ai.today_requests ? aiMoney(ai.today_usd, ai.today_uah, { withUsd: false }) : "";
+  chip.innerHTML = `✨ <span class="ai-chip-model">${esc(model)}</span>${spent ? `<span class="ai-chip-spent"> · сегодня ${esc(spent)}</span>` : ""}`;
+  chip.title = `ИИ: ${model}${ai.auto ? " (программа выбирает сама)" : ""}. Сегодня запросов: ${ai.today_requests}`
+    + `${spent ? `, ${spent}` : ""}.\nНажмите — сменить модель, посмотреть цены, расходы и лимиты.`;
+}
+
+// После смены модели или запроса к ИИ — обновить значок (и карточку товара, если ИИ включили/выключили)
+async function refreshAiMeta() {
+  try {
+    const m = await api("/api/meta");
+    const was = META.ai && META.ai.enabled;
+    META.ai = m.ai;
+    renderAiChip();
+    if (was !== m.ai.enabled) document.dispatchEvent(new CustomEvent("ai-changed"));
+  } catch { /* не страшно: значок обновится при следующем открытии страницы */ }
+}
+
+const aiWin = { el: null, status: null, models: null, modelsError: "", checking: false, lastCheck: null };
+
+function openAiWindow() {
+  if (!aiWin.el) {
+    const el = document.createElement("div");
+    el.className = "modal hidden";
+    el.id = "ai-window";
+    el.innerHTML = `<div class="modal-box ai-window">
+      <div class="ai-win-head"><h2>✨ ИИ-помощник</h2><button type="button" class="btn small" data-close title="Закрыть (Esc)">✕</button></div>
+      <div class="ai-win-body"></div></div>`;
+    el.querySelector("[data-close]").addEventListener("click", () => el.classList.add("hidden"));
+    document.body.appendChild(el);
+    aiWin.el = el;
+  }
+  aiWin.el.classList.remove("hidden");
+  aiWin.models = null;
+  aiWin.lastCheck = null;
+  loadAiWindow(true);
+}
+
+async function loadAiWindow(withModels) {
+  const body = aiWin.el.querySelector(".ai-win-body");
+  if (!aiWin.status) body.innerHTML = `<div class="ai-loading">Загружаю…</div>`;
+  try {
+    aiWin.status = await api("/api/ai/status");
+  } catch (err) {
+    body.innerHTML = `<p class="err-text">${esc(err.message)}</p>`;
+    return;
+  }
+  renderAiWindow();
+  if (withModels && aiWin.status.enabled) {
+    aiWin.modelsError = "";
+    try {
+      aiWin.models = (await api("/api/ai/models")).items;
+    } catch (err) {
+      aiWin.models = [];
+      aiWin.modelsError = err.message;
+    }
+    renderAiWindow();
+  }
+}
+
+function aiPriceUah(usd) {
+  const rate = aiWin.status && aiWin.status.usd_rate;
+  return usd === null || usd === undefined || !rate ? null : usd * rate;
+}
+
+function renderAiWindow() {
+  const st = aiWin.status;
+  const body = aiWin.el.querySelector(".ai-win-body");
+  const free = st.provider === "gemini" && st.free_tier;
+  const anyKey = st.keys.gemini || st.keys.claude;
+  const providerSelect = `<label class="field ai-provider"><span>Сервис ИИ</span><select id="aiw-provider">
+      ${st.provider ? "" : `<option value="">— выберите —</option>`}
+      ${Object.entries(st.providers).map(([k, name]) => `<option value="${k}" ${k === st.provider ? "selected" : ""}
+        ${st.keys[k] ? "" : "disabled"}>${esc(name)}${st.keys[k] ? "" : " — нет ключа"}</option>`).join("")}
+    </select></label>`;
+  if (!anyKey) {
+    body.innerHTML = `<p>ИИ ещё не подключён. Он помогает в карточке и для многих товаров сразу: улучшить описание,
+      перевести на украинский, придумать название и ключевые слова — и всегда показывает, сколько стоил запрос.</p>
+      <p>Вставьте ключ <b>Google Gemini</b> (есть бесплатный) или <b>Anthropic Claude</b> в
+      <a href="/settings#ai">Настройках</a> — потом модель, цены и расходы будут здесь, на любой странице.</p>`;
+    return;
+  }
+  body.innerHTML = `
+    ${providerSelect}
+    ${st.enabled ? `
+    <section><h3>Модель</h3>
+      <div class="ai-model-list" id="aiw-models">${renderAiModels()}</div>
+      <p class="small muted">Цена — примерно за один запрос по карточке (около 1 500 токенов текста на входе и 900 на выходе),
+        у длинных описаний дороже. Точная цена каждого запроса — ниже, в «Последних запросах».</p>
+      ${st.provider === "gemini" ? `<label class="small ai-free"><input type="checkbox" id="aiw-free" ${free ? "checked" : ""}>
+        Мой ключ Gemini бесплатный — запросы ничего не стоят, но их число в минуту и в сутки ограничено.
+        <span class="muted">Google не сообщает тариф ключа заранее; программа отметит сама, когда Google ответит
+        «лимит бесплатного уровня».</span></label>` : ""}
+      <div class="toolbar" style="margin:8px 0 0">
+        <button type="button" class="btn small" id="aiw-check" ${aiWin.models && aiWin.models.length ? "" : "disabled"}>Проверить модели</button>
+        <span class="small muted" id="aiw-check-note">${aiCheckNote()}</span>
+      </div>
+    </section>` : `<p class="small muted">Выберите сервис — ключ для него уже есть.</p>`}
+    <section><h3>Расходы</h3>${renderAiSpend()}</section>
+    <section><h3>Лимиты</h3>${renderAiLimits()}</section>
+    <section><h3>Последние запросы</h3>${renderAiRecent()}</section>
+    <p class="small muted">Цены моделей — по прайсам Anthropic и Google на ${esc(formatDay(st.prices_checked))}; в гривнах —
+      по курсу доллара программы${st.usd_rate ? ` (${st.usd_rate.toFixed(2)} грн)` : " (пока неизвестен — показываем в долларах)"}.
+      Ключи и темп массового ИИ — в <a href="/settings#ai">Настройках</a>.</p>`;
+  bindAiWindow();
+}
+
+function formatDay(isoDate) {
+  const [y, m, d] = String(isoDate || "").split("-");
+  return d ? `${d}.${m}.${y}` : isoDate;
+}
+
+function renderAiModels() {
+  const st = aiWin.status;
+  if (aiWin.models === null) return `<div class="ai-loading small">Узнаю, какие модели доступны вашему ключу…</div>`;
+  const free = st.provider === "gemini" && st.free_tier;
+  const priceOf = (m) => {
+    if (free) return `<span class="ai-price">бесплатно</span>`;
+    if (m.typical_usd === null) return `<span class="ai-price muted">цена неизвестна</span>`;
+    const uah = aiPriceUah(m.typical_usd);
+    return `<span class="ai-price">${aiMoney(m.typical_usd, uah, { withUsd: false })}</span>`;
+  };
+  const statusOf = (m) => {
+    if (!m.status) return `<span class="ai-st muted">не проверялась</span>`;
+    const [icon, label] = AI_STATUS[m.status] || ["", m.status];
+    return `<span class="ai-st st-${esc(m.status)}" title="${esc(m.status_message || "")}${m.checked_at ? ` · ${esc(formatDate(m.checked_at))}` : ""}">${icon} ${esc(label)}</span>`;
+  };
+  const row = (value, title, sub, price, status, missing = false) => `
+    <label class="ai-model${value === (st.model || "") ? " selected" : ""}${missing ? " missing" : ""}">
+      <input type="radio" name="aiw-model" value="${esc(value)}" ${value === (st.model || "") ? "checked" : ""}>
+      <span class="ai-model-name">${title}<span class="small muted">${sub}</span></span>
+      ${price}${status}
+    </label>`;
+  let html = "";
+  if (st.provider === "gemini") {
+    const used = st.model_used ? aiModelName(st.model_used) : "";
+    html += row("", "Авто — программа выбирает сама", used ? `сейчас: ${esc(used)} · сама перейдёт на другую, если Google уберёт модель`
+      : "лучшая доступная Flash; сама перейдёт на другую, если Google уберёт модель", "", "");
+  }
+  html += aiWin.models.map((m) => row(m.id, esc(m.name && m.name !== m.id ? m.name : aiModelName(m.id)),
+    `${esc(m.id)}${m.price_in !== null ? ` · вход ${fmtRate(m.price_in)} · выход ${fmtRate(m.price_out)} за 1 млн токенов${m.price_exact ? "" : " (оценка по семейству)"}` : ""}${m.missing ? " · <b>ключу эта модель не видна</b>" : ""}`,
+    priceOf(m), statusOf(m), m.missing)).join("");
+  if (aiWin.modelsError) html += `<p class="err-text small">${esc(aiWin.modelsError)}</p>`;
+  return html;
+}
+
+function aiCheckModels() {
+  const st = aiWin.status;
+  const list = (aiWin.models || []).filter((m) => !m.missing);
+  const current = st.model || st.model_used;
+  const ordered = [...list.filter((m) => m.id === current), ...list.filter((m) => m.id !== current)];
+  return ordered.slice(0, 8);
+}
+
+function aiCheckNote() {
+  if (aiWin.checking) return "Проверяю — по короткому запросу к каждой модели…";
+  if (aiWin.lastCheck) return aiWin.lastCheck;
+  const models = aiCheckModels();
+  if (!models.length) return "";
+  const free = aiWin.status.provider === "gemini" && aiWin.status.free_tier;
+  const usd = models.reduce((sum, m) => sum + (m.check_usd || 0), 0);
+  const cost = free ? "бесплатно" : aiMoney(usd, aiPriceUah(usd));
+  return `Короткий запрос к ${models.length} моделям (первые в списке) — ${cost}.`;
+}
+
+function renderAiSpend() {
+  const s = aiWin.status.summary;
+  const free = aiWin.status.provider === "gemini" && aiWin.status.free_tier;
+  const line = (label, p) => `<div><span class="muted">${label}</span> <b>${p.requests ? aiMoney(p.cost_usd, p.cost_uah) : "0 грн"}</b>
+    <span class="small muted">· ${p.requests} запр. · ${fmtTokens(p.tokens_in)} + ${fmtTokens(p.tokens_out)} токенов${p.unpriced ? ` · у ${p.unpriced} цена неизвестна` : ""}</span></div>`;
+  const byModel = s.by_model.length ? `<div class="table-scroll"><table class="list compact"><thead><tr><th>Модель (за месяц)</th><th>Запросов</th><th>Сумма</th></tr></thead><tbody>
+    ${s.by_model.map((m) => `<tr><td>${esc(aiModelName(m.model))}</td><td>${m.requests}</td><td class="nowrap">${aiMoney(m.cost_usd, aiPriceUah(m.cost_usd))}</td></tr>`).join("")}
+    </tbody></table></div>` : "";
+  return `<div class="ai-spend">${line("Сегодня:", s.today)}${line("За месяц:", s.month)}</div>
+    ${free ? `<p class="small muted">Ключ Gemini отмечен как бесплатный — запросы к Gemini считаются по 0.</p>` : ""}${byModel}`;
+}
+
+function renderAiLimits() {
+  const st = aiWin.status;
+  const lim = st.limits || {};
+  const pace = `<div class="small muted">Массовый ИИ отправляет не больше <b>${st.pace_per_minute}</b> запросов в минуту
+    — так он не упирается в лимит (меняется в <a href="/settings#ai">Настройках</a>).</div>`;
+  const today = st.summary.today.requests;
+  if (!st.enabled) return `<p class="small muted">Появятся, когда выберете сервис.</p>`;
+  if (st.provider === "claude") {
+    const names = { requests: "Запросы", input_tokens: "Входные токены", output_tokens: "Выходные токены", tokens: "Токены" };
+    const rows = Object.entries(names).filter(([k]) => lim[k]).map(([k, label]) => {
+      const x = lim[k];
+      const low = x.limit && x.remaining !== null && x.remaining / x.limit < 0.1;
+      const reset = x.reset ? new Date(x.reset).toLocaleTimeString("ru-RU") : "";
+      return `<tr><td>${label}</td><td class="nowrap${low ? " err-text" : ""}">${x.remaining !== null ? fmtTokens(x.remaining) : "?"} из ${x.limit !== null ? fmtTokens(x.limit) : "?"}</td>
+        <td class="small muted">${reset ? `полностью восстановится к ${reset}` : ""}</td></tr>`;
+    }).join("");
+    if (!rows) return `<p class="small muted">Anthropic сообщает лимиты в каждом ответе — они появятся здесь после первого запроса к Claude.</p>${pace}`;
+    return `<p class="small muted" style="margin-top:0">Лимиты вашего ключа в минуту — по последнему ответу Claude (${esc(formatDate(lim.at))}):</p>
+      <div class="table-scroll"><table class="list compact"><thead><tr><th></th><th>Осталось</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${lim.retry_seconds ? `<p class="small err-text">Лимит был исчерпан — Anthropic просил подождать ${Math.round(lim.retry_seconds)} с.</p>` : ""}${pace}`;
+  }
+  const last = lim.last_limit;
+  return `<p class="small" style="margin-top:0">Сделано запросов: за последнюю минуту <b>${st.summary.last_minute}</b>, сегодня <b>${today}</b>.</p>
+    <p class="small muted">Google не сообщает, сколько запросов осталось, — только когда лимит уже исчерпан.
+      Лимиты вашего ключа по каждой модели видны в <a href="https://aistudio.google.com/" target="_blank" rel="noopener">Google AI Studio</a>.</p>
+    ${last ? `<p class="small">Последний раз упёрлись в лимит ${esc(formatDate(lim.at))}: <b>${esc(last.text || "")}</b></p>` : ""}${pace}`;
+}
+
+function renderAiRecent() {
+  const rows = aiWin.status.summary.recent;
+  if (!rows.length) return `<p class="small muted">Запросов к ИИ ещё не было.</p>`;
+  const actions = aiWin.status.actions || {};
+  return `<div class="table-scroll"><table class="list compact ai-recent"><thead><tr><th>Когда</th><th>Что</th><th>Модель</th><th>Токены</th><th>Цена</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr class="${r.ok ? "" : "failed"}">
+      <td class="nowrap small">${esc(formatDate(r.at))}</td>
+      <td class="small">${esc(r.action === "check" ? "проверка модели" : actions[r.action] || r.action)}<div class="muted">${esc(AI_SOURCE[r.source] || r.source)}</div></td>
+      <td class="small">${esc(aiModelName(r.model))}</td>
+      <td class="nowrap small">${r.ok ? `${fmtTokens(r.tokens_in)} + ${fmtTokens(r.tokens_out)}` : ""}</td>
+      <td class="small">${r.ok ? (r.cost_usd === null ? "цена неизвестна" : esc(aiMoney(r.cost_usd, aiPriceUah(r.cost_usd)))) : `<span class="err-text" title="${esc(r.error)}">✗ ${esc(r.error.slice(0, 80))}</span>`}</td>
+    </tr>`).join("")}</tbody></table></div>`;
+}
+
+function bindAiWindow() {
+  const el = aiWin.el;
+  const choose = async (json, done) => {
+    try {
+      aiWin.status = { ...aiWin.status, ...(await api("/api/ai/model", { method: "POST", json })) };
+      if (done) toast(done, "ok");
+    } catch (err) { toast(err.message, "error"); }
+    refreshAiMeta();
+  };
+  const provider = el.querySelector("#aiw-provider");
+  if (provider) provider.addEventListener("change", async () => {
+    await choose({ provider: provider.value }, `ИИ: ${aiWin.status.providers[provider.value]}`);
+    aiWin.models = null;
+    loadAiWindow(true);
+  });
+  el.querySelectorAll('input[name="aiw-model"]').forEach((r) => r.addEventListener("change", async () => {
+    await choose({ model: r.value }, r.value ? `Модель: ${aiModelName(r.value)}` : "Модель выбирается автоматически");
+    renderAiWindow();
+  }));
+  const freeBox = el.querySelector("#aiw-free");
+  if (freeBox) freeBox.addEventListener("change", async () => {
+    await choose({ free_tier: freeBox.checked });
+    loadAiWindow(false);
+  });
+  const check = el.querySelector("#aiw-check");
+  if (check) check.addEventListener("click", () => busy(check, async () => {
+    const models = aiCheckModels().map((m) => m.id);
+    aiWin.checking = true;
+    el.querySelector("#aiw-check-note").textContent = aiCheckNote();
+    try {
+      const res = await api("/api/ai/models/check", { method: "POST", json: { models } });
+      const count = (s) => res.items.filter((x) => x.status === s).length;
+      aiWin.lastCheck = `Проверено ${res.items.length}: работают ${count("ok")}` +
+        (count("unavailable") ? `, недоступны ${count("unavailable")}` : "") + (count("limit") ? `, упёрлись в лимит ${count("limit")}` : "") +
+        (count("busy") ? `, перегружены ${count("busy")}` : "") + (count("error") ? `, с ошибкой ${count("error")}` : "") +
+        `. Проверка стоила ${aiWin.status.provider === "gemini" && aiWin.status.free_tier ? "0 (бесплатный ключ)" : aiMoney(res.spent_usd, res.spent_uah)}.`;
+      aiWin.models = (await api("/api/ai/models")).items;
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      aiWin.checking = false;
+    }
+    await loadAiWindow(false);
+    refreshAiMeta();
+  }));
+}
 
 renderNav();
 syncActionMenus();

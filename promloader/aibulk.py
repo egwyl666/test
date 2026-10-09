@@ -9,7 +9,7 @@
 import json
 import time
 
-from . import ai, db, products
+from . import ai, aiprice, db, products
 from . import changes as changes_log
 
 BULK_ACTIONS = ("improve", "shorten", "translate_ua", "name", "keywords", "custom")
@@ -63,7 +63,25 @@ def get(job_id: int) -> dict:
     job["label"] = ai.ACTIONS[job["action"]][0]
     job["errors"] = [dict(r) for r in db.query(
         "SELECT product_id, message FROM ai_items WHERE job_id = ? AND status = 'error' LIMIT 10", (job_id,))]
+    spent = aiprice.job_spent(job_id)
+    job["spent"] = {**spent, "cost_uah": aiprice.to_uah(spent["cost_usd"])}
     return job
+
+
+def estimate(count: int, action: str) -> dict:
+    """Сколько примерно обойдётся задание: средняя цена последних запросов этой модели, иначе — типичный запрос."""
+    s = ai.settings()
+    model = s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else "")
+    per = aiprice.average_cost(s["provider"], model, action) if model else None
+    measured = per is not None
+    if per is None:
+        # авто-модель Gemini ещё ни разу не выбиралась — считаем по цене свежей Flash (её программа и выберет)
+        per = aiprice.typical_cost(s["provider"], model or ("gemini-flash" if s["provider"] == "gemini" else ""))
+    total = per * count if per is not None else None
+    minutes = round(count / max(1, rate_per_minute()))
+    return {"count": count, "model": model, "per_request_usd": per, "per_request_uah": aiprice.to_uah(per),
+            "total_usd": total, "total_uah": aiprice.to_uah(total), "measured": measured,
+            "free": s["provider"] == "gemini" and aiprice.free_tier(), "minutes": minutes}
 
 
 def list_jobs(limit: int = 5) -> list[dict]:
@@ -139,7 +157,8 @@ def process_one(runner=ai.run) -> str:
         _mark(item["id"], "skipped", "уже заполнено")
         return "skipped"
     try:
-        changes = runner(p, item["action"], item["instruction"])
+        with ai.usage_source("bulk", item["job_id"]):
+            changes = runner(p, item["action"], item["instruction"])
     except ai.AIError as exc:
         if exc.temporary:
             return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим этот же товар

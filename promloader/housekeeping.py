@@ -8,6 +8,7 @@
 - файлы импорта старше 3 дней и файлы выгрузки «по ссылке» старше 2 дней;
 - файлы фото, которых нет ни у одного товара (старше суток — чтобы не задеть фото, которое как раз сохраняется);
 - журнал изменений товаров старше полугода;
+- учёт запросов к ИИ старше года (расходы показываются за день и за месяц);
 - результаты «Проверки выгрузки» в памяти — кроме последних 10.
 """
 
@@ -25,6 +26,7 @@ RUNS_PER_SUPPLIER = 100
 IMPORT_KEEP_SECONDS = 3 * 24 * 3600
 PHOTO_GRACE_SECONDS = 24 * 3600
 DIAGNOSE_KEEP = 10
+AI_USAGE_KEEP_DAYS = 366
 
 
 def _ago(days: int) -> str:
@@ -87,6 +89,11 @@ def diagnose_runs() -> int:
     return len(extra)
 
 
+def old_ai_usage() -> int:
+    with db.tx() as c:
+        return c.execute("DELETE FROM ai_usage WHERE at < ?", (_ago(AI_USAGE_KEEP_DAYS),)).rowcount
+
+
 def run() -> dict:
     """Всё сразу. Ошибка одной уборки не мешает остальным."""
     steps = {
@@ -97,6 +104,7 @@ def run() -> dict:
         "orphan_photos": orphan_photos,
         "changes": changes.cleanup,
         "diagnose_runs": diagnose_runs,
+        "ai_usage": old_ai_usage,
     }
     result = {}
     for name, step in steps.items():

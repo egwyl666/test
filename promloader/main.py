@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, aiprice, autostart, backup, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, promdelete, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -467,14 +467,23 @@ def meta():
         "update_available": db.get_setting("update_latest"),
         "missed_schedules": schedule.missed(),
         "orders_unseen": db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"],
-        "ai": {"enabled": ai.enabled(), "provider": ai.settings()["provider"],
-               "actions": {k: v[0] for k, v in ai.ACTIONS.items()}},
+        "ai": _ai_meta(),
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
             "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
         "groups": [r["group_name"] for r in db.query(
             "SELECT DISTINCT group_name FROM products WHERE group_name != '' ORDER BY group_name")],
         "first_steps": _first_steps(),
     }
+
+
+def _ai_meta() -> dict:
+    s = ai.settings()
+    today = aiprice.today()
+    return {"enabled": ai.enabled(), "provider": s["provider"],
+            "model": s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else ""),
+            "auto": s["provider"] == "gemini" and not s["model"], "free": s["provider"] == "gemini" and aiprice.free_tier(),
+            "today_usd": today["cost_usd"], "today_uah": aiprice.to_uah(today["cost_usd"]), "today_requests": today["requests"],
+            "actions": {k: v[0] for k, v in ai.ACTIONS.items()}}
 
 
 def _first_steps() -> dict:
@@ -540,8 +549,68 @@ def update_product(product_id: int, data: dict = Body(...)):
 def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
     """Предложение ИИ по карточке. Ничего не сохраняет: пользователь сам решает, применять ли."""
     product = products.get(product_id)
-    changes = ai.run(product, action, instruction)
-    return {"changes": changes}
+    changes, used = ai.run_detailed(product, action, instruction)
+    return {"changes": changes, "usage": {**used, "cost_uah": aiprice.to_uah(used["cost_usd"])}}
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    """Для окна «ИИ» на любой странице: что выбрано, сколько потрачено, лимиты."""
+    s = ai.settings()
+    keys = {"gemini": bool(config.get("gemini_key")), "claude": bool(config.get("anthropic_key"))}
+    summary = aiprice.summary()
+    for period in ("today", "month"):
+        summary[period]["cost_uah"] = aiprice.to_uah(summary[period]["cost_usd"])
+    return {
+        "provider": s["provider"], "providers": ai.PROVIDERS, "keys": keys, "enabled": ai.enabled(),
+        "model": s["model"], "model_used": db.get_setting("gemini_model_used") if s["provider"] == "gemini" else s["model"],
+        "free_tier": aiprice.free_tier(), "free_tier_setting": db.get_setting("gemini_free_tier"),
+        "summary": summary, "limits": aiprice.limits().get(s["provider"], {}),
+        "pace_per_minute": aibulk.rate_per_minute(), "prices_checked": aiprice.PRICES_CHECKED,
+        "usd_rate": aiprice.usd_rate(), "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
+    }
+
+
+@app.get("/api/ai/models")
+def ai_models():
+    try:
+        return {"items": ai.list_models()}
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/ai/models/check")
+def ai_models_check(models: list[str] = Body(..., embed=True)):
+    """Короткий настоящий запрос к каждой модели — какие работают на этом ключе. Стоит доли цента."""
+    items = ai.check_models(models)
+    spent = round(sum(x["cost_usd"] or 0 for x in items), 6)
+    return {"items": items, "spent_usd": spent, "spent_uah": aiprice.to_uah(spent)}
+
+
+@app.post("/api/ai/model")
+def ai_choose(provider: str | None = Body(None), model: str | None = Body(None), free_tier: bool | None = Body(None)):
+    """Выбор провайдера и модели из окна «ИИ». Ключи вводятся только в «Настройках»."""
+    with db.tx():
+        if provider is not None:
+            if provider not in ai.PROVIDERS:
+                raise HTTPException(400, "Неизвестный провайдер ИИ")
+            key = config.get("gemini_key" if provider == "gemini" else "anthropic_key")
+            if not key:
+                raise HTTPException(400, f"Для {ai.PROVIDERS[provider]} не введён ключ — вставьте его в «Настройках»")
+            db.set_setting("ai_provider", provider)
+        if model is not None:
+            current = provider or ai.settings()["provider"]
+            if current not in ai.PROVIDERS:
+                raise HTTPException(400, "Сначала выберите провайдера ИИ")
+            db.set_setting(f"{current}_model", str(model).strip().removeprefix("models/"))
+        if free_tier is not None:
+            db.set_setting("gemini_free_tier", "1" if free_tier else "0")
+    return ai_status()
+
+
+@app.post("/api/ai/bulk/estimate")
+def ai_bulk_estimate(action: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return aibulk.estimate(len(_selected(ids, filter)), action)
 
 
 @app.post("/api/ai/check")

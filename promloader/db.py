@@ -163,6 +163,24 @@ CREATE TABLE IF NOT EXISTS tg_recipients (
     created_at  TEXT NOT NULL
 );
 
+-- Запросы к ИИ: модель, токены, цена — для «сколько стоит» и лимитов
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    provider    TEXT NOT NULL,
+    model       TEXT NOT NULL DEFAULT '',
+    action      TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT '',
+    job_id      INTEGER,
+    tokens_in   INTEGER NOT NULL DEFAULT 0,
+    tokens_out  INTEGER NOT NULL DEFAULT 0,
+    cost_usd    REAL,
+    ok          INTEGER NOT NULL DEFAULT 1,
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ai_usage_at ON ai_usage(at);
+CREATE INDEX IF NOT EXISTS ai_usage_job ON ai_usage(job_id);
+
 -- Очередь уведомлений Telegram: не дошло (нет связи) — повтор с паузой, порядок для каждого получателя сохраняется
 CREATE TABLE IF NOT EXISTS tg_outbox (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

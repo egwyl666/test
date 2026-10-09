@@ -692,19 +692,21 @@ async function askAi(action, instruction = "") {
     await ensureId();
     await flush();
     const res = await api(`/api/products/${state.id}/ai`, { method: "POST", json: { action, instruction } });
-    showAiResult(res.changes);
+    showAiResult(res.changes, res.usage);
   } catch (err) {
     box.innerHTML = `<div class="err-text" style="font-size:14px">${esc(err.message)}</div>`;
   } finally {
     buttons.forEach((b) => (b.disabled = false));
+    refreshAiMeta();  // расход за сегодня в значке «✨» (и неудачный запрос виден в окне «ИИ»)
   }
 }
 
-function showAiResult(changes) {
+function showAiResult(changes, usage) {
   const box = $("#ai-result");
   const values = formValues();
   const show = (field, value) => (field.startsWith("description") ? descriptionHtml(value) : esc(value)) || '<span class="muted">пусто</span>';
-  box.innerHTML = Object.entries(changes).map(([field, value]) => `
+  box.innerHTML = (usage ? `<p class="ai-usage" title="Сколько стоил этот запрос. Все запросы и расходы — в окне «✨ ИИ» вверху страницы">
+    ${esc(aiUsageLine(usage))}</p>` : "") + Object.entries(changes).map(([field, value]) => `
     <div class="ai-field">
       <h4>${esc(AI_FIELD_LABEL[field] || field)}</h4>
       <div class="ai-cols">
@@ -731,6 +733,7 @@ function showAiResult(changes) {
 }
 
 $("#ai-custom").addEventListener("click", () => askAi("custom", $("#ai-instruction").value));
+document.addEventListener("ai-changed", renderAiPanel);  // ИИ подключили или выключили в окне «✨ ИИ»
 $("#ai-instruction").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); askAi("custom", e.target.value); }
 });

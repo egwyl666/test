@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-09 · версия 2.2.3_
+_Обновлено: 2026-10-09 · версия 2.3.0_
 
 ## Модули
 
@@ -11,7 +11,8 @@ _Обновлено: 2026-10-09 · версия 2.2.3_
 | `products.py` | 862 | Товары: `normalize`, `validate`, `create`/`update`/`delete`, `_touch` (ревизия, статус, `pending_fields`, журнал), `_lock` (🔒 ручные поля), `list_products(flt, sort, …)` / `_rows` (фильтры `FILTER_KEYS`, сортировки `SORTS`; «с ошибками» — через `validate` в Python; + закупка в грн, прошлая цена; счётчики с тем же фильтром), `search_clause` (поиск без учёта регистра через `lower_u`), `ids_for_filter` («все по фильтру»), `bulk_edit` (`BULK_FIELDS`), `export_xlsx`, `set_status`, фото |
 | `sync.py` | 594 | Очередь выгрузки: `enqueue`, `run_once`, `_start`/`_start_quick`/`_poll`, ожидание чужого импорта (`BUSY_RETRY_SECONDS`), `repair_false_success`, `worker` (+ `promdelete.process`) |
 | `excel.py` | 455 | Разбор файлов и XML в таблицу, `build_products`, `money_currency`, `clean_name`/`clean_names` |
-| `ai.py` | 373 | Gemini/Claude, `ACTIONS`, авто-выбор модели Gemini |
+| `ai.py` | 587 | Gemini/Claude, `ACTIONS`, авто-выбор модели Gemini; `run_detailed` → (изменения, расход); каждый запрос (и неудачный) пишется через `aiprice.record`, источник — `usage_source(source, job_id)`; лимиты: Gemini 429 → `_gemini_quota` (QuotaFailure/RetryInfo, `FreeTier` сам ставит `gemini_free_tier`, `limit: 0` = модель недоступна ключу), Claude — заголовки `anthropic-ratelimit-*` через `with_raw_response` (`_claude_limits`); `fallbacks` только для `FALLBACK_MODELS`, без `effort` для старых (`NO_EFFORT`); `claude_models` (Models API, бесплатно), `list_models`, `check_models` (не меняет выбор: `_gemini(switch=False)`) |
+| `aiprice.py` | 220 | Цены моделей `PRICES` ($ за 1 млн, дата `PRICES_CHECKED`), `price` (точно / по семейству / неизвестна), `cost` (бесплатный Gemini = 0), `record` → `ai_usage` + статус модели, `summary`/`today`/`job_spent`/`average_cost`, `model_statuses`, `limits`/`save_limits`, `usd_rate`/`to_uah` (без ожидания интернета: свой курс или сохранённый НБУ, свежий — в фоне) |
 | `db.py` | 392 | Схема, `MIGRATIONS` (ALTER TABLE ADD COLUMN), `tx()` (вложенный — часть внешнего), `in_transaction`, `query`, `get/set_setting`, SQL-функция `lower_u`, `IN_LIST` + `as_list` (список id одним параметром), `default_dir` (папка данных до открытия базы) |
 | `r2.py` | 267 | Cloudflare R2 (SigV4), загрузка фото, постоянные ссылки |
 | `support.py` | 263 | Обращения в поддержку: скриншоты, архив, отправка в Telegram |
@@ -24,7 +25,7 @@ _Обновлено: 2026-10-09 · версия 2.2.3_
 | `promdelete.py` | 196 | Удаление с Prom: `check`, `request`, `process`, `retry`, `cancel` |
 | `promcatalog.py` | 204 | Каталог с Prom: `load` (страницы по `last_id`), `_upsert`, `reconcile`, `recover` (прерванная загрузка при запуске); товар без внешнего ID на Prom — `_own_id` (код, если не занят другим товаром Prom, иначе `PROM-номер`) и пометка `prom_no_ext`; `missing_ext_xlsx` — Excel для импорта в кабинете («Унікальний_ідентифікатор» → «Ідентифікатор_товару»), `mark_ext_done` |
 | `prom_api.py` | 183 | `PromClient`, `PromError(retryable, busy)`, `DEFAULT_IMPORT_SETTINGS` (`mark_missing_product_as: none`), `import_state` |
-| `aibulk.py` | 177 | Массовый ИИ, откат |
+| `aibulk.py` | 196 | Массовый ИИ, откат; `estimate` (цена до запуска), `get` → `spent` |
 | `orders.py` | 297 | Заказы: `poll` (всё изменённое с прошлой полной проверки — `last_modified_from` с запасом `OVERLAP`, страницы по `last_id`, незаконченная загрузка продолжается по `orders_cursor`), `_where` (поиск: номер, телефон, имя, товар; даты), `TRANSITIONS` (допустимые переходы), `set_status` (проверяет `processed_ids`), уведомления о новых — `_notify` |
 | `notify.py` | 241 | Telegram-уведомления по получателям: `send` кладёт в очередь `tg_outbox`, `flush` отправляет по порядку для каждого получателя, повтор с паузой до часа, через 48 ч — отказ; `outbox_state` |
 | `backup.py` | 235 | zip-копии базы, фото и прайсов |
@@ -50,7 +51,7 @@ _Обновлено: 2026-10-09 · версия 2.2.3_
 | Импорт файла | `POST /api/import/upload`, `GET /api/import/{token}/sheet`, `…/image`, `POST …/preview`, `…/commit` |
 | Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`), `POST …/preview` |
 | Prom | `GET/POST /api/prom/catalog`, `GET /api/prom/external-ids` (+ `.xlsx?limit=`), `POST /api/prom/external-ids/done`, `GET /api/orders` (`status, q, date_from, date_to, limit, offset` → `items, total, counts`), `POST /api/orders/refresh`, `…/seen` (`ids`; без них — все), `…/{id}/status` |
-| ИИ | `POST /api/ai/check`, `GET/POST /api/ai/bulk`, `…/{job_id}/status`, `…/{job_id}/revert` |
+| ИИ | `POST /api/ai/check`, `GET/POST /api/ai/bulk`, `POST /api/ai/bulk/estimate` (`action` + `ids`/`filter`), `…/{job_id}/status`, `…/{job_id}/revert`; окно «✨ ИИ»: `GET /api/ai/status` (выбор, расходы, лимиты, `usd_rate`), `GET /api/ai/models` (цены, статусы), `POST /api/ai/models/check` `{models}`, `POST /api/ai/model` `{provider?, model?, free_tier?}` (ключ — только в «Настройках»); `…/products/{id}/ai` → `{changes, usage}`; `/api/meta.ai` — модель, `auto`, `free`, `today_*` |
 | Настройки и сервис | `GET/POST /api/settings`, `…/check`, `GET /api/meta`, `/api/update/check`, `/api/update/install`, `/api/backups*`, `/api/shutdown`, `/api/restart`, `/api/autostart`, `/api/schedules*`, `/api/r2/check`, `/api/r2/stats` |
 | Telegram и поддержка | `/api/telegram/recipients*` (+ `outbox`), `POST /api/telegram/retry`, `/api/telegram/candidates`, `/api/support*`, `/api/support/channel/chats` |
 

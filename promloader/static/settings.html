@@ -156,6 +156,8 @@
         Помогает в карточке товара: улучшить описание, перевести на украинский, придумать название и ключевые слова.
         ИИ только предлагает текст — в карточку он попадает после нажатия «Применить».
       </p>
+      <p class="small" style="margin-top:-4px">Здесь — ключи. Модель, цена запроса, расходы и лимиты — в окне
+        <a href="#" id="open-ai-window">«✨ ИИ»</a> вверху любой страницы.</p>
       <label class="field"><span>Какой ИИ использовать</span>
         <select id="ai-provider"><option value="">не подключать</option></select></label>
       <div id="ai-gemini" class="hidden">
@@ -170,7 +172,9 @@
         <label class="field"><span>API-ключ Anthropic <span class="muted" id="anthropic-state"></span></span>
           <input id="anthropic-key" name="anthropic_key" type="password" placeholder="sk-ant-…" autocomplete="new-password"></label>
         <p class="small muted" style="margin-top:-6px">Ключ создаётся в <a href="https://platform.claude.com/" target="_blank" rel="noopener">консоли Anthropic</a>; оплата по использованию.</p>
-        <label class="field"><span>Модель</span><input id="claude-model" name="claude_model"></label>
+        <label class="field"><span>Модель</span><input id="claude-model" name="claude_model" list="claude-models"
+          placeholder="claude-opus-5-5"></label>
+        <datalist id="claude-models"></datalist>
       </div>
       <label class="field"><span>Массовый ИИ: запросов в минуту <span class="muted">(пусто — по умолчанию: 8 для бесплатного Gemini, 30 для Claude)</span></span>
         <input id="ai-rate" inputmode="numeric" style="max-width:160px"></label>
@@ -361,7 +365,8 @@
         ai_rate: $("#ai-rate").value,
       };
     }
-    $("#ai-save").onclick = () => save(aiBody(), fillAi);
+    $("#ai-save").onclick = () => save(aiBody(), (s) => { fillAi(s); refreshAiMeta(); });
+    $("#open-ai-window").onclick = (e) => { e.preventDefault(); openAiWindow(); };
     $("#ai-check").onclick = async () => {
       const out = $("#ai-check-result");
       out.textContent = "Проверяю…";
@@ -373,7 +378,9 @@
         const res = await api("/api/ai/check", { method: "POST" });
         out.textContent = res.message;
         out.style.color = res.ok ? "var(--ok)" : "var(--err)";
-        $("#gemini-models").innerHTML = (res.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+        const options = (res.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+        $(s.ai_provider === "claude" ? "#claude-models" : "#gemini-models").innerHTML = options;
+        refreshAiMeta();
       } catch (err) {
         out.textContent = err.message;
         out.style.color = "var(--err)";

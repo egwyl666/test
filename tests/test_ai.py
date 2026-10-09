@@ -154,13 +154,18 @@ def test_claude_refusal():
 
 
 def test_api_endpoint(client, monkeypatch):
+    db.set_setting("nbu_rate_USD", json.dumps({"rate": 40.0, "date": __import__("datetime").date.today().isoformat()}))
     pid = products.create({"name": "Кружка", "price": 10})
     r = client.post(f"/api/products/{pid}/ai", json={"action": "improve"})
     assert r.status_code == 400 and "Настройках" in r.json()["detail"]
 
-    monkeypatch.setattr(ai, "run", lambda p, action, instruction="": {"description": f"<p>{p['name']} {action} {instruction}</p>"})
+    used = {"provider": "gemini", "model": "gemini-3.8-flash", "tokens_in": 1000, "tokens_out": 500,
+            "cost_usd": 0.002625, "free": False}
+    monkeypatch.setattr(ai, "run_detailed", lambda p, action, instruction="": (
+        {"description": f"<p>{p['name']} {action} {instruction}</p>"}, used))
     r = client.post(f"/api/products/{pid}/ai", json={"action": "custom", "instruction": "короче"})
-    assert r.json() == {"changes": {"description": "<p>Кружка custom короче</p>"}}
+    assert r.json()["changes"] == {"description": "<p>Кружка custom короче</p>"}
+    assert r.json()["usage"]["cost_usd"] == 0.002625 and r.json()["usage"]["cost_uah"] == round(0.002625 * 40, 4)
     assert products.get(pid)["description"] == ""  # ничего не сохраняется само
 
     s = client.post("/api/settings", json={"ai_provider": "gemini", "gemini_key": "AIzaSy-very-secret-key",

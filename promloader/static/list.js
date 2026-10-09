@@ -384,12 +384,37 @@ function openAiModal(sel) {
   $("#ai-modal").classList.remove("hidden");
 }
 
-function updateAiModal() {
+let aiEstimateSeq = 0;
+async function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
   $("#ai-empty-wrap").classList.toggle("hidden", !["translate_ua", "keywords", "improve"].includes(action));
   const minutes = Math.ceil(selectionCount() / aiRate);
-  $("#ai-eta").textContent = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
+  const pace = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
+  $("#ai-eta").textContent = pace;
+  $("#ai-cost").innerHTML = `<span class="muted">Считаю, сколько это будет стоить…</span>`;
+  const seq = ++aiEstimateSeq;
+  let e;
+  try {
+    e = await api("/api/ai/bulk/estimate", { method: "POST", json: { ...aiSel, action } });
+  } catch (err) {
+    if (seq === aiEstimateSeq) $("#ai-cost").textContent = "";
+    return;
+  }
+  if (seq !== aiEstimateSeq) return;  // пока считали, выбрали другое действие
+  const model = e.model ? aiModelName(e.model) : "модель выберется автоматически";
+  let text;
+  if (e.free) {
+    text = `Модель: <b>${esc(model)}</b>. Ключ Gemini бесплатный — денег не стоит, но займёт время из-за лимита запросов.`;
+  } else if (e.total_usd === null) {
+    text = `Модель: <b>${esc(model)}</b>. Цена этой модели программе неизвестна — расход будет виден в окне «✨ ИИ» по мере работы.`;
+  } else {
+    const per = aiMoney(e.per_request_usd, e.per_request_uah, { withUsd: false });
+    text = `Модель: <b>${esc(model)}</b>. Обойдётся не дороже <b>${aiMoney(e.total_usd, e.total_uah)}</b>
+      (${per} за товар — ${e.measured ? "средняя цена ваших последних запросов" : "по типичному размеру карточки, точнее станет после первых запросов"};
+      товары, которые пропустятся, не оплачиваются). Сменить модель — значок «✨» вверху.`;
+  }
+  $("#ai-cost").innerHTML = text;
 }
 
 $("#ai-action").addEventListener("change", updateAiModal);
@@ -429,7 +454,7 @@ async function loadAiJobs() {
     return `<div class="job">
       <span class="badge ${cls}">${label}</span>
       <span>${esc(j.label)}${j.instruction ? `: «${esc(j.instruction.slice(0, 60))}»` : ""}</span>
-      <span class="msg">${esc(stats)}${j.message ? ` · ${esc(j.message)}` : ""}${j.errors.length ? ` · ${esc(j.errors[0].message)}` : ""}</span>
+      <span class="msg">${esc(stats)}${j.spent && j.spent.requests ? ` · потрачено ${esc(aiMoney(j.spent.cost_usd, j.spent.cost_uah, { withUsd: false }))}` : ""}${j.message ? ` · ${esc(j.message)}` : ""}${j.errors.length ? ` · ${esc(j.errors[0].message)}` : ""}</span>
       ${j.status === "running" ? `<button class="btn small" data-ai-job="${j.id}" data-st="paused">Пауза</button>` : ""}
       ${j.status === "paused" ? `<button class="btn small" data-ai-job="${j.id}" data-st="running">Продолжить</button>` : ""}
       ${active ? `<button class="btn small" data-ai-job="${j.id}" data-st="cancelled">Отменить</button>` : ""}
