@@ -87,7 +87,7 @@ def _upsert(p: dict, counts: dict) -> None:
     data, images = convert(p)
     if not external:
         counts["no_external_id"] += 1
-    external_id = external or _text(p.get("sku")) or f"PROM-{prom_id}"
+    external_id = external or _own_id(_text(p.get("sku")), prom_id)
     existing = products.find_by_external_id(external_id)
     if existing is None and prom_id is not None:
         row = db.query_one("SELECT id FROM products WHERE prom_id = ?", (prom_id,))
@@ -97,7 +97,8 @@ def _upsert(p: dict, counts: dict) -> None:
         if status in ("ready", "error", "sending", "deleting"):
             # в программе есть неотправленные правки — не затираем их данными с Prom, только связываем
             with db.tx() as c:
-                c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (prom_id, existing))
+                c.execute("UPDATE products SET prom_id = ?, prom_no_ext = ? WHERE id = ?",
+                          (prom_id, 0 if external else 1, existing))
             counts["kept_local"] += 1
             return
         products.update(existing, data, lock=False)
@@ -110,7 +111,63 @@ def _upsert(p: dict, counts: dict) -> None:
         products.replace_images(pid, images, [])
     with db.tx() as c:
         c.execute("UPDATE products SET prom_id = ?, status = 'synced', synced_at = ?, last_error = '', "
-                  "pending_fields = '[]' WHERE id = ?", (prom_id, db.now(), pid))
+                  "pending_fields = '[]', prom_no_ext = ? WHERE id = ?", (prom_id, db.now(), 0 if external else 1, pid))
+
+
+def _own_id(sku: str, prom_id) -> str:
+    """ID для товара, у которого в кабинете Prom нет «Ідентифікатора_товару»: его код, если этот код не занят
+    другим товаром Prom (раньше второй товар с тем же кодом затирал первый), иначе — PROM-<номер на Prom>."""
+    if sku:
+        other = db.query_one("SELECT prom_id FROM products WHERE external_id = ?", (sku,))
+        if other is None or other["prom_id"] in (None, prom_id):
+            return sku
+    return f"PROM-{prom_id}"
+
+
+# ---------- «Ідентифікатор_товару» в кабинет Prom ----------
+# API Prom не умеет менять внешний ID у существующего товара (/products/edit его не принимает). Это делается
+# импортом Excel в кабинете: Prom находит товар по «Унікальний_ідентифікатор» и записывает «Ідентифікатор_товару».
+
+EXT_SHEET = "Export Products Sheet"
+EXT_HEADERS = ["Унікальний_ідентифікатор", "Ідентифікатор_товару"]
+
+
+def missing_ext_rows(limit: int | None = None) -> tuple[list, bool]:
+    """Товары для файла: помеченные при загрузке каталога как «без ID на Prom». Если пометок нет (каталог загружали
+    версией до 2.2.3) — все товары с номером Prom: у тех, где ID уже есть, в файле он тот же, ничего не меняется.
+    Второе значение — True, если это именно помеченные."""
+    base = ("SELECT id, name, external_id, prom_id FROM products WHERE prom_id IS NOT NULL "
+            "AND status != 'deleting' AND external_id != ''")
+    flagged = db.query(base + " AND prom_no_ext = 1 ORDER BY id" + (f" LIMIT {int(limit)}" if limit else ""))
+    if flagged or db.query_one("SELECT 1 AS x FROM products WHERE prom_no_ext = 1 LIMIT 1"):
+        return flagged, True
+    return db.query(base + " ORDER BY id" + (f" LIMIT {int(limit)}" if limit else "")), False
+
+
+def missing_ext_xlsx(limit: int | None = None) -> bytes:
+    import io
+
+    import openpyxl
+
+    rows, _ = missing_ext_rows(limit)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = EXT_SHEET
+    ws.append(EXT_HEADERS)
+    for r in rows:
+        ws.append([str(r["prom_id"]), r["external_id"]])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def mark_ext_done() -> int:
+    """Пользователь загрузил файл в кабинете: снимаем пометки и предупреждение (следующая загрузка каталога
+    перепроверит — если ID на Prom так и не появились, пометки вернутся)."""
+    with db.tx() as c:
+        n = c.execute("UPDATE products SET prom_no_ext = 0 WHERE prom_no_ext = 1").rowcount
+    _set_state(no_external_id=0)
+    return n
 
 
 def _upsert_page(page: list[dict], counts: dict) -> None:

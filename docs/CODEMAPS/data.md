@@ -1,13 +1,13 @@
 # Данные (`promloader/db.py`)
 
-_Обновлено: 2026-10-08 · версия 2.1.0_
+_Обновлено: 2026-10-09 · версия 2.2.3_
 
 SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), рядом `uploads/` (фото) и файлы прайсов.
 Новые колонки добавляются через `MIGRATIONS` (только `ADD COLUMN`); при первом запуске новой версии миграция идёт сама.
 
 | Таблица | Что хранит · важные колонки |
 |---|---|
-| `products` | Товар. `external_id` (артикул = id оффера на Prom), тексты RU/UA, `price`/`currency` (розница), `cost_price`/`rrp` + `cost_currency` (закупка в своей валюте), `presence`, `quantity`, `params` (JSON), `status`, `last_error`, `revision`, `synced_at`, `prom_id`, `supplier_id`, `locked_fields` (🔒), `pending_fields` (что не отправлено), `vendor_code`, `barcode`, `delete_next_at`/`delete_attempts` |
+| `products` | Товар. `external_id` (артикул = id оффера на Prom), тексты RU/UA, `price`/`currency` (розница), `cost_price`/`rrp` + `cost_currency` (закупка в своей валюте), `presence`, `quantity`, `params` (JSON), `status`, `last_error`, `revision`, `synced_at`, `prom_id`, `supplier_id`, `locked_fields` (🔒), `pending_fields` (что не отправлено), `vendor_code`, `barcode`, `delete_next_at`/`delete_attempts`, `prom_no_ext` (в кабинете Prom у товара пустой «Ідентифікатор_товару») |
 | `images` | Фото товара: `file` (в `uploads/`) или `url`, `position` |
 | `sync_jobs` | Задачи выгрузки: `kind` (`import`/`quick`), `status` (`pending`/`waiting`/`done`/`failed`), `products` (JSON {id: revision}), `import_id`, `attempts`, `next_run_at`, `result`, `started_at`, `sent` |
 | `suppliers` | Поставщик: источник, `mapping`, `header_row`, `prefix`, `interval_hours`, `new_status`, `auto_sync`, `missing_action`, `merge_by_barcode`, `rate_mode`/`rate_currency`/`rate_value`/`rate_add` (свой курс — только для `rate_currency`), `clean_names` |

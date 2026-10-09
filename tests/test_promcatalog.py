@@ -126,3 +126,46 @@ def test_short_page_in_the_middle_is_not_the_end(monkeypatch):
     factory = lambda: PromClient("t", "https://my.prom.ua/api/v1", transport=httpx.MockTransport(handler))  # noqa: E731
     counts = asyncio.run(promcatalog.run(factory))
     assert counts["seen"] == 5 and calls == [None, "1002", "1005"]
+
+
+# ---------- «Ідентифікатор_товару» для товаров без внешнего ID ----------
+
+def load(pages):
+    factory, _ = serve(pages)
+    asyncio.run(promcatalog.load(factory()))
+
+
+def test_same_code_without_external_id_does_not_merge_two_products():
+    """Два товара Prom без внешнего ID с одинаковым кодом: второй затирал первый — в программе оставался один."""
+    load([[prom_product(1, external_id="", sku="A-1"), prom_product(2, external_id="", sku="A-1"),
+           prom_product(3, external_id="", sku="")]])
+    items = by_ext()
+    assert set(items) == {"A-1", "PROM-1002", "PROM-1003"}
+    assert items["A-1"]["name"] == "Товар 1" and items["PROM-1002"]["name"] == "Товар 2"
+    load([[prom_product(1, external_id="", sku="A-1"), prom_product(2, external_id="", sku="A-1"),
+           prom_product(3, external_id="", sku="")]])
+    assert set(by_ext()) == {"A-1", "PROM-1002", "PROM-1003"}          # повторная загрузка — те же ID
+
+
+def test_external_id_file_for_prom_cabinet(client):
+    import io
+
+    import openpyxl
+    load([[prom_product(1), prom_product(2, external_id="", sku="B-2"), prom_product(3, external_id="", sku="")]])
+    info = client.get("/api/prom/external-ids").json()
+    assert info["count"] == 2 and info["flagged"]
+    assert [s["external_id"] for s in info["sample"]] == ["B-2", "PROM-1003"]
+    assert info["sample"][0]["prom_url"].endswith("/1002")
+    r = client.get("/api/prom/external-ids.xlsx")
+    ws = openpyxl.load_workbook(io.BytesIO(r.content)).active
+    assert ws.title == "Export Products Sheet"
+    assert [list(row) for row in ws.iter_rows(values_only=True)] == [
+        ["Унікальний_ідентифікатор", "Ідентифікатор_товару"], ["1002", "B-2"], ["1003", "PROM-1003"]]
+    probe = openpyxl.load_workbook(io.BytesIO(client.get("/api/prom/external-ids.xlsx", params={"limit": 1}).content)).active
+    assert probe.max_row == 2
+    assert promcatalog.state()["no_external_id"] == 2
+    done = client.post("/api/prom/external-ids/done").json()
+    assert done["cleared"] == 2 and done["state"]["no_external_id"] == 0
+    # пометок нет (каталог загружала старая версия) — в файле все товары с номером Prom
+    info = client.get("/api/prom/external-ids").json()
+    assert info["count"] == 3 and not info["flagged"]

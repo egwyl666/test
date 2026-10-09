@@ -555,3 +555,5 @@ table.list a.name:hover { color: var(--accent); }
     padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .15); }
   .actions-menu .actions-box .btn { justify-content: flex-start; width: 100%; }
 }
+.ext-steps { padding-left: 20px; display: grid; gap: 10px; }
+.ext-steps ul { margin: 6px 0 0; padding-left: 18px; }

@@ -239,6 +239,8 @@ MIGRATIONS = {
         "cost_currency": "TEXT NOT NULL DEFAULT ''",
         "delete_next_at": "TEXT",
         "delete_attempts": "INTEGER NOT NULL DEFAULT 0",
+        # в кабинете Prom у товара не заполнен «Ідентифікатор_товару» (узнали при загрузке каталога)
+        "prom_no_ext": "INTEGER NOT NULL DEFAULT 0",
     },
     "supplier_items": {
         "ignored": "INTEGER NOT NULL DEFAULT 0",

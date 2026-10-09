@@ -1424,6 +1424,30 @@ def prom_catalog_state():
     return promcatalog.state()
 
 
+@app.get("/api/prom/external-ids")
+def prom_external_ids():
+    """Сколько товаров попадёт в файл «Ідентифікатор_товару» и какие два — в пробный."""
+    rows, flagged = promcatalog.missing_ext_rows()
+    sample = rows[:2]
+    return {"count": len(rows), "flagged": flagged,
+            "sample": [{"name": r["name"], "external_id": r["external_id"], "prom_id": r["prom_id"],
+                        "prom_url": products.prom_url(r["prom_id"])} for r in sample]}
+
+
+@app.get("/api/prom/external-ids.xlsx")
+def prom_external_ids_xlsx(limit: int = 0):
+    """Excel для импорта в кабинете Prom: прописывает товарам «Ідентифікатор_товару» (limit=2 — пробный файл)."""
+    content = promcatalog.missing_ext_xlsx(max(0, limit) or None)
+    name = "prom-id-probnyj.xlsx" if limit else "prom-id-vse.xlsx"
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/prom/external-ids/done")
+def prom_external_ids_done():
+    return {"cleared": promcatalog.mark_ext_done(), "state": promcatalog.state()}
+
+
 @app.post("/api/prom/catalog")
 async def prom_catalog_load():
     if promcatalog.state().get("running") and promcatalog._lock.locked():
