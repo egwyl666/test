@@ -421,7 +421,7 @@ def test_invalid_key_is_about_key_not_model(client):
     use("gemini", key="AIzaSy-wrong-key-1234", model="gemini-3.8-flash")
     aiprice.set_model_status("gemini", "gemini-3.8-flash", "ok")
     transport = httpx.MockTransport(lambda r: httpx.Response(400, json=BAD_KEY))
-    with pytest.raises(ai.AIError, match="Google не принял ключ Gemini .ключ программы заканчивается на «…1234».") as err:
+    with pytest.raises(ai.AIError, match="Google не принял ключ Gemini .программа отправляет ключ «AIza…1234».") as err:
         ai.run(PRODUCT, "improve", transport=transport)
     assert err.value.key_error and not err.value.temporary and "aistudio.google.com/apikey" in str(err.value)
     assert aiprice.model_statuses()["gemini:gemini-3.8-flash"]["status"] == "ok"  # модель ни при чём
@@ -461,7 +461,7 @@ def test_check_with_invalid_key_sets_and_clears():
 def test_claude_invalid_key():
     use("claude", key="sk-ant-wrong-abcd")
     transport, _ = claude_server(status=401, error={"type": "authentication_error", "message": "invalid x-api-key"})
-    with pytest.raises(ai.AIError, match="Anthropic не принял ключ Claude .ключ программы заканчивается на «…abcd».") as err:
+    with pytest.raises(ai.AIError, match="Anthropic не принял ключ Claude .программа отправляет ключ «sk-a…abcd».") as err:
         ai.run(PRODUCT, "keywords", transport=transport)
     assert err.value.key_error and "claude" in aiprice.key_errors()
     assert "claude:claude-opus-5-5" not in aiprice.model_statuses()

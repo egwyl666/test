@@ -114,7 +114,8 @@ def key_warning(provider: str, key: str) -> str:
 
 def _key_text(provider: str, key: str) -> str:
     """Ключ не принят: что это значит и что сделать (и какой ключ на самом деле отправляет программа)."""
-    tail = f" (ключ программы заканчивается на «…{key[-4:]}»)" if len(key) > 10 else ""
+    # начало и конец ключа: сразу видно, что в программе другой (например, старый) ключ, чем в AI Studio
+    tail = f" (программа отправляет ключ «{key[:4]}…{key[-4:]}»)" if len(key) > 10 else ""
     if provider == "gemini":
         head = f"Google не принял ключ Gemini{tail}: обычно ключ скопирован не целиком, удалён в Google AI Studio или это не ключ Gemini."
         site, var = "aistudio.google.com/apikey", "GEMINI_API_KEY"
