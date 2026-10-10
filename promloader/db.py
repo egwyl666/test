@@ -1,5 +1,6 @@
 """SQLite-хранилище. Всё, что пользователь ввёл, сразу попадает сюда — Prom лишь получает копию."""
 
+import json
 import os
 import sqlite3
 import threading
@@ -162,6 +163,39 @@ CREATE TABLE IF NOT EXISTS tg_recipients (
     created_at  TEXT NOT NULL
 );
 
+-- Запросы к ИИ: модель, токены, цена — для «сколько стоит» и лимитов
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    provider    TEXT NOT NULL,
+    model       TEXT NOT NULL DEFAULT '',
+    action      TEXT NOT NULL DEFAULT '',
+    source      TEXT NOT NULL DEFAULT '',
+    job_id      INTEGER,
+    tokens_in   INTEGER NOT NULL DEFAULT 0,
+    tokens_out  INTEGER NOT NULL DEFAULT 0,
+    cost_usd    REAL,
+    ok          INTEGER NOT NULL DEFAULT 1,
+    error       TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ai_usage_at ON ai_usage(at);
+CREATE INDEX IF NOT EXISTS ai_usage_job ON ai_usage(job_id);
+
+-- Очередь уведомлений Telegram: не дошло (нет связи) — повтор с паузой, порядок для каждого получателя сохраняется
+CREATE TABLE IF NOT EXISTS tg_outbox (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id     TEXT NOT NULL,
+    event       TEXT NOT NULL DEFAULT '',
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    next_at     TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT NOT NULL DEFAULT '',
+    sent_at     TEXT,
+    failed      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS tg_outbox_pending ON tg_outbox(sent_at, failed, id);
+
 CREATE TABLE IF NOT EXISTS support_tickets (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     description  TEXT NOT NULL,
@@ -182,6 +216,18 @@ CREATE TABLE IF NOT EXISTS r2_objects (
     uploaded_at  TEXT NOT NULL,
     PRIMARY KEY (target, file)
 );
+
+CREATE TABLE IF NOT EXISTS product_changes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id  INTEGER NOT NULL,
+    at          TEXT NOT NULL,
+    source      TEXT NOT NULL,
+    field       TEXT NOT NULL,
+    old         TEXT NOT NULL DEFAULT '',
+    new         TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS product_changes_product ON product_changes(product_id, id);
+CREATE INDEX IF NOT EXISTS product_changes_at ON product_changes(at);
 
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,13 +253,28 @@ MIGRATIONS = {
         "prom_id": "INTEGER",
         "pending_fields": "TEXT NOT NULL DEFAULT '[]'",
         "barcode": "TEXT NOT NULL DEFAULT ''",
+        "vendor_code": "TEXT NOT NULL DEFAULT ''",
+        "cost_currency": "TEXT NOT NULL DEFAULT ''",
+        "delete_next_at": "TEXT",
+        "delete_attempts": "INTEGER NOT NULL DEFAULT 0",
+        # в кабинете Prom у товара не заполнен «Ідентифікатор_товару» (узнали при загрузке каталога)
+        "prom_no_ext": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "supplier_items": {
+        "ignored": "INTEGER NOT NULL DEFAULT 0",
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",
+        "rate_mode": "TEXT NOT NULL DEFAULT ''",
+        "rate_currency": "TEXT NOT NULL DEFAULT 'USD'",
+        "rate_value": "REAL NOT NULL DEFAULT 0",
+        "rate_add": "REAL NOT NULL DEFAULT 0",
+        "clean_names": "INTEGER NOT NULL DEFAULT 0",
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",
         "started_at": "TEXT",
+        "sent": "TEXT",
     },
 }
 
@@ -239,10 +300,15 @@ def imports_dir() -> Path:
     return data_dir() / "imports"
 
 
+def default_dir() -> Path:
+    """Папка данных из настроек запуска — её можно узнать и до открытия базы."""
+    return Path(os.environ.get("PROMLOADER_DATA", "data")).resolve()
+
+
 def init(path: str | os.PathLike | None = None) -> None:
     """Открывает (или создаёт) базу. Повторный вызов переключает на другой каталог — удобно для тестов."""
     global _conn, _data_dir
-    base = Path(path or os.environ.get("PROMLOADER_DATA", "data")).resolve()
+    base = Path(path).resolve() if path else default_dir()
     base.mkdir(parents=True, exist_ok=True)
     (base / "uploads").mkdir(exist_ok=True)
     (base / "imports").mkdir(exist_ok=True)
@@ -251,6 +317,9 @@ def init(path: str | os.PathLike | None = None) -> None:
             _conn.close()
         conn = sqlite3.connect(base / "promloader.sqlite3", check_same_thread=False, isolation_level=None)
         conn.row_factory = sqlite3.Row
+        # LIKE в SQLite не различает регистр только у латиницы — для поиска по-русски/по-украински сравниваем
+        # строки в нижнем регистре: lower_u(name) LIKE '%кросс%'
+        conn.create_function("lower_u", 1, lambda s: s.lower() if isinstance(s, str) else s, deterministic=True)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
@@ -265,6 +334,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for name, ddl in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+                if (table, name) == ("products", "cost_currency"):
+                    # раньше закупка была в той же валюте, что и цена
+                    conn.execute("UPDATE products SET cost_currency = currency "
+                                 "WHERE cost_price IS NOT NULL OR rrp IS NOT NULL")
                 if (table, name) == ("products", "pending_fields"):
                     # что именно меняли до обновления программы, неизвестно — такие товары отправим полным импортом
                     conn.execute("""UPDATE products SET pending_fields = '["*"]'
@@ -282,9 +355,15 @@ def suppliers_dir() -> Path:
 
 @contextmanager
 def tx():
-    """Транзакция: либо всё записано, либо ничего."""
+    """Транзакция: либо всё записано, либо ничего.
+
+    Вложенный вызов (например, запомнить курс НБУ посреди пересчёта цен) становится частью внешней транзакции.
+    """
     with _lock:
         assert _conn is not None, "db.init() не вызван"
+        if _conn.in_transaction:
+            yield _conn
+            return
         _conn.execute("BEGIN IMMEDIATE")
         try:
             yield _conn
@@ -293,6 +372,20 @@ def tx():
             raise
         else:
             _conn.execute("COMMIT")
+
+
+def in_transaction() -> bool:
+    """Идёт ли сейчас внешняя транзакция (например, «пробный прогон», который потом откатится)."""
+    return bool(_conn is not None and _conn.in_transaction)
+
+
+# Список значений одним параметром: «id IN_LIST» + as_list(ids). Вместо «IN (?, ?, …)»: в SQLite не больше 32 766
+# параметров в запросе (а в старых версиях — 999), и «все товары по фильтру» в большом магазине давали ошибку.
+IN_LIST = "IN (SELECT value FROM json_each(?))"
+
+
+def as_list(values) -> str:
+    return json.dumps(list(values), ensure_ascii=False)
 
 
 def query(sql: str, params=()) -> list[sqlite3.Row]:

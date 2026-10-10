@@ -22,6 +22,7 @@ TARGETS = {
     "": "— не импортировать —",
     "external_id": "Артикул / код",
     "barcode": "Штрихкод (EAN) — для объединения поставщиков",
+    "vendor_code": "Артикул поставщика (его код товара)",
     "name": "Название",
     "name_ua": "Название (укр.)",
     "price": "Цена (розничная)",
@@ -50,7 +51,8 @@ HINTS = [
     ("cost_price", r"закуп|вход|опт|дроп|drop|cost|purchase|собіварт|себестоим"),
     ("rrp", r"ррц|rrp|рекоменд|роздр|розн"),
     ("barcode", r"штрих|barcode|^ean|gtin"),
-    ("external_id", r"^@id$|артикул|vendor.?code|код|sku|external|ідентиф|идентиф|^id$"),
+    ("vendor_code", r"vendor.?code|артикул пост|код пост|код виробн|код производ"),
+    ("external_id", r"^@id$|артикул|код|sku|external|ідентиф|идентиф|^id$"),
     ("name", r"назв|наимен|товар|name"),
     ("price", r"цен|ціна|price|стоим|вартість"),
     ("currency", r"валют|currency"),
@@ -226,7 +228,8 @@ def read_sheet(path: Path, sheet: str) -> tuple[list[list[str]], dict[int, list[
 
 def parse_row_spec(spec: str, max_row: int) -> list[int]:
     """'2-50, 55, 60-' -> номера строк (как в Excel, с единицы)."""
-    spec = (spec or "").strip()
+    # «2 - 50» и «2–50»: без склейки пробелы делили диапазон на «2», «-», «50», а одиночный «-» брал все строки
+    spec = re.sub(r"\s*[-–—]\s*", "-", (spec or "").strip())
     if not spec:
         return []
     selected: set[int] = set()
@@ -266,8 +269,104 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
     return mapping
 
 
+def money_currency(data: dict) -> None:
+    """Закупка/РРЦ остаются в валюте прайса (переводит в гривны наценка по текущему курсу — и пересчитывает,
+    когда курс меняется). Розничная цена в $/€ без отдельной РРЦ — это РРЦ в этой валюте."""
+    from . import rates
+
+    currency = (data.get("currency") or "UAH").upper()
+    if currency in rates.LOCAL:
+        if data.get("cost_price") is not None or data.get("rrp") is not None:
+            data["cost_currency"] = "UAH"
+        return
+    if data.get("rrp") is None and data.get("price") is not None:
+        data["rrp"] = data.pop("price")  # розница в $/€ — это РРЦ: в гривны её переведёт наценка по курсу
+    if data.get("cost_price") is not None or data.get("rrp") is not None:
+        data["cost_currency"] = currency
+
+
+# ---------- очистка названий от оптовых пометок поставщика ----------
+# «Дисперсер для води (48шт) А 906-212» -> «Дисперсер для води». Убираем только артикул ЭТОЙ строки прайса
+# (в любом написании: «А906-212», «А 906-212», «a906 212») и количество в упаковке рядом с ним или в конце.
+# Модели вроде «LM-130» или «PVP 3000» не трогаем: это не артикул поставщика.
+
+_LOOKALIKE = {a: f"[{a}{b}{a.lower()}{b.lower()}]" for a, b in zip("ABCEHKMOPTX", "АВСЕНКМОРТХ")}
+_LOOKALIKE.update({b: v for (a, v), b in zip(list(_LOOKALIKE.items()), "АВСЕНКМОРТХ")})
+_PACK = r"\(\s*\d+\s*(?:шт\.?|штук|pcs|уп\.?)?\s*\)"
+_MARK = "\x00"
+
+
+def _code_regex(code: str):
+    parts = re.findall(r"[^\W\d_]+|\d+", code or "")
+    if not parts or len("".join(parts)) < 3:
+        return None
+    body = r"[\s\-_./]*".join("".join(_LOOKALIKE.get(ch.upper(), re.escape(ch)) for ch in part) for part in parts)
+    before = r"(?<!\d)" if parts[0][0].isdigit() else r"(?<![^\W\d_])"
+    after = r"(?!\d)" if parts[-1][-1].isdigit() else r"(?![^\W\d_])"
+    return re.compile(before + body + after, re.IGNORECASE)
+
+
+def clean_name(name: str, code: str = "") -> str:
+    text = name or ""
+    codes = [code]
+    variant = re.match(r"^(.*\d)[\s\-_./]+\d{1,2}$", (code or "").strip())
+    if variant and re.search(r"[\s\-_./]", variant.group(1)):
+        codes.append(variant.group(1))  # «AR-0082-1» в прайсе, «AR-0082» в названии
+    for c in codes:
+        rx = _code_regex(c)
+        if rx and rx.search(text):
+            text = rx.sub(_MARK, text)
+            break
+    text = re.sub(r"\d+\s*шт\.?\s*в\s*(?:📦|ящ\w*\.?|короб\w*|уп\w*\.?)?\s*$", _MARK, text, flags=re.IGNORECASE)
+    if _MARK in text:
+        text = re.sub(rf"{_PACK}\s*{_MARK}|{_MARK}\s*{_PACK}", _MARK, text, flags=re.IGNORECASE)
+    text = re.sub(rf"(?:\s*{_PACK})+\s*[{_MARK}\s.,]*$", "", text, flags=re.IGNORECASE)  # упаковка в самом конце
+    text = text.replace(_MARK, " ")
+    text = re.sub(r"\s+([,;:)])", r"\1", text)
+    text = re.sub(r",\s*\)", ")", text)
+    text = re.sub(r"([,;:])(?=[^\s\d])", r"\1 ", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,;:-/.∙·•|")
+    return text if len(text) >= 3 else (name or "").strip()
+
+
+def _code_prefix(code: str) -> str:
+    m = re.match(r"\s*([^\W\d_]*)", (code or "").upper().translate(str.maketrans("АВСЕНКМОРТХ", "ABCEHKMOPTX")))
+    return m.group(1) or "<цифры>"
+
+
+def clean_names(items: list[dict]) -> int:
+    """Чистит названия по всему прайсу. Артикул убирается, только если это внутренний код поставщика:
+    такой префикс (GT-, AR-, А777-…) массово повторяется в прайсе. Редкие — модели производителя (Remax RPP-118,
+    смарт-годинник RM28): они остаются, по ним ищут покупатели. Возвращает число изменённых названий."""
+    codes = [it["data"].get("vendor_code", "").strip() for it in items]
+    counts = Counter(_code_prefix(c) for c in codes if c)
+    threshold = max(5, 0.03 * sum(counts.values()))
+    changed = 0
+    for it, code in zip(items, codes):
+        own = code if code and counts[_code_prefix(code)] >= threshold else ""
+        for key in ("name", "name_ua"):
+            value = it["data"].get(key)
+            if value:
+                cleaned = clean_name(value, own)
+                changed += cleaned != value
+                it["data"][key] = cleaned
+    return changed
+
+
 def _split_urls(text: str) -> list[str]:
-    return [u for u in re.split(r"[\s,;|]+", text or "") if re.match(r"^https?://", u)]
+    """Несколько ссылок на фото в одной ячейке. Делим только там, где начинается новая ссылка: в имени файла
+    поставщика бывают пробелы («warm_white (2)500x500.jpg»), и деление по пробелам обрезало адрес — Prom
+    получал несуществующую ссылку (404)."""
+    parts = re.split(r"[\s,;|]+(?=https?://)", (text or "").strip())
+    return [fix_url(u) for u in parts if re.match(r"^https?://", u.strip())]
+
+
+def fix_url(url: str) -> str:
+    """Адрес фото в виде, который скачает Prom: пробелы и кириллица — в %-кодировке, уже закодированное не трогаем."""
+    from urllib.parse import quote
+
+    return quote(url.strip().rstrip(",;|"), safe=":/?#[]@!$&'()*+,;=%~")
 
 
 def build_products(
@@ -329,6 +428,7 @@ def build_products(
         # наличие по количеству, если колонки «наличие» нет
         if "presence" not in raw and data.get("quantity") is not None:
             data["presence"] = "available" if data["quantity"] > 0 else "not_available"
+        money_currency(data)
         price_warnings = pricer.apply(data, supplier_id) if pricer else []
         files = (embedded_images or {}).get(number, [])
         check = products.validate({**data, "params": params}, image_count=len(urls) + len(files))
@@ -339,6 +439,7 @@ def build_products(
             "image_urls": urls[: products.MAX_IMAGES],
             "embedded_images": len(files),
             "errors": errors + check["errors"],
+            "field_errors": errors,  # непонятные ячейки: поле пропущено, остальная строка годится
             "warnings": price_warnings + check["warnings"],
         })
     return result

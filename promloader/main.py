@@ -9,15 +9,17 @@ import os
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import quote, urlparse
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, autostart, backup, config, db, excel, feed, notify, orders, phototunnel, pricing, products, r2,
-               promcatalog, runtime, schedule, suppliers, support, sync, updater)
+from . import (ai, aibulk, aiprice, autostart, backup, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
+               promcatalog, promdelete, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -25,7 +27,7 @@ MAX_UPLOAD = 25 * 1024 * 1024
 PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
-    "/support": "support.html",
+    "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -33,28 +35,86 @@ UPDATE_CHECK_HOURS = 12
 log = logging.getLogger("promloader")
 _background: set[asyncio.Task] = set()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+LOG_LIMIT = 5 * 1024 * 1024
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+
+
+def setup_log_file(data_dir: Path) -> logging.Handler:
+    """Журнал программы — data/logs/promloader.log, не больше 5 МБ × 3 файла (раньше рос, пока программа работала).
+    Под значком у часов вывод в консоль не нужен: он уходил бы в тот же журнал второй раз."""
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        if getattr(h, "promloader_file", False):
+            root.removeHandler(h)
+            h.close()
+    folder = data_dir / "logs"
+    folder.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(folder / "promloader.log", maxBytes=LOG_LIMIT, backupCount=2, encoding="utf-8",
+                                  delay=True)
+    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.promloader_file = True
+    root.addHandler(handler)
+    if os.environ.get("PROMLOADER_TRAY"):
+        for h in root.handlers:
+            if type(h) is logging.StreamHandler:
+                h.setLevel(logging.WARNING)
+    return handler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # восстановление копии, выбранное в настройках: START.bat делает это сам, а в Docker программа запускается
+    # напрямую — без этой строки копия там никогда не применялась
+    setup_log_file(db.default_dir())
+    if backup.apply_pending(db.default_dir()):
+        log.warning("Данные восстановлены из резервной копии")
     db.init()
     suppliers.recover()
     fixed = sync.repair_false_success()
     if fixed:
         log.warning("Выгрузки, в которых Prom не нашёл товаров, помечены как неудачные: %d", fixed)
+    stuck = sync.repair_stuck_sending()
+    if stuck:
+        log.warning("Товары, застрявшие в «Отправляется» после выключения, возвращены в «Готов»: %d", stuck)
+    if promcatalog.recover():
+        log.warning("Загрузка каталога с Prom была прервана выключением")
     stop = asyncio.Event()
     tasks = []
     if os.environ.get("PROMLOADER_WORKER", "1") != "0":
         tasks = [asyncio.create_task(sync.worker(stop)), asyncio.create_task(supplier_worker(stop)),
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
-                 asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop))]
-    yield
-    stop.set()
-    for task in tasks:
-        await task
-    phototunnel.tunnel.close()
+                 asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
+                 asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop))]
+    try:
+        yield
+    finally:
+        stop.set()
+        # ошибка одного воркера не должна мешать остановке остальных и закрытию туннеля (иначе cloudflared остаётся)
+        for result in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(result, Exception):
+                log.error("Воркер завершился с ошибкой: %r", result)
+        phototunnel.tunnel.close()
+
+
+async def rates_worker(stop: asyncio.Event) -> None:
+    """Раз в час: изменился курс (НБУ обновляется раз в день) — пересчитать цены и отправить новые на Prom."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=30)
+    except asyncio.TimeoutError:
+        pass
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(rates.check_changed)
+        except Exception:
+            log.exception("Сбой проверки курса")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=3600)
+        except asyncio.TimeoutError:
+            pass
 
 
 async def r2_worker(stop: asyncio.Event) -> None:
@@ -89,19 +149,34 @@ async def support_worker(stop: asyncio.Event) -> None:
             pass
 
 
+async def notify_worker(stop: asyncio.Event) -> None:
+    """Досылает уведомления Telegram, которые не ушли сразу (нет связи, Telegram недоступен)."""
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(notify.flush)
+        except Exception:
+            log.exception("Сбой отправки уведомлений Telegram")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def orders_worker(stop: asyncio.Event) -> None:
     """Раз в 5 минут забирает заказы с Prom (если указан токен)."""
     while not stop.is_set():
-        if orders.enabled():
-            try:
+        try:
+            if orders.enabled():
                 async with sync.make_client() as client:
                     await orders.poll(client)
-            except PromError:
-                pass  # ошибка сохранена и видна на странице заказов
-            except Exception:
-                log.exception("Сбой опроса заказов")
+        except PromError:
+            pass  # ошибка сохранена и видна на странице заказов
+        except Exception:
+            log.exception("Сбой опроса заказов")
+        # загружаются все заказы магазина (первый раз или после долгого простоя) — продолжаем без долгой паузы
+        catching_up = bool(db.get_setting("orders_cursor"))
         try:
-            await asyncio.wait_for(stop.wait(), timeout=orders.POLL_MINUTES * 60)
+            await asyncio.wait_for(stop.wait(), timeout=20 if catching_up else orders.POLL_MINUTES * 60)
         except asyncio.TimeoutError:
             pass
 
@@ -120,8 +195,10 @@ async def ai_worker(stop: asyncio.Event) -> None:
                     pacer.mark()
                     result = await asyncio.to_thread(aibulk.process_one)
                     if result == "rate_limited":
-                        aibulk.pause_running("ИИ-сервис занят (лимит запросов или перегрузка) — продолжу через минуту")
-                        delay = aibulk.RATE_LIMIT_PAUSE
+                        # лимит на сутки ждём до сброса (но проверяем раз в полчаса), перегрузку — минуту
+                        err = aibulk.last_limit
+                        delay = min(max(aibulk.RATE_LIMIT_PAUSE, (err.retry_after or 0) if err else 0), 1800)
+                        aibulk.pause_running(f"{err or 'ИИ-сервис занят'} — продолжу сам через {ai.human_wait(delay)}")
                     elif result == "skipped":
                         pacer.last = 0.0  # пропуск не тратит лимит
                         delay = 0.05
@@ -153,19 +230,21 @@ async def schedule_worker(stop: asyncio.Event) -> None:
 
 
 async def maintenance_worker(stop: asyncio.Event) -> None:
-    """Раз в час: суточная резервная копия и (раз в 12 часов) проверка обновлений."""
-    last_update_check = 0.0
+    """Раз в час: суточная резервная копия и (раз в 12 часов, первый раз — сразу после запуска) проверка обновлений."""
+    last_update_check = None  # было 0.0: часы цикла считаются от включения компьютера, и первая проверка ждала 12 ч
     while not stop.is_set():
         try:
             if backup.due():
                 await asyncio.to_thread(backup.create, "daily")
+                await asyncio.to_thread(housekeeping.run)  # после копии: удалённое останется в ней
         except Exception:
             log.exception("Не удалось сделать резервную копию")
         now = asyncio.get_running_loop().time()
-        if not updater.is_dev_checkout() and now - last_update_check > UPDATE_CHECK_HOURS * 3600:
+        if last_update_check is None or now - last_update_check > UPDATE_CHECK_HOURS * 3600:
             last_update_check = now
             try:
-                await asyncio.to_thread(updater.check)
+                if not updater.is_dev_checkout():
+                    await asyncio.to_thread(updater.check)
             except Exception:
                 pass  # нет интернета — проверим в следующий раз
         try:
@@ -177,7 +256,12 @@ async def maintenance_worker(stop: asyncio.Event) -> None:
 async def supplier_worker(stop: asyncio.Event) -> None:
     """Обновляет поставщиков по расписанию. Разбор прайса идёт в отдельном потоке, чтобы не тормозить интерфейс."""
     while not stop.is_set():
-        for supplier_id in suppliers.due():
+        try:
+            due = await asyncio.to_thread(suppliers.due)
+        except Exception:
+            log.exception("Сбой проверки расписания поставщиков")
+            due = []
+        for supplier_id in due:
             if stop.is_set():
                 break
             try:
@@ -192,11 +276,75 @@ async def supplier_worker(stop: asyncio.Event) -> None:
             pass
 
 
+class StaticNoCache(StaticFiles):
+    """Скрипты и стили: браузер каждый раз сверяет их с программой (ответ 304 — на localhost мгновенно). Без этого
+    после обновления он часами брал старые common.js и app.css из кеша к новому HTML — например, пропадало меню."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 app = FastAPI(title="Prom Loader", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/static", StaticNoCache(directory=STATIC), name="static")
 
 
 # ---------- доступ ----------
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+OPEN_PATHS = ("/media/", "/feed/")  # фото и фид забирает Prom по публичному адресу
+
+
+def _host_name(value: str) -> str:
+    """'localhost:8765' -> 'localhost'; '[::1]:80' -> '[::1]'."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value.split("]")[0] + "]"
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def _allowed_hosts() -> set[str]:
+    """Адреса, по которым интерфейс открывается без пароля. Публичного адреса (туннель, домен) здесь нет и быть не
+    должно: по нему Prom забирает только фото и фид, а весь интерфейс без пароля был бы открыт всему интернету."""
+    extra = os.environ.get("PROMLOADER_ALLOWED_HOSTS", "")
+    return LOCAL_HOSTS | {_host_name(h) for h in extra.split(",") if h.strip()}
+
+
+def _same_origin(origin: str, request: Request) -> bool:
+    """Origin страницы совпадает с адресом программы. За обратным прокси (nginx) адрес в Host — внутренний,
+    а адрес из браузера — в X-Forwarded-Host. Подделать эти заголовки чужая страница не может: браузер не даст
+    отправить их без разрешения CORS, а его программа не выдаёт."""
+    netloc = urlparse(origin).netloc.lower()
+    hosts = [request.headers.get("host", "")] + request.headers.get("x-forwarded-host", "").split(",")
+    return any(netloc == h.strip().lower() for h in hosts if h.strip())
+
+
+@app.middleware("http")
+async def same_site_only(request: Request, call_next):
+    """Защита от чужих сайтов, открытых в том же браузере.
+
+    - Программа отвечает только по своему адресу (localhost). Это закрывает «DNS rebinding»: чужой сайт не может
+      прочитать, например, резервную копию с токенами. Если интерфейс открыт по сети и закрыт паролем
+      (APP_PASSWORD), адрес не проверяется; другие адреса можно разрешить в PROMLOADER_ALLOWED_HOSTS.
+    - Изменяющие запросы (POST/PUT/PATCH/DELETE) принимаются только со страниц самой программы: браузер
+      сообщает, откуда запрос (Origin, Sec-Fetch-Site), и запрос с чужого сайта отклоняется.
+    """
+    path = request.url.path
+    if not path.startswith(OPEN_PATHS):
+        host = request.headers.get("host", "")
+        if not os.environ.get("APP_PASSWORD") and _host_name(host) not in _allowed_hosts():
+            return JSONResponse({"detail": "Программа открывается только по адресу http://localhost. Для доступа по "
+                                           "сети задайте APP_PASSWORD (см. README)"}, status_code=403)
+        if request.method in UNSAFE_METHODS:
+            origin = request.headers.get("origin")
+            site = request.headers.get("sec-fetch-site", "")
+            if site == "cross-site" or (origin is not None and not _same_origin(origin, request)):
+                log.warning("Отклонён запрос %s %s с чужой страницы (%s)", request.method, path, origin or site)
+                return JSONResponse({"detail": "Запрос отклонён: он пришёл не со страницы программы"}, status_code=403)
+    return await call_next(request)
+
 
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
@@ -209,10 +357,12 @@ async def basic_auth(request: Request, call_next):
         ok = False
         if header.lower().startswith("basic "):
             try:
-                given_user, _, given_pass = base64.b64decode(header[6:]).decode().partition(":")
-                ok = secrets.compare_digest(given_user, user) and secrets.compare_digest(given_pass, password)
-            except Exception:
-                ok = False
+                raw = base64.b64decode(header[6:])
+            except ValueError:
+                raw = b""
+            given_user, _, given_pass = raw.partition(b":")
+            # байты, а не строки: compare_digest не принимает строки с кириллицей — такой пароль не подходил никогда
+            ok = secrets.compare_digest(given_user, user.encode()) and secrets.compare_digest(given_pass, password.encode())
         if not ok:
             return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Prom Loader"'})
     return await call_next(request)
@@ -241,11 +391,34 @@ async def not_found(request: Request, exc: KeyError):
     return JSONResponse({"detail": "Не найдено"}, status_code=404)
 
 
+@app.exception_handler(ValueError)
+@app.exception_handler(TypeError)
+@app.exception_handler(OverflowError)
+async def bad_input(request: Request, exc: Exception):
+    """Число вместо текста, текст вместо списка, огромный номер страницы — это ошибка запроса (400), а не сбой
+    программы (500). В журнал всё равно пишем: если это ошибка в коде, её будет видно."""
+    log.warning("Неверные данные запроса %s %s: %r", request.method, request.url.path, exc, exc_info=exc)
+    return JSONResponse({"detail": f"Неверные данные запроса: {exc}"}, status_code=400)
+
+
 # ---------- страницы ----------
 
+_ASSET = re.compile(r'((?:src|href)="/static/[^"?]+\.(?:js|css))"')
+
+
+@lru_cache(maxsize=32)
+def _page_html(name: str, mtime_ns: int, version: str) -> str:
+    """Ссылки на скрипты и стили — с номером версии: после обновления у них новые адреса, и браузер не может
+    подставить файлы прошлой версии из кеша, даже если они там ещё лежат."""
+    html = (STATIC / name).read_text(encoding="utf-8")
+    return _ASSET.sub(lambda m: f'{m.group(1)}?v={quote(version)}"', html)
+
+
 def _page(name: str):
-    async def handler():
-        return FileResponse(STATIC / name, headers={"Cache-Control": "no-cache"})
+    def handler():
+        path = STATIC / name
+        html = _page_html(name, path.stat().st_mtime_ns, updater.current_version())
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
     return handler
 
 
@@ -254,17 +427,28 @@ for route, filename in PAGES.items():
 
 
 @app.get("/media/{name}", include_in_schema=False)
-async def media(name: str):
+def media(name: str):
     path = db.uploads_dir() / Path(name).name
     if not path.is_file():
         raise HTTPException(404)
     return FileResponse(path, headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
+@app.get("/feed/{name}.xml")
+def feed_file(name: str):
+    """Файл выгрузки для импорта Prom по ссылке (имя случайное, как у фото)."""
+    if not re.fullmatch(r"[0-9a-f]{32}", name):
+        raise HTTPException(404)
+    path = phototunnel.feeds_dir() / f"{name}.xml"
+    if not path.is_file():
+        raise HTTPException(404)
+    return Response(path.read_bytes(), media_type="text/xml; charset=utf-8")
+
+
 @app.get("/feed/prom.yml")
-async def feed_all(key: str = ""):
+def feed_all(key: str = ""):
     """Постоянная ссылка для автоимпорта в кабинете Prom (все товары, кроме черновиков)."""
-    if not secrets.compare_digest(key, config.get("feed_key")):
+    if not secrets.compare_digest(key.encode(), (config.get("feed_key") or "").encode()):
         raise HTTPException(403, "Неверный ключ фида")
     return Response(feed.build(None, config.public_base_url()), media_type="application/xml")
 
@@ -272,71 +456,182 @@ async def feed_all(key: str = ""):
 # ---------- товары ----------
 
 @app.get("/api/meta")
-async def meta():
+def meta():
     return {
         "presence": products.PRESENCE,
         "statuses": products.STATUSES,
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
+        "prom_token_set": bool(config.get("prom_token")),
+        "failed_suppliers": suppliers.failed(),
         "version": updater.current_version(),
         "update_available": db.get_setting("update_latest"),
         "missed_schedules": schedule.missed(),
         "orders_unseen": db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"],
-        "ai": {"enabled": ai.enabled(), "provider": ai.settings()["provider"],
-               "actions": {k: v[0] for k, v in ai.ACTIONS.items()}},
+        "ai": _ai_meta(),
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
             "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
         "groups": [r["group_name"] for r in db.query(
             "SELECT DISTINCT group_name FROM products WHERE group_name != '' ORDER BY group_name")],
+        "first_steps": _first_steps(),
+    }
+
+
+def _ai_meta() -> dict:
+    s = ai.settings()
+    today = aiprice.today()
+    return {"enabled": ai.enabled(), "provider": s["provider"],
+            "model": s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else ""),
+            "auto": s["provider"] == "gemini" and not s["model"], "free": s["provider"] == "gemini" and aiprice.free_tier(),
+            "today_usd": today["cost_usd"], "today_uah": aiprice.to_uah(today["cost_usd"]), "today_requests": today["requests"],
+            "key_error": bool(aiprice.key_errors().get(s["provider"])),
+            "actions": {k: v[0] for k, v in ai.ACTIONS.items()}}
+
+
+def _first_steps() -> dict:
+    """Для «Первых шагов» на главной: что уже настроено."""
+    if r2.active():
+        photos = "r2"
+    elif config.public_base_url():
+        photos = "site"
+    elif config.get("photo_tunnel") != "0":
+        photos = "tunnel"
+    else:
+        photos = "off"
+    return {
+        "token": bool(config.get("prom_token")),
+        "photos": photos,
+        "products": db.query_one("SELECT COUNT(*) AS n FROM products")["n"],
+        "suppliers": db.query_one("SELECT COUNT(*) AS n FROM suppliers")["n"],
+        "sent": db.query_one("SELECT 1 AS x FROM products WHERE synced_at IS NOT NULL LIMIT 1") is not None,
     }
 
 
 @app.get("/api/products")
-async def list_products(status: str = "", q: str = "", limit: int = 200, offset: int = 0, supplier: str = ""):
-    """supplier: '' — все, 'none' — без поставщика, число — товары поставщика."""
-    supplier_id = 0 if supplier == "none" else (int(supplier) if supplier.isdigit() else None)
-    return products.list_products(status, q, max(1, min(limit, 1000)), max(0, offset), supplier_id)
+def list_products(request: Request, limit: int = 200, offset: int = 0, sort: str = "updated"):
+    """Фильтры (все необязательные): status, q, supplier ('' — все, 'none' — без поставщика, число), group ('-' —
+    без группы), presence, on_prom (yes/no), no_photo, gone (пропал у поставщика), errors (ошибки заполнения)."""
+    return products.list_products(_list_filter(request), sort, max(1, min(limit, 1000)), max(0, offset))
+
+
+def _list_filter(request: Request) -> dict:
+    return {k: request.query_params.get(k, "") for k in products.FILTER_KEYS}
+
+
+@app.get("/api/products.xlsx")
+def export_products(request: Request, sort: str = "updated"):
+    content = products.export_xlsx(_list_filter(request), sort)
+    name = f"tovary-{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/api/products/bulk-edit")
+def bulk_edit(fields: dict = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    with changes.source("Массово «✏ Изменить»"):
+        return products.bulk_edit(_selected(ids, filter), fields)
 
 
 @app.post("/api/products")
-async def create_product(data: dict = Body(default={})):
+def create_product(data: dict = Body(default={})):
     return products.get(products.create(data))
 
 
 @app.get("/api/products/{product_id}")
-async def get_product(product_id: int):
+def get_product(product_id: int):
     return products.get(product_id)
 
 
 @app.patch("/api/products/{product_id}")
-async def update_product(product_id: int, data: dict = Body(...)):
+def update_product(product_id: int, data: dict = Body(...)):
     return products.update(product_id, data)
 
 
 @app.post("/api/products/{product_id}/ai")
-async def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
+def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
     """Предложение ИИ по карточке. Ничего не сохраняет: пользователь сам решает, применять ли."""
     product = products.get(product_id)
-    changes = await asyncio.to_thread(ai.run, product, action, instruction)
-    return {"changes": changes}
+    changes, used = ai.run_detailed(product, action, instruction)
+    return {"changes": changes, "usage": {**used, "cost_uah": aiprice.to_uah(used["cost_usd"])}}
+
+
+@app.get("/api/ai/status")
+def ai_status():
+    """Для окна «ИИ» на любой странице: что выбрано, сколько потрачено, лимиты."""
+    s = ai.settings()
+    keys = {"gemini": bool(config.get("gemini_key")), "claude": bool(config.get("anthropic_key"))}
+    summary = aiprice.summary()
+    for period in ("today", "month"):
+        summary[period]["cost_uah"] = aiprice.to_uah(summary[period]["cost_usd"])
+    return {
+        "provider": s["provider"], "providers": ai.PROVIDERS, "keys": keys, "enabled": ai.enabled(),
+        "model": s["model"], "model_used": db.get_setting("gemini_model_used") if s["provider"] == "gemini" else s["model"],
+        "free_tier": aiprice.free_tier(), "free_tier_setting": db.get_setting("gemini_free_tier"),
+        "summary": summary, "limits": aiprice.limits().get(s["provider"], {}),
+        "key_error": aiprice.key_errors().get(s["provider"]),
+        "pace_per_minute": aibulk.rate_per_minute(), "prices_checked": aiprice.PRICES_CHECKED,
+        "usd_rate": aiprice.usd_rate(), "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
+    }
+
+
+@app.get("/api/ai/models")
+def ai_models():
+    try:
+        return {"items": ai.list_models()}
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/ai/models/check")
+def ai_models_check(models: list[str] = Body(..., embed=True)):
+    """Короткий настоящий запрос к каждой модели — какие работают на этом ключе. Стоит доли цента."""
+    items = ai.check_models(models)
+    spent = round(sum(x["cost_usd"] or 0 for x in items), 6)
+    return {"items": items, "spent_usd": spent, "spent_uah": aiprice.to_uah(spent)}
+
+
+@app.post("/api/ai/model")
+def ai_choose(provider: str | None = Body(None), model: str | None = Body(None), free_tier: bool | None = Body(None)):
+    """Выбор провайдера и модели из окна «ИИ». Ключи вводятся только в «Настройках»."""
+    with db.tx():
+        if provider is not None:
+            if provider not in ai.PROVIDERS:
+                raise HTTPException(400, "Неизвестный провайдер ИИ")
+            key = config.get("gemini_key" if provider == "gemini" else "anthropic_key")
+            if not key:
+                raise HTTPException(400, f"Для {ai.PROVIDERS[provider]} не введён ключ — вставьте его в «Настройках»")
+            db.set_setting("ai_provider", provider)
+        if model is not None:
+            current = provider or ai.settings()["provider"]
+            if current not in ai.PROVIDERS:
+                raise HTTPException(400, "Сначала выберите провайдера ИИ")
+            db.set_setting(f"{current}_model", str(model).strip().removeprefix("models/"))
+        if free_tier is not None:
+            db.set_setting("gemini_free_tier", "1" if free_tier else "0")
+    return ai_status()
+
+
+@app.post("/api/ai/bulk/estimate")
+def ai_bulk_estimate(action: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return aibulk.estimate(len(_selected(ids, filter)), action)
 
 
 @app.post("/api/ai/check")
-async def ai_check():
+def ai_check():
     try:
-        return await asyncio.to_thread(ai.check)
+        return ai.check()
     except ai.AIError as exc:
         return {"ok": False, "models": [], "message": str(exc)}
 
 
 @app.post("/api/products/{product_id}/unlock")
-async def unlock_fields(product_id: int, fields: list[str] = Body(..., embed=True)):
+def unlock_fields(product_id: int, fields: list[str] = Body(..., embed=True)):
     """Снять закрепление: поля снова берутся у поставщика / из правил наценки."""
     products.unlock(product_id, fields)
     suppliers.reapply(product_id)
     if "price" in fields:
-        await asyncio.to_thread(_recalc_one, product_id)
+        _recalc_one(product_id)
     return products.get(product_id)
 
 
@@ -344,14 +639,15 @@ def _recalc_one(product_id: int) -> None:
     p = products.get(product_id)
     if p["supplier_id"] or (p["cost_price"] is None and p["rrp"] is None):
         return
-    data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"]}
+    data = {k: p[k] for k in ("cost_price", "rrp", "group_name", "price", "currency")}
+    data["cost_currency"] = p["cost_currency"] or p["currency"] or "UAH"
     pricing.Pricer().apply(data)
     if data.get("price") is not None and data["price"] != p["price"]:
         products.update(product_id, {"price": data["price"]}, lock=False)
 
 
 @app.post("/api/products/{product_id}/duplicate")
-async def duplicate_product(product_id: int):
+def duplicate_product(product_id: int):
     src = products.get(product_id)
     data = {k: src[k] for k in products.EDITABLE if k != "external_id"}
     data["name"] = (src["name"] + " (копия)").strip()
@@ -359,20 +655,68 @@ async def duplicate_product(product_id: int):
     for img in products.image_rows(product_id):
         if img["url"]:
             products.add_image_url(new_id, img["url"])
-        else:
-            products.add_image_file(new_id, (db.uploads_dir() / img["file"]).read_bytes())
+            continue
+        try:
+            content = (db.uploads_dir() / img["file"]).read_bytes()
+        except OSError:
+            continue  # файл фото пропал с диска — копия без него, а не ошибка посреди копирования
+        products.add_image_file(new_id, content)
     return products.get(new_id)
 
 
+@app.get("/api/suppliers/{supplier_id}/deleted")
+def supplier_deleted(supplier_id: int):
+    return suppliers.deleted_items(supplier_id)
+
+
+@app.post("/api/suppliers/{supplier_id}/restore-deleted")
+async def supplier_restore_deleted(supplier_id: int, body: dict = Body(default={})):
+    """Вернуть удалённые вами товары поставщика: все или skus; run — сразу обновить прайс, чтобы они появились."""
+    skus = body.get("skus")
+    count = await asyncio.to_thread(suppliers.restore_deleted, supplier_id,
+                                    [str(x) for x in skus] if skus is not None else None)
+    started = False
+    if count and body.get("run", True) and not (await asyncio.to_thread(suppliers.get, supplier_id))["running"]:
+        task = asyncio.create_task(_run_supplier_bg(supplier_id, False))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+        started = True
+    return {"count": count, "started": started}
+
+
+def _selected(ids: list[int] | None, flt: dict | None) -> list[int]:
+    """Выбранные товары: список id или «все по фильтру списка» ({status, q, supplier})."""
+    if flt is not None:
+        return products.ids_for_filter(flt)
+    if ids is None:
+        raise HTTPException(400, "Не выбраны товары")
+    return [int(i) for i in ids]
+
+
 @app.post("/api/products/delete")
-async def delete_products(ids: list[int] = Body(..., embed=True)):
-    return {"deleted": products.delete(ids)}
+def delete_products(ids: list[int] | None = Body(None), prom: bool = Body(True), filter: dict | None = Body(None)):
+    """Удалить товары. prom=True — и на Prom (товар уйдёт из программы, когда Prom подтвердит удаление)."""
+    return promdelete.request(_selected(ids, filter), prom)
+
+
+@app.post("/api/products/delete/check")
+def delete_check(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return promdelete.check(_selected(ids, filter))
+
+
+@app.post("/api/products/delete/retry")
+def delete_retry(ids: list[int] = Body(..., embed=True)):
+    return {"count": promdelete.retry(ids)}
+
+
+@app.post("/api/products/delete/cancel")
+def delete_cancel(ids: list[int] = Body(..., embed=True)):
+    return {"count": promdelete.cancel(ids)}
 
 
 @app.post("/api/products/status")
-async def set_status(ids: list[int] = Body(...), status: str = Body(...)):
-    products.set_status(ids, status)
-    return {"ok": True}
+def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return {"ok": True, "changed": products.set_status(_selected(ids, filter), status)}
 
 
 @app.post("/api/products/{product_id}/images")
@@ -384,26 +728,26 @@ async def upload_images(product_id: int, files: list[UploadFile] = File(...)):
             errors.append(f"{f.filename}: файл больше 25 МБ")
             continue
         try:
-            added.append(products.add_image_file(product_id, content))
+            added.append(await asyncio.to_thread(products.add_image_file, product_id, content))
         except products.ProductError as exc:
             errors.append(f"{f.filename}: {exc}")
-    return {"added": added, "errors": errors, "product": products.get(product_id)}
+    return {"added": added, "errors": errors, "product": await asyncio.to_thread(products.get, product_id)}
 
 
 @app.post("/api/products/{product_id}/images/url")
-async def add_image_url(product_id: int, url: str = Body(..., embed=True)):
+def add_image_url(product_id: int, url: str = Body(..., embed=True)):
     products.add_image_url(product_id, url)
     return products.get(product_id)
 
 
 @app.delete("/api/products/{product_id}/images/{image_id}")
-async def delete_image(product_id: int, image_id: int):
+def delete_image(product_id: int, image_id: int):
     products.delete_image(product_id, image_id)
     return products.get(product_id)
 
 
 @app.post("/api/products/{product_id}/images/order")
-async def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)):
+def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)):
     products.reorder_images(product_id, ids)
     return products.get(product_id)
 
@@ -411,48 +755,149 @@ async def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)
 # ---------- отправка на Prom ----------
 
 @app.post("/api/sync")
-async def enqueue(ids: list[int] = Body(..., embed=True)):
-    return sync.enqueue(ids)
+def enqueue(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return sync.enqueue(_selected(ids, filter))
 
 
 @app.get("/api/sync/jobs")
-async def jobs():
+def jobs():
     return sync.list_jobs()
 
 
 @app.get("/api/sync/photos")
-async def photo_access():
+def photo_access():
     return {"enabled": phototunnel.enabled(), "r2": r2.active(), **phototunnel.tunnel.status()}
 
 
-@app.post("/api/r2/check")
-async def r2_check():
+@app.post("/api/diagnose")
+async def diagnose_start(product_id: int = Body(..., embed=True)):
     try:
-        return {"ok": True, "message": await asyncio.to_thread(r2.check)}
+        product = await asyncio.to_thread(products.get, product_id)
+    except KeyError:
+        raise HTTPException(404, "Товар не найден")
+    if any(not r["done"] for r in diagnose.RUNS.values()):
+        raise HTTPException(409, "Проверка уже идёт — дождитесь её окончания")
+    run = diagnose.Run(product)
+    task = asyncio.create_task(diagnose.execute(run, product_id))
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    return run.state
+
+
+@app.get("/api/diagnose/{run_id}")
+def diagnose_state(run_id: str):
+    if run_id not in diagnose.RUNS:
+        raise HTTPException(404)
+    return diagnose.RUNS[run_id]
+
+
+@app.get("/api/rates")
+def rates_view():
+    return {"settings": rates.settings(), "current": rates.current(), "coverage": rates.coverage()}
+
+
+@app.put("/api/rates")
+def rates_save(data: dict = Body(...)):
+    """Сохранить курс и сразу пересчитать цены (изменённые цены товаров на Prom — отправить, если включено)."""
+    try:
+        rates.save_settings(data)
+    except rates.RateError as exc:
+        raise HTTPException(400, str(exc))
+    with changes.source("Курс валют (изменён вручную)"):
+        result = suppliers.recalc_prices()
+    rates.mark_applied()
+    return {"settings": rates.settings(), "current": rates.current(), "result": result,
+            "coverage": rates.coverage()}
+
+
+@app.get("/api/changes")
+def changes_list(period: str = "7d", who: str = "", field: str = "", q: str = "", limit: int = 200,
+                       offset: int = 0):
+    """Журнал изменений товаров: что, было -> стало, кто и когда."""
+    return changes.search(period, who, field, q, None, min(max(limit, 1), 1000),
+                                   max(offset, 0))
+
+
+@app.get("/api/changes.csv")
+def changes_csv(period: str = "7d", who: str = "", field: str = "", q: str = ""):
+    content = changes.to_csv(period=period, who=who, field=field, q=q)
+    return Response(content, media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": 'attachment; filename="promloader-izmeneniya.csv"'})
+
+
+@app.post("/api/changes/{change_id}/revert")
+def change_revert(change_id: int):
+    try:
+        return changes.revert(change_id)
+    except changes.RevertError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/products/{product_id}/prom-link")
+async def prom_link(product_id: int):
+    """Номер товара на Prom: у выгруженных импортом он неизвестен — один раз спрашиваем у Prom по артикулу."""
+    p = await asyncio.to_thread(products.get, product_id)
+    if p["prom_id"] or not p["synced_at"]:
+        return {"url": p["prom_url"]}
+    try:
+        async with sync.make_client() as client:
+            found = await client.get_by_external_id(p["external_id"])
+    except PromError as exc:
+        raise HTTPException(400, str(exc))
+    if not found or not found.get("id") or str(found.get("status", "")) in ("deleted", "deleted_by_moderator"):
+        return {"url": ""}
+    await asyncio.to_thread(_save_prom_id, product_id, int(found["id"]))
+    return {"url": products.prom_url(found["id"])}
+
+
+def _save_prom_id(product_id: int, prom_id: int) -> None:
+    with db.tx() as c:
+        c.execute("UPDATE products SET prom_id = ? WHERE id = ?", (prom_id, product_id))
+
+
+@app.get("/api/products/{product_id}/changes")
+def product_changes(product_id: int, limit: int = 100):
+    return changes.search("all", "", "", "", product_id, min(max(limit, 1), 1000), 0)
+
+
+@app.get("/api/rates/{code}")
+def rate(code: str):
+    if code.upper() not in rates.CURRENCIES:
+        raise HTTPException(404)
+    try:
+        return rates.nbu(code)
+    except rates.RateError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/r2/check")
+def r2_check():
+    try:
+        return {"ok": True, "message": r2.check()}
     except r2.R2Error as exc:
         raise HTTPException(400, str(exc))
 
 
 @app.get("/api/r2/stats")
-async def r2_stats():
-    return {"active": r2.active(), **await asyncio.to_thread(r2.stats)}
+def r2_stats():
+    return {"active": r2.active(), **r2.stats()}
 
 
 @app.get("/api/sync/jobs/{job_id}/file")
-async def job_file(job_id: int):
+def job_file(job_id: int):
     """Файл выгрузки — чтобы загрузить его в кабинете Prom вручную и увидеть подробный отчёт."""
     job = db.query_one("SELECT products FROM sync_jobs WHERE id = ?", (job_id,))
     if job is None:
         raise HTTPException(404)
     ids = [int(pid) for pid in json.loads(job["products"]) if db.query_one("SELECT 1 FROM products WHERE id = ?", (int(pid),))]
     base = (r2.base_url() if r2.active() else "") or config.public_base_url() or (phototunnel.tunnel.url or "")
-    content = await asyncio.to_thread(feed.build, ids, base)
+    content = feed.build(ids, base)
     return Response(content, media_type="application/xml",
                     headers={"Content-Disposition": f'attachment; filename="promloader-vygruzka-{job_id}.xml"'})
 
 
 @app.post("/api/sync/jobs/{job_id}/retry")
-async def retry(job_id: int):
+def retry(job_id: int):
     try:
         return sync.retry_job(job_id)
     except ValueError as exc:
@@ -501,96 +946,102 @@ def _settings_view() -> dict:
 
 
 @app.get("/api/settings")
-async def get_settings():
+def get_settings():
     return _settings_view()
 
 
 @app.post("/api/settings")
-async def save_settings(data: dict = Body(...)):
-    if data.get("prom_token"):
-        db.set_setting("prom_token", data["prom_token"].strip())
-    if data.get("telegram_token"):
-        db.set_setting("telegram_token", data["telegram_token"].strip())
-    if data.get("support_token"):
-        db.set_setting("support_token", data["support_token"].strip())
-    if data.get("support_token_clear"):
-        db.set_setting("support_token", "")
-    if "support_chat_id" in data:
-        chat = str(data["support_chat_id"] or "").strip()
-        if chat and not chat.lstrip("-").isdigit():
-            raise HTTPException(400, "ID чата поддержки — это число")
-        db.set_setting("support_chat_id", chat)
-    if "quick_updates" in data:
-        db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
-        if data["quick_updates"]:
-            db.set_setting("quick_updates_error", "")
-    if "photo_tunnel" in data:
-        db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
-    if any(k in data for k in r2.FIELDS):
-        fresh = {k: str(data.get(k) or "").strip() for k in r2.FIELDS}
-        fresh["r2_account_id"] = r2.account_id(fresh["r2_account_id"])
-        fresh["r2_public_url"] = r2.public_url(fresh["r2_public_url"])
-        try:
-            r2.validate(fresh)
-        except r2.R2Error as exc:
-            raise HTTPException(400, str(exc))
-        for key, value in fresh.items():
-            if key in data and (value or key not in r2.SECRET_FIELDS):  # пустой ключ = «не менять»
-                db.set_setting(key, value)
-    if "photo_storage" in data:
-        mode = data["photo_storage"]
-        if mode not in ("r2", "tunnel", "off"):
-            raise HTTPException(400, "Неизвестный способ передачи фото")
-        if mode == "r2" and not r2.configured():
-            raise HTTPException(400, "Чтобы выбрать хранилище R2, заполните все поля R2 и нажмите «Проверить»")
-        db.set_setting("photo_storage", "r2" if mode == "r2" else "")
-        if mode != "r2":
-            db.set_setting("photo_tunnel", "1" if mode == "tunnel" else "0")
-    if "auto_update" in data:
-        db.set_setting("auto_update", "1" if data["auto_update"] else "0")
-    if data.get("github_token"):
-        db.set_setting("github_token", data["github_token"].strip())
-    if "update_repo" in data:
-        db.set_setting("update_repo", str(data["update_repo"] or "").strip())
-    for key in ("gemini_key", "anthropic_key"):
-        if data.get(key):
-            db.set_setting(key, data[key].strip())
-    if "ai_provider" in data:
-        if data["ai_provider"] not in ("", *ai.PROVIDERS):
-            raise HTTPException(400, "Неизвестный провайдер ИИ")
-        db.set_setting("ai_provider", data["ai_provider"])
-    if "ai_rate" in data:
-        rate = str(data["ai_rate"] or "").strip()
-        if rate and (not rate.isdigit() or not 1 <= int(rate) <= 1000):
-            raise HTTPException(400, "Запросов в минуту: число от 1 до 1000")
-        db.set_setting("ai_rate", rate)
-    for key in ("gemini_model", "claude_model"):
-        if key in data:
-            db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
-    for key in ("public_base_url", "prom_api_base"):
-        if key in data:
-            url = str(data[key] or "").strip().rstrip("/")
-            if url and not re.match(r"^https?://", url):
-                url = "https://" + url  # «shop.example.com» -> «https://shop.example.com»
-            if url and not re.match(r"^https?://[^\s/]+\.[^\s]+$|^https?://(localhost|127\.0\.0\.1)(:\d+)?(/\S*)?$", url):
-                raise HTTPException(400, f"Не похоже на адрес сайта: {data[key]}")
-            db.set_setting(key, url)
-    if "shop_name" in data:
-        db.set_setting("shop_name", str(data["shop_name"] or "").strip())
-    if "import_settings" in data:
-        raw = (data["import_settings"] or "").strip()
-        if raw:
+def save_settings(data: dict = Body(...)):
+    """Всё или ничего: ошибка в одном поле не оставляет половину настроек сохранённой."""
+    with db.tx():
+        if data.get("prom_token"):
+            db.set_setting("prom_token", data["prom_token"].strip())
+        if data.get("telegram_token"):
+            db.set_setting("telegram_token", data["telegram_token"].strip())
+        if data.get("support_token"):
+            db.set_setting("support_token", data["support_token"].strip())
+        if data.get("support_token_clear"):
+            db.set_setting("support_token", "")
+        if "support_chat_id" in data:
+            chat = str(data["support_chat_id"] or "").strip()
+            if chat and not chat.lstrip("-").isdigit():
+                raise HTTPException(400, "ID чата поддержки — это число")
+            db.set_setting("support_chat_id", chat)
+        if "quick_updates" in data:
+            db.set_setting("quick_updates", "1" if data["quick_updates"] else "0")
+            if data["quick_updates"]:
+                db.set_setting("quick_updates_error", "")
+        if "photo_tunnel" in data:
+            db.set_setting("photo_tunnel", "1" if data["photo_tunnel"] else "0")
+        if any(k in data for k in r2.FIELDS):
+            fresh = {k: str(data.get(k) or "").strip() for k in r2.FIELDS}
+            fresh["r2_account_id"] = r2.account_id(fresh["r2_account_id"])
+            fresh["r2_public_url"] = r2.public_url(fresh["r2_public_url"])
             try:
-                parsed = json.loads(raw)
-                assert isinstance(parsed, dict)
-            except (ValueError, AssertionError):
-                raise HTTPException(400, "Параметры импорта должны быть JSON-объектом")
-            db.set_setting("import_settings", json.dumps(parsed, ensure_ascii=False))
-        else:
-            db.set_setting("import_settings", "")
-    if data.get("regenerate_feed_key"):
-        db.set_setting("feed_key", secrets.token_urlsafe(16))
-    return _settings_view()
+                r2.validate(fresh)
+            except r2.R2Error as exc:
+                raise HTTPException(400, str(exc))
+            for key, value in fresh.items():
+                if key in data and (value or key not in r2.SECRET_FIELDS):  # пустой ключ = «не менять»
+                    db.set_setting(key, value)
+        if "photo_storage" in data:
+            mode = data["photo_storage"]
+            if mode not in ("r2", "tunnel", "off"):
+                raise HTTPException(400, "Неизвестный способ передачи фото")
+            if mode == "r2" and not r2.configured():
+                raise HTTPException(400, "Чтобы выбрать хранилище R2, заполните все поля R2 и нажмите «Проверить»")
+            db.set_setting("photo_storage", "r2" if mode == "r2" else "")
+            if mode != "r2":
+                db.set_setting("photo_tunnel", "1" if mode == "tunnel" else "0")
+        if "auto_update" in data:
+            db.set_setting("auto_update", "1" if data["auto_update"] else "0")
+        if data.get("github_token"):
+            db.set_setting("github_token", data["github_token"].strip())
+        if "update_repo" in data:
+            db.set_setting("update_repo", str(data["update_repo"] or "").strip())
+        key_warning = ""
+        for key, provider in (("gemini_key", "gemini"), ("anthropic_key", "claude")):
+            value = ai.clean_key(data.get(key) or "")
+            if value:
+                db.set_setting(key, value)
+                aiprice.clear_key_error(provider)  # новый ключ — прежняя «ключ не принят» к нему не относится
+                key_warning = key_warning or ai.key_warning(provider, value)
+        if "ai_provider" in data:
+            if data["ai_provider"] not in ("", *ai.PROVIDERS):
+                raise HTTPException(400, "Неизвестный провайдер ИИ")
+            db.set_setting("ai_provider", data["ai_provider"])
+        if "ai_rate" in data:
+            rate = str(data["ai_rate"] or "").strip()
+            if rate and (not rate.isdigit() or not 1 <= int(rate) <= 1000):
+                raise HTTPException(400, "Запросов в минуту: число от 1 до 1000")
+            db.set_setting("ai_rate", rate)
+        for key in ("gemini_model", "claude_model"):
+            if key in data:
+                db.set_setting(key, str(data[key] or "").strip().removeprefix("models/"))
+        for key in ("public_base_url", "prom_api_base"):
+            if key in data:
+                url = str(data[key] or "").strip().rstrip("/")
+                if url and not re.match(r"^https?://", url):
+                    url = "https://" + url  # «shop.example.com» -> «https://shop.example.com»
+                if url and not re.match(r"^https?://[^\s/]+\.[^\s]+$|^https?://(localhost|127\.0\.0\.1)(:\d+)?(/\S*)?$", url):
+                    raise HTTPException(400, f"Не похоже на адрес сайта: {data[key]}")
+                db.set_setting(key, url)
+        if "shop_name" in data:
+            db.set_setting("shop_name", str(data["shop_name"] or "").strip())
+        if "import_settings" in data:
+            raw = (data["import_settings"] or "").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    assert isinstance(parsed, dict)
+                except (ValueError, AssertionError):
+                    raise HTTPException(400, "Параметры импорта должны быть JSON-объектом")
+                db.set_setting("import_settings", json.dumps(parsed, ensure_ascii=False))
+            else:
+                db.set_setting("import_settings", "")
+        if data.get("regenerate_feed_key"):
+            db.set_setting("feed_key", secrets.token_urlsafe(16))
+    return {**_settings_view(), "ai_key_warning": key_warning}
 
 
 @app.post("/api/settings/check")
@@ -627,7 +1078,7 @@ def _sheet(token: str, sheet: str):
 @app.post("/api/import/upload")
 async def import_upload(file: UploadFile = File(...)):
     content = await _read_price_upload(file)
-    return _new_import_token(content, file.filename or "")
+    return await asyncio.to_thread(_new_import_token, content, file.filename or "")
 
 
 async def _read_price_upload(file: UploadFile) -> bytes:
@@ -657,7 +1108,7 @@ def _new_import_token(content: bytes, filename: str) -> dict:
 
 
 @app.get("/api/import/{token}/sheet")
-async def import_sheet(token: str, sheet: str, header_row: int = 1):
+def import_sheet(token: str, sheet: str, header_row: int = 1):
     rows, images = _sheet(token, sheet)
     width = max((len(r) for r in rows), default=0)
     headers = excel.headers_for(rows, header_row)
@@ -672,7 +1123,7 @@ async def import_sheet(token: str, sheet: str, header_row: int = 1):
 
 
 @app.get("/api/import/{token}/image")
-async def import_image(token: str, sheet: str, row: int, n: int = 0):
+def import_image(token: str, sheet: str, row: int, n: int = 0):
     """Картинка, вставленная в ячейку Excel, — для предпросмотра карточек до импорта."""
     _, images = _sheet(token, sheet)
     try:
@@ -691,14 +1142,22 @@ def _build(token: str, body: dict) -> tuple[list[dict], dict]:
         raise excel.ImportError_("Не выбрано ни одной строки")
     embedded = images if body.get("use_embedded_images", True) else {}
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
+    clean = False
+    if supplier_id:
+        try:
+            clean = body.get("clean_names", suppliers.get(supplier_id)["clean_names"])
+        except KeyError:
+            pass
     items = excel.build_products(rows, header_row, numbers, body.get("mapping") or {}, body.get("defaults"), embedded,
                                  pricing.Pricer(), supplier_id)
+    if clean:
+        excel.clean_names(items)
     return items, images
 
 
 @app.post("/api/import/{token}/preview")
-async def import_preview(token: str, body: dict = Body(...)):
-    return await asyncio.to_thread(_import_preview, token, body)
+def import_preview(token: str, body: dict = Body(...)):
+    return _import_preview(token, body)
 
 
 def _import_preview(token: str, body: dict) -> dict:
@@ -710,15 +1169,38 @@ def _import_preview(token: str, body: dict) -> dict:
 
 
 @app.post("/api/import/{token}/commit")
-async def import_commit(token: str, body: dict = Body(...)):
-    return await asyncio.to_thread(_import_commit, token, body)  # большой импорт не подвешивает интерфейс
+def import_commit(token: str, body: dict = Body(...)):
+    return _import_commit(token, body)  # большой импорт не подвешивает интерфейс
 
 
 def _import_commit(token: str, body: dict) -> dict:
+    with changes.source("Импорт файла"):
+        return _import_commit_inner(token, body)
+
+
+def _link_imported(supplier: dict, sku: str, pid: int, item: dict) -> None:
+    """Импорт с выбранным поставщиком: товар становится товаром поставщика (и перестаёт считаться удалённым вами)."""
+    payload = json.dumps({"data": item["data"], "params": item["params"], "image_urls": item["image_urls"]},
+                         ensure_ascii=False)
+    with db.tx() as c:
+        owner = c.execute("SELECT supplier_id FROM products WHERE id = ?", (pid,)).fetchone()
+        if owner is None or owner["supplier_id"] not in (None, supplier["id"]):
+            return  # товар другого поставщика — не перехватываем
+        c.execute("UPDATE products SET supplier_id = ? WHERE id = ?", (supplier["id"], pid))
+        suppliers.link_item(c, supplier["id"], sku, pid, payload, "", db.now(), 0)
+
+
+def _import_commit_inner(token: str, body: dict) -> dict:
     items, images = _build(token, body)
     embedded = images if body.get("use_embedded_images", True) else {}
     status = body.get("status") if body.get("status") in ("draft", "ready") else "draft"
     update_existing = bool(body.get("update_existing", True))
+    supplier = None
+    if body.get("supplier_id"):
+        try:
+            supplier = suppliers.get(int(body["supplier_id"]))
+        except KeyError:
+            supplier = None
     created = updated = skipped = 0
     failed = []
     for item in items:
@@ -726,6 +1208,9 @@ def _import_commit(token: str, body: dict) -> dict:
             skipped += 1
             continue
         data = dict(item["data"])
+        sku = data.get("external_id") or ""
+        if supplier and sku:
+            data["external_id"] = supplier["prefix"] + sku  # как у товаров, созданных обновлением этого поставщика
         if item["params"]:
             data["params"] = item["params"]
         files = embedded.get(item["row"], [])
@@ -745,6 +1230,8 @@ def _import_commit(token: str, body: dict) -> dict:
                 products.replace_images(pid, item["image_urls"], files)
             if status == "ready":
                 products.set_status([pid], "ready")
+            if supplier and sku:
+                _link_imported(supplier, sku, pid, item)
         except products.ProductError as exc:
             failed.append({"row": item["row"], "error": str(exc)})
     return {"created": created, "updated": updated, "skipped": skipped, "failed": failed}
@@ -753,27 +1240,27 @@ def _import_commit(token: str, body: dict) -> dict:
 # ---------- поставщики ----------
 
 @app.get("/api/suppliers")
-async def list_suppliers():
+def list_suppliers():
     return suppliers.list_suppliers()
 
 
 @app.post("/api/suppliers")
-async def create_supplier(name: str = Body("", embed=True)):
+def create_supplier(name: str = Body("", embed=True)):
     return suppliers.get(suppliers.create(name))
 
 
 @app.get("/api/suppliers/{supplier_id}")
-async def get_supplier(supplier_id: int):
+def get_supplier(supplier_id: int):
     return suppliers.get(supplier_id)
 
 
 @app.patch("/api/suppliers/{supplier_id}")
-async def update_supplier(supplier_id: int, data: dict = Body(...)):
+def update_supplier(supplier_id: int, data: dict = Body(...)):
     return suppliers.update(supplier_id, data)
 
 
 @app.delete("/api/suppliers/{supplier_id}")
-async def delete_supplier(supplier_id: int):
+def delete_supplier(supplier_id: int):
     suppliers.delete(supplier_id)
     return {"ok": True}
 
@@ -782,22 +1269,31 @@ async def delete_supplier(supplier_id: int):
 async def upload_supplier_source(supplier_id: int, file: UploadFile = File(...)):
     """Загрузить прайс файлом: он станет текущим прайсом поставщика."""
     content = await _read_price_upload(file)
-    suppliers.store_source(supplier_id, content, file.filename or "price")
-    return _new_import_token(content, file.filename or "price")
+    await asyncio.to_thread(suppliers.store_source, supplier_id, content, file.filename or "price")
+    return await asyncio.to_thread(_new_import_token, content, file.filename or "price")
 
 
 @app.post("/api/suppliers/{supplier_id}/open")
-async def open_supplier_source(supplier_id: int, refetch: bool = Body(False, embed=True)):
+def open_supplier_source(supplier_id: int, refetch: bool = Body(False, embed=True)):
     """Открыть прайс поставщика для настройки колонок (refetch — скачать свежий по ссылке)."""
-    path = await asyncio.to_thread(suppliers.source_path, supplier_id, refetch)
+    path = suppliers.source_path(supplier_id, refetch)
     row = suppliers.get(supplier_id)
     return _new_import_token(path.read_bytes(), row["source_name"] or path.name)
+
+
+@app.post("/api/suppliers/{supplier_id}/preview")
+def preview_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
+    """«👁 Что изменится» при обновлении прайса — ничего не записывая."""
+    try:
+        return suppliers.preview(supplier_id, force)
+    except (suppliers.SupplierError, excel.ImportError_, rates.RateError) as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/api/suppliers/{supplier_id}/run")
 async def run_supplier(supplier_id: int, force: bool = Body(False, embed=True)):
     """Запуск обновления в фоне; ход виден в истории запусков поставщика."""
-    s = suppliers.get(supplier_id)
+    s = await asyncio.to_thread(suppliers.get, supplier_id)
     if s["running"]:
         raise HTTPException(409, "Этот поставщик уже обновляется")
     task = asyncio.create_task(_run_supplier_bg(supplier_id, force))
@@ -819,12 +1315,12 @@ async def _run_supplier_bg(supplier_id: int, force: bool) -> None:
 # ---------- наценка ----------
 
 @app.get("/api/pricing")
-async def get_pricing():
+def get_pricing():
     return {"rules": pricing.list_rules(), "rounding": pricing.ROUNDING}
 
 
 @app.put("/api/pricing")
-async def save_pricing(rules: list[dict] = Body(..., embed=True)):
+def save_pricing(rules: list[dict] = Body(..., embed=True)):
     try:
         return {"rules": pricing.save_rules(rules), "rounding": pricing.ROUNDING}
     except (ValueError, TypeError) as exc:
@@ -832,63 +1328,125 @@ async def save_pricing(rules: list[dict] = Body(..., embed=True)):
 
 
 @app.post("/api/pricing/test")
-async def test_pricing(body: dict = Body(...)):
+def test_pricing(body: dict = Body(...)):
     cost = products.parse_number(body.get("cost"))
     rrp = products.parse_number(body.get("rrp"))
     supplier_id = int(body["supplier_id"]) if body.get("supplier_id") else None
-    price, rule = pricing.Pricer().price(cost, rrp, supplier_id, body.get("category") or "")
+    try:
+        price, rule = pricing.Pricer().price(cost, rrp, supplier_id, body.get("category") or "", body.get("currency") or "UAH")
+    except rates.RateError as exc:
+        return {"error": str(exc)}
     return {"price": price, "rule": rule}
 
 
+@app.post("/api/products/currencies")
+def products_currencies(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    """В какой валюте сейчас цена у выбранных товаров (закупка/РРЦ — в своей валюте, иначе — валюта цены)."""
+    ids = _selected(ids, filter)
+    if not ids:
+        return {}
+    rows = db.query(f"""SELECT UPPER(CASE WHEN (cost_price IS NOT NULL OR rrp IS NOT NULL) AND cost_currency != ''
+                        THEN cost_currency ELSE COALESCE(NULLIF(currency, ''), 'UAH') END) AS c, COUNT(*) AS n
+                        FROM products WHERE id {db.IN_LIST} GROUP BY c""", (db.as_list(int(i) for i in ids),))
+    return {("UAH" if r["c"] == "ГРН" else r["c"]): r["n"] for r in rows}
+
+
+@app.post("/api/products/prices")
+def products_prices(action: str = Body(...), value: float = Body(0), currency: str = Body(""),
+                          ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    ids = _selected(ids, filter)
+    label = {"as_cost": "опт → закупка", "percent": f"{value:+g}%", "recalc": "пересчёт по наценке"}.get(action, "")
+    with changes.source(f"Массово «💲 Цены»: {label}" if label else "Вручную"):
+        try:
+            return suppliers.bulk_prices(ids, action, value, currency)
+        except suppliers.SupplierError as exc:
+            raise HTTPException(400, str(exc))
+
+
+@app.post("/api/pricing/preview")
+def preview_pricing(rules: list[dict] | None = Body(None, embed=True)):
+    """Сколько цен изменит пересчёт (с правилами из формы, если переданы) и сколько уйдёт на Prom."""
+    rates.prefetch()
+
+    def run():
+        if rules is not None:
+            pricing.save_rules(rules)
+        return suppliers.recalc_prices()
+    try:
+        with changes.source("Пересчёт по наценке"):
+            return changes.preview(run)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, f"Ошибка в правилах: {exc}")
+
+
+@app.post("/api/rates/preview")
+def preview_rates(data: dict = Body(...)):
+    """Сколько цен изменит новый курс (настройки из формы применяются понарошку)."""
+    rates.prefetch(force=True)  # курс НБУ — до пробного прогона, даже если сейчас сохранён «свой» курс
+
+    def run():
+        rates.save_settings(data)
+        return suppliers.recalc_prices()
+    try:
+        with changes.source("Курс валют"):
+            return changes.preview(run)
+    except rates.RateError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/api/pricing/apply")
-async def apply_pricing():
-    return await asyncio.to_thread(suppliers.recalc_prices)
+def apply_pricing():
+    with changes.source("Пересчёт по наценке"):
+        result = suppliers.recalc_prices()
+    rates.mark_applied()
+    return result
 
 
 # ---------- обновления и резервные копии ----------
 
 @app.get("/api/update/check")
-async def update_check():
-    return await asyncio.to_thread(updater.check)
+def update_check():
+    return updater.check()
 
 
 @app.post("/api/update/install")
-async def update_install():
-    version = await asyncio.to_thread(updater.update)
+def update_install():
+    version = updater.update()
     restarting = runtime.request_restart()
     return {"version": version, "restarting": restarting}
 
 
 @app.get("/api/backups")
-async def list_backups():
+def list_backups():
     return {"items": backup.list_backups(), "last": db.get_setting("last_backup_at"), "can_restart": runtime.can_restart()}
 
 
 @app.post("/api/backups")
-async def create_backup():
-    return await asyncio.to_thread(backup.create, "manual")
+def create_backup():
+    return backup.create("manual")
 
 
 @app.get("/api/backups/{name}")
-async def download_backup(name: str):
+def download_backup(name: str):
     path = backup.path_of(name)
     return FileResponse(path, filename=name, media_type="application/zip")
 
 
 @app.post("/api/backups/{name}/restore")
-async def restore_backup(name: str):
+def restore_backup(name: str):
     backup.stage_restore(name)
     return {"restarting": runtime.request_restart()}
 
 
 @app.post("/api/backups/upload")
-async def restore_uploaded_backup(file: UploadFile = File(...)):
-    backup.stage_restore_upload(await file.read())
+def restore_uploaded_backup(file: UploadFile = File(...)):
+    # копия может весить гигабайты (фото) — пишем на диск частями, а не читаем целиком в память
+    backup.stage_restore_stream(file.file)
     return {"restarting": runtime.request_restart()}
 
 
 @app.post("/api/shutdown")
-async def shutdown(request: Request):
+def shutdown(request: Request):
     """Выключение из меню значка у часов. Только с этого компьютера."""
     if request.client and request.client.host not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(403)
@@ -896,7 +1454,7 @@ async def shutdown(request: Request):
 
 
 @app.post("/api/restart")
-async def restart():
+def restart():
     if not runtime.request_restart():
         raise HTTPException(400, "Программа запущена не через START.bat — перезапустите её вручную")
     return {"restarting": True}
@@ -905,48 +1463,82 @@ async def restart():
 # ---------- расписание и автозапуск ----------
 
 @app.get("/api/schedules")
-async def list_schedules():
+def list_schedules():
     return {"items": schedule.list_schedules(), "missed_actions": schedule.MISSED_ACTIONS, "days": schedule.DAY_NAMES,
             "autostart": {"supported": autostart.supported(), "enabled": autostart.enabled()}}
 
 
 @app.post("/api/schedules")
-async def create_schedule(data: dict = Body(default={})):
+def create_schedule(data: dict = Body(default={})):
     return schedule.create(data)
 
 
 @app.patch("/api/schedules/{schedule_id}")
-async def update_schedule(schedule_id: int, data: dict = Body(...)):
+def update_schedule(schedule_id: int, data: dict = Body(...)):
     return schedule.update(schedule_id, data)
 
 
 @app.delete("/api/schedules/{schedule_id}")
-async def delete_schedule(schedule_id: int):
+def delete_schedule(schedule_id: int):
     schedule.delete(schedule_id)
     return {"ok": True}
 
 
 @app.post("/api/schedules/{schedule_id}/resolve")
-async def resolve_schedule(schedule_id: int, decision: str = Body(..., embed=True)):
-    return await asyncio.to_thread(schedule.resolve, schedule_id, decision)
+def resolve_schedule(schedule_id: int, decision: str = Body(..., embed=True)):
+    return schedule.resolve(schedule_id, decision)
 
 
 @app.post("/api/autostart")
-async def set_autostart(enabled: bool = Body(..., embed=True)):
-    return {"enabled": await asyncio.to_thread(autostart.set_enabled, enabled)}
+def set_autostart(enabled: bool = Body(..., embed=True)):
+    return {"enabled": autostart.set_enabled(enabled)}
 
 
 # ---------- каталог с Prom ----------
 
 @app.get("/api/prom/catalog")
-async def prom_catalog_state():
+def prom_catalog_state():
     return promcatalog.state()
+
+
+@app.get("/api/prom/external-ids")
+def prom_external_ids():
+    """Скольким товарам записать «Ідентифікатор_товару» на Prom и какие два пойдут в пробу."""
+    rows, flagged = promcatalog.missing_ext_rows()
+    sample = rows[:2]
+    return {"count": len(rows), "flagged": flagged,
+            "sample": [{"name": r["name"], "external_id": r["external_id"], "prom_id": r["prom_id"],
+                        "prom_url": products.prom_url(r["prom_id"])} for r in sample]}
+
+
+@app.post("/api/prom/external-ids/write")
+async def prom_external_ids_write():
+    """Записать ID на Prom через API (в фоне): сначала 2 товара с проверкой, потом остальные."""
+    if promcatalog._lock.locked():
+        raise HTTPException(409, "Программа уже работает с каталогом Prom — подождите, пока закончит")
+    if not config.get("prom_token"):
+        raise HTTPException(400, "Сначала укажите API-токен Prom в «Настройках»")
+    task = asyncio.create_task(_ext_ids_bg())
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+    await asyncio.sleep(0.05)
+    return promcatalog.state()
+
+
+async def _ext_ids_bg() -> None:
+    try:
+        await promcatalog.run_ext_ids(sync.make_client)
+    except PromError:
+        pass
+    except Exception as exc:
+        log.exception("Сбой записи ID на Prom")
+        promcatalog._ext_state(running=False, error=f"Внутренняя ошибка: {exc}")
 
 
 @app.post("/api/prom/catalog")
 async def prom_catalog_load():
-    if promcatalog.state().get("running") and promcatalog._lock.locked():
-        raise HTTPException(409, "Каталог уже загружается")
+    if promcatalog._lock.locked():  # идёт загрузка каталога или запись ID
+        raise HTTPException(409, "Программа уже работает с каталогом Prom — подождите, пока закончит")
     if not config.get("prom_token"):
         raise HTTPException(400, "Сначала укажите API-токен Prom в «Настройках»")
     task = asyncio.create_task(_catalog_bg())
@@ -969,32 +1561,35 @@ async def _catalog_bg() -> None:
 # ---------- массовый ИИ ----------
 
 @app.get("/api/ai/bulk")
-async def ai_bulk_jobs():
+def ai_bulk_jobs():
     return {"items": aibulk.list_jobs(), "rate": aibulk.rate_per_minute()}
 
 
 @app.post("/api/ai/bulk")
-async def ai_bulk_create(ids: list[int] = Body(...), action: str = Body(...), instruction: str = Body(""),
-                         only_empty: bool = Body(True)):
-    return aibulk.create(ids, action, instruction, only_empty)
+def ai_bulk_create(action: str = Body(...), instruction: str = Body(""), only_empty: bool = Body(True),
+                         ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return aibulk.create(_selected(ids, filter), action, instruction, only_empty)
 
 
 @app.post("/api/ai/bulk/{job_id}/status")
-async def ai_bulk_status(job_id: int, status: str = Body(..., embed=True)):
+def ai_bulk_status(job_id: int, status: str = Body(..., embed=True)):
     return aibulk.set_status(job_id, status)
 
 
 @app.post("/api/ai/bulk/{job_id}/revert")
-async def ai_bulk_revert(job_id: int):
-    return {"restored": await asyncio.to_thread(aibulk.revert, job_id)}
+def ai_bulk_revert(job_id: int):
+    return {"restored": aibulk.revert(job_id)}
 
 
 # ---------- заказы и Telegram ----------
 
 @app.get("/api/orders")
-async def list_orders(status: str = "", limit: int = 100, offset: int = 0):
-    return {**orders.list_orders(status, max(1, min(limit, 500)), max(0, offset)), "statuses": orders.STATUSES,
-            "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS, "enabled": orders.enabled()}
+def list_orders(status: str = "", q: str = "", date_from: str = "", date_to: str = "", limit: int = 50,
+                offset: int = 0):
+    flt = {"status": status, "q": q, "date_from": date_from, "date_to": date_to}
+    return {**orders.list_orders(flt, max(1, min(limit, 200)), max(0, min(offset, 10 ** 9))),
+            "statuses": orders.STATUSES, "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS,
+            "enabled": orders.enabled()}
 
 
 @app.post("/api/orders/refresh")
@@ -1010,8 +1605,9 @@ async def refresh_orders():
 
 
 @app.post("/api/orders/seen")
-async def orders_seen(ids: list[int] = Body(default=[], embed=True)):
-    orders.mark_seen(ids or None)
+def orders_seen(ids: list[int] | None = Body(None, embed=True)):
+    """ids — эти заказы; без ids — все. Пустой список — ни одного (раньше он помечал все)."""
+    orders.mark_seen(ids)
     return {"ok": True}
 
 
@@ -1021,45 +1617,54 @@ async def order_status(order_id: int, status: str = Body(...), reason: str = Bod
         async with sync.make_client() as client:
             return await orders.set_status(client, order_id, status, reason, text)
     except PromError as exc:
-        raise HTTPException(400 if exc.status in (None, 400, 422) else 502, str(exc))
+        raise HTTPException(502 if exc.retryable else 400, str(exc))
 
 
 @app.get("/api/telegram/recipients")
-async def telegram_recipients():
-    return {"items": notify.recipients(), "events": notify.EVENTS, "token_set": bool(notify.token())}
+def telegram_recipients():
+    return {"items": notify.recipients(), "events": notify.EVENTS, "token_set": bool(notify.token()),
+            "outbox": notify.outbox_state()}
+
+
+@app.post("/api/telegram/retry")
+def telegram_retry():
+    """«Повторить сейчас» для уведомлений, которые не дошли."""
+    with db.tx() as c:
+        c.execute("UPDATE tg_outbox SET next_at = ? WHERE sent_at IS NULL AND failed = 0", (db.now(),))
+    return {"sent": notify.flush(), "outbox": notify.outbox_state()}
 
 
 @app.post("/api/telegram/candidates")
-async def telegram_candidates():
+def telegram_candidates():
     """Кто недавно писал боту — чтобы добавить в получатели одним нажатием."""
     known = {r["chat_id"] for r in notify.recipients()}
-    chats = await asyncio.to_thread(notify.recent_chats, notify.token())
+    chats = notify.recent_chats(notify.token())
     return {"items": [c for c in chats if c["chat_id"] not in known]}
 
 
 @app.post("/api/telegram/recipients")
-async def telegram_add(chat_id: str = Body(...), name: str = Body(""), events: list[str] | None = Body(None)):
+def telegram_add(chat_id: str = Body(...), name: str = Body(""), events: list[str] | None = Body(None)):
     return notify.add_recipient(chat_id, name, events)
 
 
 @app.patch("/api/telegram/recipients/{rid}")
-async def telegram_update(rid: int, events: list[str] | None = Body(None), name: str | None = Body(None)):
+def telegram_update(rid: int, events: list[str] | None = Body(None), name: str | None = Body(None)):
     notify.update_recipient(rid, events, name)
     return {"items": notify.recipients()}
 
 
 @app.delete("/api/telegram/recipients/{rid}")
-async def telegram_remove(rid: int):
+def telegram_remove(rid: int):
     notify.remove_recipient(rid)
     return {"items": notify.recipients()}
 
 
 @app.post("/api/telegram/recipients/{rid}/test")
-async def telegram_test(rid: int):
+def telegram_test(rid: int):
     r = next((x for x in notify.recipients() if x["id"] == rid), None)
     if r is None:
         raise HTTPException(404)
-    await asyncio.to_thread(notify.send_to, r["chat_id"], "✅ Prom Loader: уведомления подключены. "
+    notify.send_to(r["chat_id"], "✅ Prom Loader: уведомления подключены. "
                             "Подписки: " + ", ".join(notify.EVENTS[e] for e in r["events"]))
     return {"ok": True}
 
@@ -1067,14 +1672,14 @@ async def telegram_test(rid: int):
 # ---------- поддержка ----------
 
 @app.get("/api/support")
-async def support_list():
+def support_list():
     return {"items": support.list_tickets(), "configured": support.configured()}
 
 
 @app.get("/api/support/diagnostics")
-async def support_diagnostics():
+def support_diagnostics():
     """Что именно уйдёт вместе с обращением (показываем пользователю)."""
-    d = await asyncio.to_thread(support.diagnostics)
+    d = support.diagnostics()
     d["log_tail"] = d["log_tail"][-20:]
     return d
 
@@ -1102,24 +1707,24 @@ async def support_create(description: str = Form(""), contact: str = Form(""), p
 
 
 @app.post("/api/support/{ticket_id}/send")
-async def support_send(ticket_id: int):
-    return await asyncio.to_thread(support.send, ticket_id)
+def support_send(ticket_id: int):
+    return support.send(ticket_id)
 
 
 @app.get("/api/support/{ticket_id}/archive")
-async def support_archive(ticket_id: int):
-    content = await asyncio.to_thread(support.archive, ticket_id)
+def support_archive(ticket_id: int):
+    content = support.archive(ticket_id)
     return Response(content, media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="promloader-obrashchenie-{ticket_id}.zip"'})
 
 
 @app.delete("/api/support/{ticket_id}")
-async def support_delete(ticket_id: int):
+def support_delete(ticket_id: int):
     support.delete(ticket_id)
     return {"ok": True}
 
 
 @app.post("/api/support/channel/chats")
-async def support_chats(token: str = Body("", embed=True)):
+def support_chats(token: str = Body("", embed=True)):
     """Для разработчика: найти свой чат, написав боту поддержки (можно до сохранения токена)."""
-    return {"items": await asyncio.to_thread(notify.recent_chats, token.strip() or support.channel()["token"])}
+    return {"items": notify.recent_chats(token.strip() or support.channel()["token"])}

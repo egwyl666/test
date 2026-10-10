@@ -38,7 +38,7 @@ h2 { font-size: 17px; margin: 0 0 12px; }
 .topbar .logo { font-weight: 700; font-size: 17px; color: var(--text); }
 .topbar .logo span { color: var(--accent); }
 .topbar nav { display: flex; gap: 4px; }
-.topbar nav a { padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+.topbar nav a { padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; white-space: nowrap; }
 .topbar nav a:hover { background: var(--bg); text-decoration: none; color: var(--text); }
 .topbar nav a.active { background: var(--accent-soft); color: var(--accent); }
 .topbar .right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
@@ -266,8 +266,16 @@ table.grid td.rn label { display: flex; gap: 6px; align-items: center; justify-c
   main { padding: 12px; }
   .topbar { padding: 0 12px; gap: 10px; }
   .topbar .logo { display: none; }
-  .row { flex-direction: column; gap: 0; }
+  /* поля друг под другом во всю ширину: «align-items: flex-end» из разметки прижимал их вправо */
+  .row { flex-direction: column; gap: 0; align-items: stretch !important; }
   table.list .hide-sm { display: none; }
+  /* строки очереди отправки: текст ошибки — отдельной строкой, а не в узкой колонке */
+  .jobs .job { flex-wrap: wrap; gap: 4px 10px; }
+  .jobs .job .msg { flex-basis: 100%; order: 9; white-space: normal; }
+  .jobs .job .msg:empty { display: none; }
+  /* фильтры списка — во всю ширину, а не прижаты вправо за пустым местом */
+  .toolbar > .spacer { display: none; }
+  .toolbar > select, .toolbar > input:not([type=checkbox]) { max-width: none !important; flex: 1 1 100%; }
 }
 
 /* ---------- поставщики ---------- */
@@ -360,7 +368,9 @@ div.field { margin-bottom: 14px; }
 
 /* ---------- модальное окно ---------- */
 .modal { position: fixed; inset: 0; background: rgba(20, 20, 30, .45); z-index: 150; display: flex; align-items: center; justify-content: center; padding: 16px; }
-.modal-box { background: #fff; border-radius: 12px; padding: 22px; width: 520px; max-width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+.modal-box { background: #fff; border-radius: 12px; padding: 22px; width: 520px; max-width: 100%; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  max-height: calc(100vh - 32px); overflow-y: auto; }
+.is-busy { opacity: .6; cursor: progress; pointer-events: none; }
 .modal-box h2 { margin-top: 0; }
 
 table.offers { border-collapse: collapse; margin-top: 6px; font-size: 13px; }
@@ -370,6 +380,9 @@ table.offers tr.active td { font-weight: 600; color: var(--accent); }
 /* ---------- заказы ---------- */
 .nav-badge { background: var(--err); color: #fff; border-radius: 10px; font-size: 11px; padding: 1px 6px; margin-left: 3px; }
 .order.is-new { outline: 2px solid var(--accent); }
+.seen-btn { border: none; cursor: pointer; font: inherit; font-size: 12px; }
+.orders-filters input[type=date] { width: auto; padding: 6px 8px; }
+.orders-filters label { display: flex; gap: 6px; align-items: center; }
 .order-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 20px; }
 .order-item { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
 .order-item:first-child { border-top: none; }
@@ -405,8 +418,8 @@ details.panel[open] > summary { margin-bottom: 10px; }
 @media (max-width: 640px) { .help-fab { right: 10px; bottom: 10px; } }
 main { padding-bottom: 70px; }
 
-/* узкие окна и телефон: меню переносится и прокручивается, а не вылезает за экран */
-@media (max-width: 1180px) {
+/* узкие окна и телефон: меню — отдельной строкой и прокручивается, а не вылезает за экран и не ломает пункты */
+@media (max-width: 1440px) {
   .topbar { flex-wrap: wrap; height: auto; padding: 8px 16px; gap: 6px 16px; }
   .topbar nav { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
   .topbar nav a { white-space: nowrap; padding: 6px 10px; }
@@ -426,3 +439,173 @@ main { padding-bottom: 70px; }
 .photo-mode input { margin-top: 4px; }
 .r2-guide { background: var(--bg); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
 .r2-guide summary { cursor: pointer; }
+
+/* ---------- курс ---------- */
+.rate-now { display: grid; gap: 4px; margin: 4px 0 12px; }
+.rate-now > div { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.rate-big { font-size: 20px; font-weight: 600; }
+
+.price-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line);
+  border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
+.price-choice:has(input[type=radio]:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.price-choice input[type=radio] { margin-top: 4px; }
+.on-prom-note { display: block; font-size: 11px; color: var(--ok); margin-top: 3px; }
+
+/* журнал изменений */
+.history summary { cursor: pointer; list-style: none; }
+.history summary::-webkit-details-marker { display: none; }
+.history summary h2 { display: inline; margin: 0; }
+.history[open] summary { margin-bottom: 10px; }
+.history-row { padding: 5px 0; border-bottom: 1px solid var(--line); color: var(--text); word-break: break-word; }
+.history-row s { color: var(--muted); }
+.history #history-all { display: inline-block; margin-top: 8px; }
+.table-scroll { overflow-x: auto; }
+.changes-table td { vertical-align: top; }
+.changes-table .ch-old { color: var(--muted); max-width: 260px; word-break: break-word; }
+.changes-table .ch-new { max-width: 260px; word-break: break-word; }
+.changes-table .up { color: var(--ok); }
+.changes-table .down { color: var(--err); }
+.nowrap { white-space: nowrap; }
+.changes-filters .field { margin-bottom: 10px; }
+@media (max-width: 700px) {
+  .changes-filters { align-items: stretch !important; }
+  .changes-filters .field:last-child > span { display: none; }
+  .changes-table thead { display: none; }
+  .changes-table, .changes-table tbody { display: block; }
+  .changes-table tr { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  table.list.changes-table td { border: 0; padding: 0; max-width: none; }
+  .changes-table .ch-at { grid-row: 1; grid-column: 1 / 3; color: var(--muted); }
+  .changes-table .ch-who { grid-row: 1; grid-column: 3; text-align: right; color: var(--muted); }
+  .changes-table .ch-product { grid-row: 2; grid-column: 1 / -1; }
+  .changes-table .ch-field { grid-row: 3; grid-column: 1; font-weight: 600; }
+  .changes-table .ch-old { grid-row: 3; grid-column: 2; text-decoration: line-through; }
+  .changes-table .ch-new { grid-row: 3; grid-column: 3; }
+  .changes-table .ch-old::after { content: " →"; display: inline-block; text-decoration: none; margin-left: 4px; }
+}
+.rate-cover { background: var(--bg); border-radius: 8px; padding: 8px 12px; margin: 6px 0 12px; line-height: 1.6; }
+.rate-cover:empty { display: none; }
+table.list td.cost { white-space: nowrap; }
+table.list .price-notes { font-weight: 400; color: var(--muted); }
+table.list .price-up { color: var(--ok); }
+table.list .price-down { color: var(--err); }
+table.list .show-sm { display: none; }
+@media (max-width: 640px) { table.list .show-sm { display: block; } }
+.badge.deleting { background: var(--err-soft); color: var(--err); }
+.deleting-note { margin-top: 4px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+/* фильтры списка товаров */
+.list-filters select { max-width: 200px; }
+.more-filters { position: relative; }
+.more-filters summary { list-style: none; cursor: pointer; }
+.more-filters summary::-webkit-details-marker { display: none; }
+.more-filters .more-box { position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; min-width: 240px; background: #fff;
+  border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 10px 12px; display: grid; gap: 6px; }
+.more-filters .more-box label { font-size: 14px; }
+table.list a.name { color: var(--text); text-decoration: none; display: block; }
+table.list a.name:hover { color: var(--accent); }
+@media (max-width: 640px) {
+  .list-filters select, .list-filters .more-filters { flex: 1 1 45%; max-width: none; }
+  .list-filters label[for="f-sort"] { display: none; }
+}
+@media (max-width: 640px) {
+  table.list td.price { white-space: normal; }
+  table.list .price-notes { white-space: normal; }
+  table.list td, table.list th { padding: 8px 6px; }
+  table.list .thumb { width: 40px; height: 40px; }
+}
+.history-row [data-revert] { margin-left: 6px; padding: 2px 8px; font-size: 12px; }
+.changes-table .ch-act { white-space: nowrap; }
+@media (max-width: 700px) {
+  .changes-table .ch-act { grid-row: 4; grid-column: 1 / -1; }
+  .changes-table .ch-act:empty { display: none; }
+}
+
+/* окно «Что изменится» */
+.preview-box { width: 720px; max-height: 90vh; overflow-y: auto; }
+.preview-box h3 { font-size: 15px; margin: 16px 0 6px; }
+.preview-sum { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 10px 12px; background: var(--bg); border-radius: 8px; }
+.preview-table { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; }
+.preview-table table.list td, .preview-table table.list th { padding: 6px 10px; }
+.preview-box .price-up { color: var(--ok); }
+.preview-box .price-down { color: var(--err); }
+.update-banner.supplier-failed-banner { background: #fff4e0; color: #7a4a00; border-bottom: 1px solid #f3d9a6; }
+.update-banner.supplier-failed-banner a { color: #7a4a00; }
+
+/* ---------- первые шаги ---------- */
+.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.steps li { display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: start; }
+.steps .mark { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); display: inline-flex;
+  align-items: center; justify-content: center; font-size: 13px; font-weight: 700; color: #fff; }
+.steps li.done .mark { background: var(--ok); border-color: var(--ok); }
+.steps li.done b { color: var(--muted); }
+.offline-banner { position: sticky; top: 0; z-index: 300; background: var(--err); color: #fff; padding: 10px 24px;
+  font-size: 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.offline-banner .btn { background: #fff; }
+
+/* ---------- «Действия ▾»: на телефоне второстепенные кнопки — в одном меню ---------- */
+.actions-menu { position: relative; display: inline-flex; }
+.actions-menu > summary { list-style: none; display: none; }
+.actions-menu > summary::-webkit-details-marker { display: none; }
+.actions-menu .actions-box { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.actions-menu .actions-box [hidden] { display: none; }
+@media (max-width: 640px) {
+  .actions-menu > summary { display: inline-flex; cursor: pointer; }
+  .actions-menu .actions-box { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; flex-direction: column;
+    align-items: stretch; min-width: 220px; background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .15); }
+  .actions-menu .actions-box .btn { justify-content: flex-start; width: 100%; }
+}
+.ext-steps { padding-left: 20px; display: grid; gap: 10px; }
+.ext-steps ul { margin: 6px 0 0; padding-left: 18px; }
+
+/* ---------- ИИ: значок в шапке и окно «✨ ИИ» ---------- */
+.ai-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 340px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--accent-soft); background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 13px;
+  font-weight: 600; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-chip:hover { border-color: var(--accent); }
+.ai-chip .ai-chip-spent { font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.ai-chip.off { background: #fff; border-color: var(--line); color: var(--muted); }
+.ai-chip.off .ai-chip-spent { color: var(--muted); }
+.ai-chip.bad { background: var(--err-soft); border-color: var(--err); color: var(--err); }
+.ai-chip.bad .ai-chip-spent { color: var(--err); }
+.ai-key-error { background: var(--err-soft); color: var(--err); border-radius: 8px; padding: 10px 12px; font-size: 14px;
+  line-height: 1.5; margin-bottom: 12px; }
+.ai-key-error a { font-weight: 600; }
+.modal-box.ai-window { width: 720px; padding: 0; }
+.ai-win-head { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  background: #fff; padding: 16px 22px 10px; border-bottom: 1px solid var(--line); }
+.ai-win-head h2 { margin: 0; }
+.ai-win-body { padding: 12px 22px 18px; }
+.ai-win-body section { margin-top: 14px; }
+.ai-win-body h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+.ai-win-body .ai-provider { max-width: 320px; margin-bottom: 0; }
+.ai-model-list { display: grid; gap: 6px; max-height: 300px; overflow-y: auto; padding-right: 2px; }
+.ai-model { display: grid; grid-template-columns: auto 1fr auto auto; gap: 4px 12px; align-items: center; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 14px; }
+.ai-model:hover { border-color: var(--accent); }
+.ai-model.selected { border-color: var(--accent); background: var(--accent-soft); }
+.ai-model.missing { border-style: dashed; }
+.ai-model input { margin: 0; }
+.ai-model-name { display: flex; flex-direction: column; min-width: 0; font-weight: 600; }
+.ai-model-name .small { font-weight: 400; overflow-wrap: anywhere; }
+.ai-price { white-space: nowrap; font-weight: 600; }
+.ai-st { white-space: nowrap; font-size: 12px; }
+.ai-st.st-ok { color: var(--ok); }
+.ai-st.st-unavailable, .ai-st.st-error { color: var(--err); }
+.ai-st.st-limit, .ai-st.st-busy { color: var(--warn); }
+.ai-free { display: block; margin-top: 8px; line-height: 1.5; }
+.ai-spend { display: grid; gap: 4px; margin-bottom: 8px; }
+table.list.compact th { padding: 5px 8px; }
+table.list.compact td { padding: 6px 8px; }
+.ai-recent tr.failed td { background: #fffafa; }
+.ai-usage { margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+@media (max-width: 640px) {
+  .ai-chip { max-width: 100%; }
+  .ai-win-head, .ai-win-body { padding-left: 14px; padding-right: 14px; }
+  .ai-model-list { max-height: none; overflow: visible; }  /* на телефоне прокручивается всё окно, а не список в нём */
+  .ai-model { grid-template-columns: auto 1fr auto; grid-template-areas: "r n n" ". p s"; }
+  .ai-model input { grid-area: r; }
+  .ai-model .ai-model-name { grid-area: n; }
+  .ai-model .ai-price { grid-area: p; }
+  .ai-model .ai-st { grid-area: s; }
+}

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Журнал изменений — Prom Loader</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav></nav>
+  </header>
+
+  <main>
+    <h1>Журнал изменений</h1>
+    <p class="muted small" style="margin-top:-6px">Что поменялось у товаров: было → стало, кто поменял и когда. Записи хранятся полгода.</p>
+
+    <div class="panel">
+      <div class="row changes-filters" style="align-items:flex-end;flex-wrap:wrap">
+        <label class="field"><span>Период</span>
+          <select id="f-period">
+            <option value="today">Сегодня</option>
+            <option value="7d" selected>7 дней</option>
+            <option value="30d">30 дней</option>
+            <option value="all">Всё время</option>
+          </select></label>
+        <label class="field"><span>Кто поменял</span><select id="f-who"><option value="">Все</option></select></label>
+        <label class="field" style="flex:1;min-width:180px"><span>Поиск</span>
+          <input id="f-q" placeholder="название или артикул товара"></label>
+        <label class="field"><span>&nbsp;</span><a class="btn" id="csv" href="#">⬇ Скачать для Excel</a></label>
+      </div>
+      <div class="chips" id="summary"></div>
+    </div>
+
+    <div class="panel">
+      <div id="total" class="small muted" style="margin-bottom:8px"></div>
+      <div class="table-scroll">
+        <table class="list changes-table">
+          <thead><tr><th>Когда</th><th>Товар</th><th>Что</th><th>Было</th><th>Стало</th><th>Кто</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div style="text-align:center;margin-top:12px"><button class="btn" id="more" style="display:none">Показать ещё</button></div>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script>
+    const PAGE = 200;
+    let field = "", offset = 0, labels = {}, timer;
+
+    function params() {
+      const p = new URLSearchParams({ period: $("#f-period").value, who: $("#f-who").value, field, q: $("#f-q").value.trim() });
+      return p;
+    }
+
+    // цену показываем с разницей: 100 → 120 (+20%)
+    function diff(row) {
+      if (row.field !== "price" && row.field !== "cost_price" && row.field !== "rrp") return "";
+      const a = parseFloat(row.old), b = parseFloat(row.new);
+      if (!(a > 0) || isNaN(b)) return "";
+      const pct = Math.round((b - a) / a * 1000) / 10;
+      return ` <span class="small ${pct >= 0 ? "up" : "down"}">${pct >= 0 ? "+" : ""}${pct}%</span>`;
+    }
+
+    function cell(text) {
+      return text ? esc(text) : '<span class="muted">—</span>';
+    }
+
+    function rowHtml(r) {
+      const product = r.product_name != null
+        ? `<a href="/product?id=${r.product_id}">${esc(r.product_name || "без названия")}</a>` +
+          (r.product_code ? `<div class="small muted">${esc(r.product_code)}</div>` : "")
+        : `<span class="muted">удалён</span>`;
+      return `<tr><td class="small nowrap ch-at">${esc(formatDate(r.at))}</td><td class="ch-product">${product}</td>` +
+        `<td class="ch-field">${esc(labels[r.field] || r.field)}</td><td class="ch-old">${cell(r.old)}</td>` +
+        `<td class="ch-new">${cell(r.new)}${diff(r)}</td><td class="small ch-who">${esc(r.source)}</td>` +
+        `<td class="ch-act">${r.revertable ? `<button class="btn small" data-revert="${r.id}" title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : ""}</td></tr>`;
+    }
+
+    function renderSummary(summary) {
+      const order = ["price", "presence", "quantity", "name", "description", "images", "created", "deleted", "prom"];
+      const keys = [...order.filter((k) => summary[k]), ...Object.keys(summary).filter((k) => !order.includes(k))];
+      $("#summary").innerHTML = `<button class="chip ${field ? "" : "active"}" data-field="">Всё</button>` +
+        keys.map((k) => `<button class="chip ${field === k ? "active" : ""}" data-field="${esc(k)}">` +
+          `${esc(labels[k] || k)}<b>${summary[k]}</b></button>`).join("");
+      $("#summary").title = "Число — сколько товаров затронуто";
+    }
+
+    async function load(append = false) {
+      if (!append) offset = 0;
+      const p = params();
+      p.set("limit", PAGE);
+      p.set("offset", offset);
+      $("#csv").href = "/api/changes.csv?" + params().toString();
+      let data;
+      try { data = await api("/api/changes?" + p.toString()); }
+      catch (err) { toast(err.message, "error"); return; }
+      labels = data.labels;
+      const who = $("#f-who"), current = who.value;
+      who.innerHTML = '<option value="">Все</option>' + data.sources.map((s) => `<option>${esc(s)}</option>`).join("");
+      who.value = data.sources.includes(current) ? current : "";
+      if (!append) renderSummary(data.summary);
+      const html = data.items.map(rowHtml).join("");
+      if (append) $("#rows").insertAdjacentHTML("beforeend", html);
+      else $("#rows").innerHTML = html || '<tr><td colspan="7" class="muted" style="text-align:center;padding:30px">За этот период изменений нет</td></tr>';
+      offset += data.items.length;
+      $("#total").textContent = data.total ? `Записей: ${data.total}` + (offset < data.total ? ` · показано ${offset}` : "") : "";
+      $("#more").style.display = offset >= data.total ? "none" : "";
+    }
+
+    $("#summary").addEventListener("click", (e) => {
+      const chip = e.target.closest(".chip");
+      if (!chip) return;
+      field = chip.dataset.field;
+      load();
+    });
+    $("#f-period").onchange = () => load();
+    $("#f-who").onchange = () => load();
+    $("#f-q").addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+    $("#more").onclick = () => load(true);
+    $("#rows").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-revert]");
+      if (!btn) return;
+      if (!confirm("Вернуть товару прежнее значение?")) return;
+      btn.disabled = true;
+      try {
+        await api(`/api/changes/${btn.dataset.revert}/revert`, { method: "POST" });
+        toast("Прежнее значение возвращено — откат записан в журнал", "ok");
+        load();
+      } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+    });
+
+    (async () => { await loadMeta(); load(); })();
+  </script>
+</body>
+</html>

@@ -111,3 +111,15 @@ def test_locked_presence_respected_unless_nothing_in_stock():
     products.update(p["id"], {"presence": "not_available"})  # решили не продавать
     refresh(b, [["B1", "4820000000333", "Кружка Б", 80, "есть", ""]])
     assert only_product()["presence"] == "not_available"
+
+
+def test_best_offer_compares_in_hryvnia():
+    """3 $ (≈120 грн по курсу 40) не «дешевле» 100 грн."""
+    from promloader import products
+    items = [
+        {"supplier_id": 1, "missing": 0, "data": {"cost_price": 3, "cost_currency": "USD"}},
+        {"supplier_id": 2, "missing": 0, "data": {"cost_price": 100, "cost_currency": "UAH"}},
+    ]
+    assert products.choose_offer(items)["supplier_id"] == 2
+    items[0]["data"]["cost_price"] = 2   # 80 грн — теперь дешевле
+    assert products.choose_offer(items)["supplier_id"] == 1

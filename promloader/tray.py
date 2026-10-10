@@ -4,7 +4,7 @@
 - код выхода 3 — перезапуск (после обновления/восстановления): при необходимости доустанавливает компоненты;
 - новая версия не стартовала (остался pending-check) — возвращает предыдущую из data/updates/previous;
 - любая другая ошибка — понятное окно с сообщением и путём к журналу.
-Журнал работы: data/logs/promloader.log.
+Журнал работы: data/logs/promloader.log (программа) и data/logs/console.log (запуск, сбои).
 """
 
 import os
@@ -26,7 +26,9 @@ def data_dir() -> Path:
 
 
 def log_path() -> Path:
-    path = data_dir() / "logs" / "promloader.log"
+    """Вывод сервера в консоль и строки значка у часов. Журнал самой программы — promloader.log (его ведёт сервер с
+    ротацией): если бы оба процесса писали в один файл, на Windows его нельзя было бы переименовать при ротации."""
+    path = data_dir() / "logs" / "console.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.stat().st_size > LOG_LIMIT:
         path.replace(path.with_suffix(".old.log"))
@@ -201,8 +203,8 @@ class App:
         if result == "deps_failed":
             message("Не удалось установить компоненты программы. Проверьте интернет и запустите Prom Loader ещё раз.", True)
         elif result == "error":
-            message("Prom Loader остановился из-за ошибки.\n\nЖурнал работы:\n"
-                    f"{self.data / 'logs' / 'promloader.log'}\n\nОтправьте этот файл разработчику.", True)
+            message("Prom Loader остановился из-за ошибки.\n\nЖурнал работы — в папке:\n"
+                    f"{self.data / 'logs'}\n\nОтправьте разработчику файлы console.log и promloader.log.", True)
         if self.icon:
             self.icon.stop()
 

@@ -10,26 +10,25 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
   </header>
 
   <main>
     <div class="editor-head">
-      <a href="/" class="btn small">← К списку</a>
+      <a href="/" class="btn small" id="back-link">← К списку</a>
       <h1 id="title">Новый товар</h1>
       <span id="status"></span>
       <span id="save-state" class="save-state"></span>
       <span style="flex:1"></span>
-      <button class="btn" id="btn-duplicate" disabled>Дублировать</button>
-      <button class="btn danger" id="btn-delete" disabled>Удалить</button>
+      <details class="actions-menu">
+        <summary class="btn">Действия ▾</summary>
+        <div class="actions-box">
+          <a class="btn" id="btn-on-prom" target="_blank" rel="noopener" hidden title="Открыть этот товар в кабинете Prom">Открыть на Prom ↗</a>
+          <a class="btn" id="btn-diagnose" hidden title="Пошаговая проверка: дойдёт ли этот товар до Prom и на каком шаге проблема">🔍 Проверка выгрузки</a>
+          <button class="btn" id="btn-duplicate" disabled>Дублировать</button>
+          <button class="btn danger" id="btn-delete" disabled>Удалить</button>
+        </div>
+      </details>
       <button class="btn primary" id="btn-send" disabled>Отправить на Prom</button>
     </div>
 
@@ -92,6 +91,12 @@
               </label>
             </div>
             <div class="row">
+              <label class="field"><span>Закупка <span class="muted">— от неё цена по наценке и курсу</span></span><input name="cost_price" inputmode="decimal" placeholder="не задана"></label>
+              <label class="field narrow"><span>Валюта закупки</span>
+                <select name="cost_currency"><option value="">как у цены</option><option>UAH</option><option>USD</option><option>EUR</option></select>
+              </label>
+            </div>
+            <div class="row">
               <label class="field"><span>Наличие</span><select name="presence" id="presence"></select></label>
               <label class="field"><span>Количество</span><input name="quantity" inputmode="numeric"></label>
               <label class="field narrow"><span>Ед. изм.</span><input name="unit" list="units"></label>
@@ -108,6 +113,8 @@
             </div>
             <label class="field"><span>Штрихкод (EAN) <span class="muted">— по нему товары разных поставщиков объединяются</span></span>
               <input name="barcode" inputmode="numeric"></label>
+            <label class="field"><span>Артикул поставщика <span class="muted">— код товара в прайсе поставщика</span></span>
+              <input name="vendor_code"></label>
             <datalist id="groups"></datalist>
             <div class="row">
               <label class="field"><span>Производитель</span><input name="vendor"></label>
@@ -122,6 +129,12 @@
             <button type="button" class="btn small" id="btn-add-param">+ Добавить характеристику</button>
           </div>
         </form>
+
+        <details class="panel history" id="history" hidden>
+          <summary><h2>🕘 История изменений</h2></summary>
+          <div id="history-list" class="small muted">Загрузка…</div>
+          <a class="small" id="history-all" href="/changes">Весь журнал →</a>
+        </details>
       </div>
 
       <div class="preview-col">

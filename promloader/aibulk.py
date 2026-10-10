@@ -9,9 +9,11 @@
 import json
 import time
 
-from . import ai, db, products
+from . import ai, aiprice, db, products
+from . import changes as changes_log
 
 BULK_ACTIONS = ("improve", "shorten", "translate_ua", "name", "keywords", "custom")
+ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",)}
 DEFAULT_RATE = {"gemini": 8, "claude": 30}
@@ -61,7 +63,25 @@ def get(job_id: int) -> dict:
     job["label"] = ai.ACTIONS[job["action"]][0]
     job["errors"] = [dict(r) for r in db.query(
         "SELECT product_id, message FROM ai_items WHERE job_id = ? AND status = 'error' LIMIT 10", (job_id,))]
+    spent = aiprice.job_spent(job_id)
+    job["spent"] = {**spent, "cost_uah": aiprice.to_uah(spent["cost_usd"])}
     return job
+
+
+def estimate(count: int, action: str) -> dict:
+    """Сколько примерно обойдётся задание: средняя цена последних запросов этой модели, иначе — типичный запрос."""
+    s = ai.settings()
+    model = s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else "")
+    per = aiprice.average_cost(s["provider"], model, action) if model else None
+    measured = per is not None
+    if per is None:
+        # авто-модель Gemini ещё ни разу не выбиралась — считаем по цене свежей Flash (её программа и выберет)
+        per = aiprice.typical_cost(s["provider"], model or ("gemini-flash" if s["provider"] == "gemini" else ""))
+    total = per * count if per is not None else None
+    minutes = round(count / max(1, rate_per_minute()))
+    return {"count": count, "model": model, "per_request_usd": per, "per_request_uah": aiprice.to_uah(per),
+            "total_usd": total, "total_uah": aiprice.to_uah(total), "measured": measured,
+            "free": s["provider"] == "gemini" and aiprice.free_tier(), "minutes": minutes}
 
 
 def list_jobs(limit: int = 5) -> list[dict]:
@@ -89,7 +109,8 @@ def revert(job_id: int) -> int:
     restored = 0
     for r in rows:
         try:
-            products.update(r["product_id"], json.loads(r["old"]), lock=False)
+            with changes_log.source("ИИ: откат"):
+                products.update(r["product_id"], json.loads(r["old"]), lock=False)
             restored += 1
         except KeyError:
             continue
@@ -120,6 +141,9 @@ def _mark(item_id: int, status: str, message: str = "", old=None, new=None) -> N
                    json.dumps(new, ensure_ascii=False) if new is not None else None, item_id))
 
 
+last_limit: ai.AIError | None = None  # последний лимит/перегрузка — для паузы и сообщения у задания
+
+
 def process_one(runner=ai.run) -> str:
     """Обработать один товар. Возвращает 'idle' | 'done' | 'skipped' | 'error' | 'rate_limited'."""
     item = _next_item()
@@ -136,9 +160,12 @@ def process_one(runner=ai.run) -> str:
         _mark(item["id"], "skipped", "уже заполнено")
         return "skipped"
     try:
-        changes = runner(p, item["action"], item["instruction"])
+        with ai.usage_source("bulk", item["job_id"]):
+            changes = runner(p, item["action"], item["instruction"])
     except ai.AIError as exc:
         if exc.temporary:
+            global last_limit
+            last_limit = exc
             return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим этот же товар
         _mark(item["id"], "error", str(exc))
         return "error"
@@ -146,7 +173,8 @@ def process_one(runner=ai.run) -> str:
         changes = {k: v for k, v in changes.items() if k not in fields or not (p.get(k) or "").strip()}
     old = {k: p.get(k) for k in changes}
     if changes:
-        products.update(p["id"], changes)
+        with changes_log.source(f"ИИ: {ACTION_LABEL.get(item['action'], item['action'])}"):
+            products.update(p["id"], changes)
     _mark(item["id"], "done", old=old, new=changes)
     return "done"
 

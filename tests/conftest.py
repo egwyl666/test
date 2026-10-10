@@ -9,14 +9,25 @@ for name in ("PROM_API_TOKEN", "PUBLIC_BASE_URL", "PROM_API_BASE", "FEED_KEY", "
              "GEMINI_API_KEY", "GEMINI_MODEL", "ANTHROPIC_API_KEY", "CLAUDE_MODEL"):
     os.environ.pop(name, None)
 
-from promloader import db  # noqa: E402
+os.environ["PROMLOADER_ALLOWED_HOSTS"] = "testserver"  # адрес TestClient
+
+from promloader import db, rates  # noqa: E402
+
+REAL_NBU = rates.nbu
 
 
 @pytest.fixture(autouse=True)
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("PROMLOADER_DATA", str(tmp_path))
     db.init(tmp_path)
+    db.set_setting("prom_token", "test-token")  # программа подключена к Prom (тест «без токена» убирает его сам)
     yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def offline_nbu(monkeypatch):
+    """Тесты не ходят в НБУ: курс 40 грн за любую валюту (тесты самого НБУ используют REAL_NBU)."""
+    monkeypatch.setattr(rates, "nbu", lambda code, transport=None: {"rate": 40.0, "date": "2026-10-04", "stale": False})
 
 
 @pytest.fixture
