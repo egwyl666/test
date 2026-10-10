@@ -44,11 +44,13 @@ def _fmt_price(value: float) -> str:
 
 
 def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> bytes:
-    """Фид по списку товаров; None — все товары, кроме черновиков."""
+    """Фид по списку товаров; None — постоянный фид: все товары, кроме черновиков, удаляемых и тех, что Prom всё
+    равно не примет (нет названия или цены) — иначе автоимпорт вернул бы на Prom удаляемый товар."""
     if product_ids is None:
-        rows = db.query("SELECT id FROM products WHERE status != 'draft' ORDER BY id")
-        product_ids = [r["id"] for r in rows]
-    items = [products.get(pid) for pid in product_ids]
+        rows = db.query("SELECT id FROM products WHERE status NOT IN ('draft', 'deleting') ORDER BY id")
+        items = [p for p in (products.get(r["id"]) for r in rows) if products.validate(p, image_count=1)["ok"]]
+    else:
+        items = [products.get(pid) for pid in product_ids]
 
     shop_name = shop_name or db.get_setting("shop_name") or "Магазин"
     root = ET.Element("yml_catalog", date=datetime.now().strftime("%Y-%m-%d %H:%M"))
@@ -69,8 +71,10 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
     for p in items:
         offer = ET.SubElement(offers, "offer", id=p["external_id"], available=AVAILABLE_ATTR.get(p["presence"], "true"))
         _sub(offer, "name", p["name"])
-        if p["name_ua"]:
-            _sub(offer, "name_ua", p["name_ua"])
+        # Prom считает <name> русским; если текст уже украинский, а украинской версии нет — отдаём его и как украинский
+        name_ua = p["name_ua"] or (p["name"] if products.looks_ukrainian(p["name"]) else "")
+        if name_ua:
+            _sub(offer, "name_ua", name_ua)
         if p["price"] is not None:
             _sub(offer, "price", _fmt_price(p["price"]))
         if p["old_price"] and p["price"] and p["old_price"] > p["price"]:
@@ -92,8 +96,9 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
             _sub(offer, "keywords", p["keywords"])
         if p["description"]:
             _sub(offer, "description", description_html(p["description"]))
-        if p["description_ua"]:
-            _sub(offer, "description_ua", description_html(p["description_ua"]))
+        description_ua = p["description_ua"] or (p["description"] if products.looks_ukrainian(p["description"]) else "")
+        if description_ua:
+            _sub(offer, "description_ua", description_html(description_ua))
         for param in p["params"]:
             if param["name"] and param["value"]:
                 _sub(offer, "param", param["value"], name=param["name"])

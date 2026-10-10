@@ -10,15 +10,7 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
     <div class="right">
       <button class="btn" id="refresh">↻ Проверить новые</button>
     </div>
@@ -35,8 +27,21 @@
       Заказы проверяются автоматически каждые 5 минут. Уведомления о новых заказах можно получать в Telegram — это тоже в Настройках.
     </div>
     <div class="err-text" id="orders-error" style="margin-bottom:10px"></div>
+    <div class="small muted hidden" id="loading-all" style="margin-bottom:10px">⏳ Загружаю все заказы магазина — список дополнится сам.</div>
+    <div class="toolbar orders-filters">
+      <input id="q" placeholder="№ заказа, телефон, имя, товар" style="max-width:300px">
+      <label class="small muted">с <input type="date" id="date-from"></label>
+      <label class="small muted">по <input type="date" id="date-to"></label>
+      <button class="btn small hidden" id="reset">Сбросить</button>
+      <span class="spacer"></span>
+      <button class="btn small hidden" id="seen-all">✓ Отметить все просмотренными</button>
+    </div>
     <div class="chips" id="chips" style="margin-bottom:14px"></div>
     <div id="list"></div>
+    <div class="toolbar" style="justify-content:center">
+      <span class="small muted" id="shown"></span>
+      <button class="btn hidden" id="more">Показать ещё</button>
+    </div>
     <div id="empty" class="panel empty-state hidden">Заказов пока нет.</div>
   </main>
 
@@ -54,26 +59,49 @@
 
   <script src="/static/common.js"></script>
   <script>
+    const PAGE = 50;
+    const view = { status: "", q: "", date_from: "", date_to: "", items: [], total: 0, seq: 0 };
     let data = null;
-    let filter = "";
 
     const STATUS_CLASS = { pending: "ready", received: "sending", delivered: "synced", paid: "synced", canceled: "error", draft: "draft" };
 
-    async function load() {
-      data = await api(`/api/orders?${new URLSearchParams({ status: filter })}`);
-      $("#orders-off").classList.toggle("hidden", data.enabled);
-      $("#orders-error").textContent = data.error ? `Не удалось получить заказы: ${data.error}` : "";
-      $("#poll-info").textContent = data.last_poll ? `проверено ${formatDate(data.last_poll)}` : "";
-      const total = Object.values(data.counts).reduce((a, b) => a + b, 0);
-      $("#chips").innerHTML = [["", "Все", total], ...Object.entries(data.statuses).map(([k, v]) => [k, v, data.counts[k] || 0])]
-        .filter(([k, , n]) => !k || n)
-        .map(([k, label, n]) => `<button class="chip ${k === filter ? "active" : ""}" data-s="${k}">${esc(label)}<b>${n}</b></button>`).join("");
-      $$("#chips .chip").forEach((c) => c.onclick = () => { filter = c.dataset.s; load(); });
-      $("#empty").classList.toggle("hidden", data.items.length > 0 || !data.enabled);
-      $("#list").innerHTML = data.items.map(orderCard).join("");
-      $$("[data-set]").forEach((b) => b.onclick = () => setStatus(Number(b.dataset.id), b.dataset.set));
-      const unseen = data.items.filter((o) => o.new).map((o) => o.id);
-      if (unseen.length) setTimeout(() => api("/api/orders/seen", { method: "POST", json: { ids: unseen } }).then(loadMeta), 3000);
+    function params(offset, limit) {
+      return new URLSearchParams({ status: view.status, q: view.q, date_from: view.date_from, date_to: view.date_to,
+                                   limit, offset });
+    }
+
+    // append — «Показать ещё»; иначе перечитываем столько, сколько уже показано (автообновление не сбрасывает список)
+    async function load(append = false) {
+      const offset = append ? view.items.length : 0;
+      const limit = append ? PAGE : Math.max(PAGE, view.items.length);
+      const seq = ++view.seq;
+      const res = await api(`/api/orders?${params(offset, limit)}`);
+      if (seq !== view.seq) return;  // пока шёл запрос, поиск или фильтр поменяли
+      data = res;
+      view.items = append ? view.items.concat(res.items) : res.items;
+      view.total = res.total;
+      $("#orders-off").classList.toggle("hidden", res.enabled);
+      $("#orders-error").textContent = res.error ? `Не удалось получить заказы: ${res.error}` : "";
+      $("#loading-all").classList.toggle("hidden", !res.loading_all);
+      $("#poll-info").textContent = res.last_poll ? `проверено ${formatDate(res.last_poll)}` : "";
+      const all = Object.values(res.counts).reduce((a, b) => a + b, 0);
+      $("#chips").innerHTML = [["", "Все", all], ...Object.entries(res.statuses).map(([k, v]) => [k, v, res.counts[k] || 0])]
+        .filter(([k, , n]) => !k || n || k === view.status)
+        .map(([k, label, n]) => `<button class="chip ${k === view.status ? "active" : ""}" data-s="${k}">${esc(label)}<b>${n}</b></button>`).join("");
+      const filtered = view.q || view.date_from || view.date_to;
+      $("#reset").classList.toggle("hidden", !filtered && !view.status);
+      $("#seen-all").classList.toggle("hidden", !res.unseen);
+      $("#seen-all").textContent = `✓ Отметить все просмотренными (${res.unseen})`;
+      $("#empty").classList.toggle("hidden", view.items.length > 0 || !res.enabled);
+      $("#empty").textContent = filtered || view.status ? "Ничего не найдено." : "Заказов пока нет.";
+      $("#list").innerHTML = view.items.map(orderCard).join("");
+      $("#shown").textContent = view.total ? `показано ${view.items.length} из ${view.total}` : "";
+      $("#more").classList.toggle("hidden", view.items.length >= view.total);
+    }
+
+    function reload() {
+      view.items = [];
+      load().catch((err) => toast(err.message, "error"));
     }
 
     function orderCard(o) {
@@ -85,13 +113,14 @@
           <div class="small">× ${esc(i.quantity)}</div>
           <div class="price">${esc(i.total || i.price)}</div>
         </div>`).join("");
-      const actions = Object.entries(data.settable).filter(([k]) => k !== o.status)
+      // только допустимые переходы: выполненный и отменённый заказ кнопками не меняются
+      const actions = Object.entries(o.actions || {})
         .map(([k, v]) => `<button class="btn small ${k === "canceled" ? "danger" : k === "received" ? "primary" : ""}" data-id="${o.id}" data-set="${k}">${esc(v)}</button>`).join("");
-      return `<div class="panel order ${o.new ? "is-new" : ""}">
+      return `<div class="panel order ${o.new ? "is-new" : ""}" data-order="${o.id}">
         <div class="toolbar" style="margin-bottom:8px">
           <b>№${o.id}</b>
           <span class="badge ${STATUS_CLASS[o.status] || "draft"}">${esc(o.status_label)}</span>
-          ${o.new ? `<span class="badge ready">не просмотрен</span>` : ""}
+          ${o.new ? `<button class="badge ready seen-btn" data-seen="${o.id}" title="Отметить просмотренным">не просмотрен ✓</button>` : ""}
           <span class="muted small">${esc(formatDate(o.date))}${o.source ? ` · ${esc(o.source)}` : ""}</span>
           <span class="spacer"></span>
           <b style="font-size:17px">${esc(o.price)}</b>
@@ -99,7 +128,7 @@
         <div class="order-grid">
           <div>
             <div><b>${esc(o.client) || "Покупатель"}</b></div>
-            ${o.phone ? `<div><a href="tel:${esc(o.phone)}">${esc(o.phone)}</a></div>` : ""}
+            ${o.phone ? `<div><a href="tel:${esc(o.phone)}" data-call="${o.id}">${esc(o.phone)}</a></div>` : ""}
             ${o.email ? `<div class="small muted">${esc(o.email)}</div>` : ""}
             ${o.delivery ? `<div class="small" style="margin-top:6px">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
             ${o.payment ? `<div class="small">💳 ${esc(o.payment)}</div>` : ""}
@@ -107,9 +136,28 @@
           </div>
           <div>${items}</div>
         </div>
-        <div class="toolbar" style="margin:10px 0 0">${actions}</div>
+        ${actions ? `<div class="toolbar" style="margin:10px 0 0">${actions}</div>` : ""}
       </div>`;
     }
+
+    // «Просмотрен» — по действию (кнопка, звонок, смена статуса), а не через 3 секунды после открытия страницы:
+    // иначе заказ, на который никто не посмотрел (вкладка открыта в фоне), переставал считаться новым
+    async function markSeen(ids) {
+      try {
+        await api("/api/orders/seen", { method: "POST", json: ids ? { ids } : {} });
+        loadMeta().catch(() => {});
+        await load();
+      } catch (err) { toast(err.message, "error"); }
+    }
+
+    $("#list").addEventListener("click", (e) => {
+      const seen = e.target.closest("[data-seen]");
+      if (seen) return busy(seen, () => markSeen([Number(seen.dataset.seen)]));
+      const call = e.target.closest("[data-call]");
+      if (call) { markSeen([Number(call.dataset.call)]); return; }
+      const b = e.target.closest("[data-set]");
+      if (b) busy(b, () => setStatus(Number(b.dataset.id), b.dataset.set));
+    });
 
     let cancelId = null;
     async function setStatus(id, status) {
@@ -117,36 +165,66 @@
         cancelId = id;
         $("#cancel-id").textContent = id;
         $("#cancel-reason").innerHTML = Object.entries(data.cancel_reasons).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+        $("#cancel-text").value = "";  // комментарий прошлой отмены не переносится на другой заказ
         $("#cancel-modal").classList.remove("hidden");
         return;
       }
+      if (status === "delivered" && !confirm(`Отметить заказ №${id} выполненным на Prom? Покупатель увидит это в своём кабинете.`)) return;
       try {
         await api(`/api/orders/${id}/status`, { method: "POST", json: { status } });
         toast("Статус изменён на Prom", "ok");
-        load();
+        loadMeta().catch(() => {});
+        await load();
       } catch (err) { toast(err.message, "error"); }
     }
     $("#cancel-close").onclick = () => $("#cancel-modal").classList.add("hidden");
-    $("#cancel-go").onclick = async () => {
+    $("#cancel-go").onclick = () => busy($("#cancel-go"), async () => {
       try {
         await api(`/api/orders/${cancelId}/status`, { method: "POST", json: {
           status: "canceled", reason: $("#cancel-reason").value, text: $("#cancel-text").value } });
         $("#cancel-modal").classList.add("hidden");
         toast("Заказ отменён", "ok");
-        load();
+        loadMeta().catch(() => {});
+        await load();
       } catch (err) { toast(err.message, "error"); }
-    };
-    $("#refresh").onclick = async () => {
+    });
+    $("#refresh").onclick = () => busy($("#refresh"), async () => {
       try {
         const r = await api("/api/orders/refresh", { method: "POST" });
         toast(r.new ? `Новых заказов: ${r.new}` : "Новых заказов нет", "ok");
-        load();
+        loadMeta().catch(() => {});
+        await load();
       } catch (err) { toast(err.message, "error"); }
+    });
+    $("#seen-all").onclick = () => busy($("#seen-all"), () => markSeen(null));
+    $("#more").onclick = () => busy($("#more"), () => load(true).catch((err) => toast(err.message, "error")));
+
+    $("#chips").addEventListener("click", (e) => {
+      const c = e.target.closest(".chip");
+      if (!c) return;
+      view.status = c.dataset.s;
+      reload();
+    });
+    let searchTimer;
+    $("#q").addEventListener("input", (e) => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { view.q = e.target.value.trim(); reload(); }, 300);
+    });
+    $("#date-from").addEventListener("change", (e) => { view.date_from = e.target.value; reload(); });
+    $("#date-to").addEventListener("change", (e) => { view.date_to = e.target.value; reload(); });
+    $("#reset").onclick = () => {
+      Object.assign(view, { status: "", q: "", date_from: "", date_to: "" });
+      $("#q").value = $("#date-from").value = $("#date-to").value = "";
+      reload();
     };
 
     loadMeta().catch(() => {});
-    load().catch((err) => toast(err.message, "error"));
-    setInterval(() => load().catch(() => {}), 60000);
+    reload();
+    // список обновляется сам, пока вкладка открыта на экране
+    setInterval(() => { if (document.visibilityState === "visible") load().catch(() => {}); }, 60000);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") load().catch(() => {});
+    });
   </script>
 </body>
 </html>

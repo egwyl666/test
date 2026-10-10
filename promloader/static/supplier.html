@@ -10,15 +10,7 @@
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
   </header>
 
   <main>
@@ -29,6 +21,7 @@
       <span style="flex:1"></span>
       <a class="btn" id="products-link" href="/">Товары поставщика</a>
       <button class="btn danger" id="delete">Удалить</button>
+      <button class="btn" id="preview-run" title="Посчитать, что изменит обновление прайса, ничего не меняя">👁 Что изменится</button>
       <button class="btn primary" id="run">Обновить сейчас</button>
     </div>
 
@@ -71,9 +64,19 @@
         <label class="field"><span>Новые товары</span>
           <select id="new-status"><option value="draft">черновиками — сначала проверю сам</option><option value="ready">сразу «готов к отправке»</option></select></label>
       </div>
+      <div class="row">
+        <label class="field"><span>Курс для цен в $/€</span>
+          <select id="rate-mode"><option value="">общий курс программы (страница «Наценка»)</option>
+            <option value="manual">свой курс этого поставщика</option></select></label>
+        <label class="field rate-field"><span>Курс поставщика, грн за 1 <span class="rate-cur">$</span></span><input id="rate-value" inputmode="decimal" placeholder="например 41.8"></label>
+      </div>
+      <p class="small muted hidden" id="rate-info" style="margin-top:-6px"></p>
       <datalist id="groups"></datalist>
       <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="merge-barcode">
         Объединять с товарами других поставщиков по штрихкоду <span class="muted">(если отмечена колонка «Штрихкод»: цена и наличие — от того, у кого дешевле)</span></label>
+      <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="clean-names">
+        Чистить названия от оптовых пометок <span class="muted">— «(50шт)», «(20)» и артикул поставщика («GT-354», «А 777-251»);
+        модели производителя (Remax RPP-118) остаются. Для артикула отметьте колонку «Артикул поставщика»</span></label>
       <label class="small"><input type="checkbox" id="auto-sync"> Сразу отправлять изменения на Prom
         <span class="muted">(цены и наличие товаров, которые уже на Prom или готовы к отправке)</span></label>
       <div class="toolbar" style="margin:16px 0 0">
@@ -89,6 +92,19 @@
         <label class="small"><input type="checkbox" id="only-bad"> только с ошибками</label></div>
       <div class="summary" id="summary"></div>
       <div class="preview-grid" id="preview"></div>
+    </div>
+
+    <div class="panel" id="deleted-panel" hidden>
+      <div class="toolbar" style="margin-bottom:6px"><h2 style="margin:0">Удалённые вами товары: <span id="deleted-count"></span></h2>
+        <span class="spacer"></span>
+        <button class="btn" id="deleted-restore-selected" disabled>Вернуть выбранные</button>
+        <button class="btn" id="deleted-restore-all">Вернуть все</button></div>
+      <p class="small muted" style="margin-top:0">Эти позиции есть в прайсе, но вы удалили их товары — при обновлении поставщик их не
+        создаёт заново. Вернёте — программа сразу обновит прайс, и товары появятся снова (новыми товарами).
+        Если вы сами создали товар с тем же артикулом, поставщик привяжет его к себе автоматически.</p>
+      <div class="table-scroll"><table class="list" id="deleted-table">
+        <thead><tr><th style="width:32px"><input type="checkbox" id="deleted-all"></th><th>Артикул</th><th>Название</th>
+          <th>Цена в прайсе</th><th></th></tr></thead><tbody></tbody></table></div>
     </div>
 
     <div class="panel">

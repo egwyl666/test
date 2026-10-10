@@ -6,10 +6,12 @@
 """
 
 import logging
+import os
 import re
 import shutil
 import sqlite3
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -106,14 +108,38 @@ def due() -> bool:
     return datetime.now(timezone.utc) - datetime.fromisoformat(last) > timedelta(hours=23)
 
 
+def _allowed(name: str) -> bool:
+    """В копии бывают только база и папки с фото и прайсами — ничего, что программа могла бы запустить."""
+    parts = Path(name).parts
+    if not parts or name.startswith(("/", "\\")) or ".." in parts or ":" in parts[0]:
+        return False
+    return name == DB_NAME or (parts[0] in FOLDERS and len(parts) > 1)
+
+
 def _validate(path: Path) -> None:
     try:
         with zipfile.ZipFile(path) as z:
-            if DB_NAME not in z.namelist():
+            names = z.namelist()
+            if DB_NAME not in names:
                 raise BackupError("В архиве нет базы товаров — это не резервная копия Prom Loader")
+            extra = [n for n in names if not n.endswith("/") and not _allowed(n)]
+            if extra:
+                raise BackupError(f"В архиве есть посторонние файлы ({extra[0]}) — это не резервная копия Prom Loader")
             bad = z.testzip()
             if bad:
                 raise BackupError(f"Копия повреждена ({bad})")
+            with tempfile.TemporaryDirectory() as tmp:
+                z.extract(DB_NAME, tmp)
+                conn = sqlite3.connect(Path(tmp) / DB_NAME)
+                try:
+                    ok = conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+                    conn.execute("SELECT COUNT(*) FROM products").fetchone()
+                except sqlite3.DatabaseError:
+                    ok = False
+                finally:
+                    conn.close()
+                if not ok:
+                    raise BackupError("База в копии повреждена — восстановление отменено")
     except zipfile.BadZipFile:
         raise BackupError("Файл повреждён или это не резервная копия")
 
@@ -126,13 +152,51 @@ def stage_restore(name: str) -> None:
 
 
 def stage_restore_upload(content: bytes) -> None:
+    import io
+
+    stage_restore_stream(io.BytesIO(content))
+
+
+def stage_restore_stream(source) -> None:
+    """Загруженная копия сначала пишется рядом и проверяется: неудачная загрузка не стирает уже выбранную ранее."""
     target = db.data_dir() / "restore-pending.zip"
-    target.write_bytes(content)
+    upload = target.with_name(f"restore-upload-{uuid.uuid4().hex}.zip")
     try:
-        _validate(target)
-    except BackupError:
-        target.unlink(missing_ok=True)
-        raise
+        with open(upload, "wb") as out:
+            shutil.copyfileobj(source, out, 1024 * 1024)
+        _validate(upload)
+        os.replace(upload, target)
+    finally:
+        upload.unlink(missing_ok=True)
+
+
+DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update")
+
+
+def _device_settings(data_dir: Path) -> dict:
+    path = data_dir / DB_NAME
+    if not path.exists():
+        return {}
+    conn = sqlite3.connect(path)
+    try:
+        marks = ",".join("?" * len(DEVICE_SETTINGS))
+        return dict(conn.execute(f"SELECT key, value FROM settings WHERE key IN ({marks})", DEVICE_SETTINGS).fetchall())
+    except sqlite3.DatabaseError:
+        return {}
+    finally:
+        conn.close()
+
+
+def _restore_device_settings(data_dir: Path, kept: dict) -> None:
+    conn = sqlite3.connect(data_dir / DB_NAME)
+    try:
+        with conn:
+            conn.execute(f"DELETE FROM settings WHERE key IN ({','.join('?' * len(DEVICE_SETTINGS))})", DEVICE_SETTINGS)
+            conn.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", list(kept.items()))
+    except sqlite3.DatabaseError as exc:
+        log.warning("Не удалось вернуть настройки обновлений после восстановления: %s", exc)
+    finally:
+        conn.close()
 
 
 def apply_pending(data_dir: Path) -> bool:
@@ -146,6 +210,15 @@ def apply_pending(data_dir: Path) -> bool:
     finally:
         db._conn.close()
         db._conn = None
+    try:
+        _validate(pending)
+    except BackupError as exc:
+        log.error("Восстановление отменено: %s", exc)
+        pending.rename(pending.with_suffix(".rejected"))
+        return False
+    # откуда брать обновления — настройка этого компьютера, а не копии (копию мог подложить кто угодно)
+    kept = _device_settings(data_dir)
+    root = data_dir.resolve()
     with zipfile.ZipFile(pending) as z:
         for folder in FOLDERS:
             shutil.rmtree(data_dir / folder, ignore_errors=True)
@@ -153,9 +226,10 @@ def apply_pending(data_dir: Path) -> bool:
             (data_dir / (DB_NAME + suffix)).unlink(missing_ok=True)
         for info in z.infolist():
             target = (data_dir / info.filename).resolve()
-            if not str(target).startswith(str(data_dir.resolve())):
+            if not _allowed(info.filename) or not target.is_relative_to(root):
                 continue
             z.extract(info, data_dir)
+    _restore_device_settings(data_dir, kept)
     pending.unlink()
     log.info("Данные восстановлены из резервной копии")
     return True

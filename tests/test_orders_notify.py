@@ -146,6 +146,7 @@ def test_missed_schedule_notifies(monkeypatch):
 
 
 def test_api(client):
+    db.set_setting("prom_token", "")  # проверяем поведение без токена
     r = client.get("/api/orders").json()
     assert r["enabled"] is False and r["items"] == []
     assert client.post("/api/orders/refresh").status_code == 400

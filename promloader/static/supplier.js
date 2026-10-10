@@ -5,6 +5,8 @@ let supplier = null;
 let gridOpened = false;
 let items = [];
 let pollTimer;
+let formFilled = false;
+let dirty = false;  // в форме есть несохранённые правки
 const grid = createMappingGrid($("#mapping"), {
   openEnded: true,
   required: ["external_id", "name", ["cost_price", "price", "rrp"]],
@@ -20,15 +22,22 @@ function settingsBody() {
     new_status: $("#new-status").value,
     auto_sync: $("#auto-sync").checked,
     merge_by_barcode: $("#merge-barcode").checked,
+    clean_names: $("#clean-names").checked,
+    rate_mode: $("#rate-mode").value,
+    rate_value: $("#rate-value").value || 0,
+    rate_add: 0,
+    rate_currency: $("#def-currency").value === "UAH" ? "USD" : $("#def-currency").value,
     defaults: { group_name: $("#def-group").value, currency: $("#def-currency").value },
   };
   if (gridOpened) Object.assign(body, grid.body());
   return body;
 }
 
-function fill(s) {
-  supplier = s;
-  document.title = `${s.name} — Prom Loader`;
+// Форма заполняется только при открытии и после сохранения. Раньше она перезаполнялась при каждом опросе
+// (раз в 2 с во время обновления) и после любого действия — несохранённые правки молча пропадали.
+function fillForm(s) {
+  formFilled = true;
+  dirty = false;
   $("#name").value = s.name;
   $("#url").value = s.url;
   $("#interval").value = String(s.interval_hours);
@@ -41,21 +50,71 @@ function fill(s) {
   $("#new-status").value = s.new_status;
   $("#auto-sync").checked = s.auto_sync;
   $("#merge-barcode").checked = s.merge_by_barcode;
+  $("#clean-names").checked = s.clean_names;
   $("#def-group").value = s.defaults.group_name || "";
   $("#def-currency").value = s.defaults.currency || "UAH";
+  $("#rate-mode").value = s.rate_mode === "manual" ? "manual" : "";
+  $("#rate-value").value = s.rate_value || "";
+  showRate();
+}
+
+// Состояние, которое меняется само: прайс, история запусков, удалённые товары.
+function showState(s) {
+  supplier = s;
+  if (!formFilled) fillForm(s);
+  document.title = `${s.name} — Prom Loader`;
   $("#products-link").href = `/?supplier=${s.id}`;
   $("#source-info").innerHTML = s.source_name
     ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
-      (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`)
+      (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`) +
+      (s.items_deleted ? ` · <a href="#deleted-panel">удалено вами: ${s.items_deleted}</a>` : "")
     : "";
   const open = $("#open-current");
   if (open) open.onclick = (e) => { e.preventDefault(); openSource(false); };
   renderRuns(s);
+  loadDeleted(s.items_deleted);
 }
+
+// ---------- удалённые вами товары ----------
+let deletedShown = -1;
+async function loadDeleted(count) {
+  $("#deleted-panel").hidden = !count;
+  if (!count || count === deletedShown) return;  // список не менялся — не перерисовываем (страница обновляется сама)
+  deletedShown = count;
+  let rows = [];
+  try { rows = await api(`/api/suppliers/${sid}/deleted`); } catch (err) { toast(err.message, "error"); return; }
+  $("#deleted-count").textContent = rows.length;
+  $("#deleted-all").checked = false;
+  $("#deleted-table tbody").innerHTML = rows.map((r) => `<tr>
+    <td><input type="checkbox" class="del-sel" value="${esc(r.sku)}"></td>
+    <td class="small">${esc(r.sku)}</td><td>${esc(r.name) || '<span class="muted">без названия</span>'}</td>
+    <td class="small">${r.price != null ? esc(formatPrice(r.price, r.currency || "UAH")) : ""}</td>
+    <td class="small muted">${r.missing ? "сейчас нет в прайсе" : ""}</td></tr>`).join("");
+  updateDeletedButtons();
+}
+function selectedDeleted() { return $$(".del-sel:checked").map((x) => x.value); }
+function updateDeletedButtons() { $("#deleted-restore-selected").disabled = !selectedDeleted().length; }
+$("#deleted-table").addEventListener("change", (e) => {
+  if (e.target.id === "deleted-all") $$(".del-sel").forEach((x) => (x.checked = e.target.checked));
+  updateDeletedButtons();
+});
+async function restoreDeleted(skus) {
+  const n = skus ? skus.length : Number($("#deleted-count").textContent);
+  if (!confirm(`Вернуть товаров: ${n}? Программа сразу обновит прайс, и они появятся в списке товаров.`)) return;
+  try {
+    const r = await api(`/api/suppliers/${sid}/restore-deleted`, { method: "POST", json: skus ? { skus, run: true } : { run: true } });
+    toast(r.started ? `Возвращаю ${r.count}: обновляю прайс…` : `Вернётся при обновлении: ${r.count}`, "ok");
+    deletedShown = -1;
+    await reload();
+  } catch (err) { toast(err.message, "error"); }
+}
+$("#deleted-restore-selected").onclick = () => restoreDeleted(selectedDeleted());
+$("#deleted-restore-all").onclick = () => restoreDeleted(null);
 
 function renderRuns(s) {
   const running = s.running;
   $("#run").disabled = running;
+  $("#preview-run").disabled = running;
   $("#run").textContent = running ? "Обновляется…" : "Обновить сейчас";
   $("#run-state").innerHTML = running ? statusPill("running") : "";
   const broken = s.runs[0] && s.runs[0].status === "failed" && /сломан/.test(s.runs[0].message);
@@ -80,7 +139,7 @@ function renderRuns(s) {
 async function reload() {
   const s = await api(`/api/suppliers/${sid}`);
   const wasRunning = supplier && supplier.running;
-  fill(s);
+  showState(s);
   if (wasRunning && !s.running && s.runs[0]) {
     const r = s.runs[0];
     toast(r.status === "ok" ? `Обновлено: ${runSummary(r.stats)}` : r.message, r.status === "ok" ? "ok" : "error");
@@ -95,7 +154,7 @@ async function showGrid(res) {
   gridOpened = true;
   $("#mapping-panel").classList.remove("hidden");
   $("#preview-btn").disabled = false;
-  fill(supplier);
+  showState(supplier);
 }
 
 async function openSource(refetch) {
@@ -132,9 +191,23 @@ async function uploadSource(files) {
 
 async function save() {
   const s = await api(`/api/suppliers/${sid}`, { method: "PATCH", json: settingsBody() });
-  fill(s);
+  fillForm(s);
+  showState(s);
   return s;
 }
+
+// «Что изменится» и «Обновить» работают по сохранённым настройкам — несохранённые правки сначала сохраняем
+async function saveIfDirty() {
+  if (dirty) {
+    await save();
+    toast("Настройки сохранены", "ok");
+  }
+}
+const SETTINGS_FIELDS = "#name, #url, #interval, #missing, #prefix, #new-status, #auto-sync, #merge-barcode, " +
+  "#clean-names, #rate-mode, #rate-value, #def-group, #def-currency";
+const markDirty = (e) => { if (e.target.matches(SETTINGS_FIELDS) || e.target.closest("#mapping")) dirty = true; };
+document.addEventListener("input", markDirty);
+document.addEventListener("change", markDirty);
 
 async function runNow(force = false) {
   try {
@@ -157,18 +230,48 @@ $("#save").onclick = async () => {
   try { await save(); toast("Сохранено", "ok"); } catch (err) { toast(err.message, "error"); }
 };
 $("#save-run").onclick = async () => {
-  try { await save(); await runNow(); } catch (err) { toast(err.message, "error"); }
+  try {
+    await save();
+    await (supplier.auto_sync ? previewThenRun(false) : runNow());
+  } catch (err) { toast(err.message, "error"); }
 };
-$("#run").onclick = () => runNow(false);
+// «👁 Что изменится»: пробное обновление — посмотреть новые товары и цены было → стало, потом применить
+async function previewThenRun(force = false) {
+  const btn = $("#preview-run");
+  btn.disabled = true;
+  btn.textContent = "Считаю…";
+  try {
+    await saveIfDirty();
+    const p = await api(`/api/suppliers/${sid}/preview`, { method: "POST", json: { force } });
+    const note = `В прайсе ${p.total} строк${p.errors ? `, с ошибками ${p.errors}` : ""}${p.ignored ? `, удалённых вами ${p.ignored}` : ""}. ` +
+      "Цены и наличие, которые вы поменяли руками (🔒), поставщик не трогает.";
+    if (await showPreview(`Обновление «${supplier.name}»: что изменится`, p, { applyLabel: "Обновить", note })) await runNow(force);
+  } catch (err) {
+    toast(err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "👁 Что изменится";
+  }
+}
+$("#preview-run").onclick = () => previewThenRun(false);
+// если изменения сразу уходят на Prom — сначала показываем, что именно уйдёт
+$("#run").onclick = async () => {
+  try {
+    await saveIfDirty();
+    await (supplier && supplier.auto_sync ? previewThenRun(false) : runNow(false));
+  } catch (err) { toast(err.message, "error"); }
+};
 $("#delete").onclick = async () => {
   if (!confirm("Удалить поставщика? Его товары останутся в списке как обычные товары, но перестанут обновляться.")) return;
-  await api(`/api/suppliers/${sid}`, { method: "DELETE" });
-  location.href = "/suppliers";
+  try {
+    await api(`/api/suppliers/${sid}`, { method: "DELETE" });
+    location.href = "/suppliers";
+  } catch (err) { toast(err.message, "error"); }
 };
 
 async function preview() {
   try {
-    const body = { ...grid.body(), defaults: settingsBody().defaults, supplier_id: sid };
+    const body = { ...grid.body(), defaults: settingsBody().defaults, supplier_id: sid, clean_names: $("#clean-names").checked };
     const res = await api(`/api/import/${grid.token}/preview`, { method: "POST", json: body });
     items = res.items;
     renderPreview();
@@ -185,9 +288,11 @@ function renderPreview() {
     <div>Строк: <b>${items.length}</b></div>
     <div style="color:var(--ok)">Годных: <b>${items.length - bad.length}</b></div>
     <div style="color:var(--err)">С ошибками (пропустятся): <b>${bad.length}</b></div>`;
-  const shown = items.slice(0, 60).map((i) => (i.data.external_id ? i : { ...i, errors: ["Нет артикула", ...i.errors] }));
+  // «только с ошибками» — по всем строкам, а не по первым 60 (ошибка в 500-й строке раньше не находилась)
+  const pool = $("#only-bad").checked ? bad : items;
+  const shown = pool.slice(0, 60).map((i) => (i.data.external_id ? i : { ...i, errors: ["Нет артикула", ...i.errors] }));
   renderItemsPreview($("#preview"), shown, { token: grid.token, sheet: grid.sheet, onlyBad: $("#only-bad").checked });
-  if (items.length > 60) $("#preview").insertAdjacentHTML("beforeend", `<p class="muted">…и ещё ${items.length - 60}</p>`);
+  if (pool.length > 60) $("#preview").insertAdjacentHTML("beforeend", `<p class="muted">…и ещё ${pool.length - 60}</p>`);
 }
 $("#preview-btn").onclick = preview;
 $("#only-bad").onchange = renderPreview;
@@ -201,3 +306,26 @@ $("#only-bad").onchange = renderPreview;
     toast(err.message, "error");
   }
 })();
+
+// ---------- курс ----------
+const CUR_SIGN = { USD: "$", EUR: "€", PLN: "zł", GBP: "£" };
+async function showRate() {
+  const own = $("#rate-mode").value === "manual";
+  const cur = $("#def-currency").value === "UAH" ? "USD" : $("#def-currency").value;
+  $$(".rate-field").forEach((el) => el.classList.toggle("hidden", !own));
+  $$(".rate-cur").forEach((el) => { el.textContent = CUR_SIGN[cur] || cur; });
+  const info = $("#rate-info");
+  info.classList.remove("hidden");
+  let k = Number(String($("#rate-value").value || 0).replace(",", ".")) || 0;
+  let note = "Свой курс поставщика. ";
+  if (!own) {
+    try {
+      const r = (await api("/api/rates")).current[cur] || {};
+      k = r.rate || 0;
+      note = r.error ? r.error + " " : `Общий курс: 1 ${CUR_SIGN[cur] || cur} = ${k.toFixed(2)} грн (меняется на странице «Наценка»). `;
+    } catch (err) { note = err.message + " "; }
+  }
+  info.textContent = note + (k ? `Закупка 10 ${CUR_SIGN[cur] || cur} = ${(10 * k).toFixed(2)} грн, дальше — наценка. ` : "") +
+    "Цены в гривнах не пересчитываются. Чтобы работала наценка, колонку с ценой поставщика отметьте как «Цена закупки».";
+}
+["#rate-mode", "#rate-value", "#def-currency"].forEach((sel) => $(sel).addEventListener("input", showRate));
