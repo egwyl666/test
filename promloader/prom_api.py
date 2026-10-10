@@ -121,12 +121,13 @@ class PromClient:
             body["cancellation_text"] = cancellation_text
         return await self._request("POST", "/orders/set_status", json=body)
 
-    async def import_file(self, content: bytes, settings: dict | None = None, filename: str = "products.xml") -> str:
-        """Загружает YML-файл целиком. Фото Prom скачает сам по ссылкам <picture>."""
+    async def import_file(self, content: bytes, settings: dict | None = None, filename: str = "products.xml",
+                          content_type: str = "text/xml") -> str:
+        """Загружает файл целиком: YML (фото Prom скачает сам по ссылкам <picture>) или Excel."""
         body = await self._request(
             "POST",
             "/products/import_file",
-            files={"file": (filename, content, "text/xml")},
+            files={"file": (filename, content, content_type)},
             data={"data": json.dumps(settings or DEFAULT_IMPORT_SETTINGS)},
         )
         return _import_id(body)

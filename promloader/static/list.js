@@ -498,20 +498,32 @@ async function showCatalogState(state) {
   } else if (state.error) {
     box.innerHTML = `<span class="badge error">Каталог не загружен</span> ${esc(state.error)}`;
   } else {
-    const warn = state.no_external_id
+    const ext = state.ext_running
+      ? `<div><span class="badge sending">Записываю ID на Prom</span> ${esc(state.ext_stage || "")} · готово ${state.ext_done || 0}
+         из ${state.ext_total || "…"}</div>`
+      : state.ext_error ? `<div class="err-text">ID на Prom записаны не все: ${esc(state.ext_error)}
+         <button class="btn small" id="ext-fix">Попробовать снова</button></div>`
+      : state.ext_finished_at && !state.no_external_id ? `<div class="small" style="color:var(--ok)">✓ ID записаны на Prom
+         (${state.ext_done || 0})${state.ext_skipped ? ` · пропущено ${state.ext_skipped}: на Prom уже другой ID или товара нет` : ""}</div>` : "";
+    const warn = state.no_external_id && !state.ext_running && !state.ext_error
       ? `<div class="err-text" style="color:var(--warn)">У ${state.no_external_id} товаров в кабинете Prom нет «внешнего ID» —
          без него Prom при отправке может создать копию товара. <button class="btn small" id="ext-fix">Как исправить</button></div>` : "";
     box.innerHTML = `<span class="badge synced">Каталог загружен</span> ${esc(formatDate(state.finished_at))}:
       новых ${state.created}, обновлено ${state.updated}${state.skipped ? `, пропущено (удалённые) ${state.skipped}` : ""}${
-        state.kept_local ? `, оставлены ваши неотправленные правки: ${state.kept_local}` : ""}${warn}${
+        state.kept_local ? `, оставлены ваши неотправленные правки: ${state.kept_local}` : ""}${ext}${warn}${
         state.missing_on_prom ? `<div class="err-text">${state.missing_on_prom} товаров считались выгруженными, но на Prom их нет —
           они в фильтре «Ошибка»: отправьте заново или удалите из программы.</div>` : ""}`;
     const fix = $("#ext-fix");
     if (fix) fix.onclick = () => busy(fix, openExtIds);
+    if (state.ext_running) {
+      catalogTimer = setTimeout(async () => {
+        try { showCatalogState(await api("/api/prom/catalog")); } catch { /* повторим при следующем обновлении */ }
+      }, 5000);
+    }
   }
 }
 
-// «Ідентифікатор_товару» в кабинет Prom: API Prom его не меняет, поэтому — файл для импорта в кабинете
+// «Ідентифікатор_товару» на Prom: программа записывает его сама импортом через API — сначала 2 товара с проверкой
 async function openExtIds() {
   let info;
   try { info = await api("/api/prom/external-ids"); } catch (err) { toast(err.message, "error"); return; }
@@ -525,34 +537,30 @@ async function openExtIds() {
   const sample = info.sample.map((p) => `<li>${esc(p.name)} — ID <b>${esc(p.external_id)}</b>
     · <a href="${esc(p.prom_url)}" target="_blank" rel="noopener">открыть на Prom ↗</a></li>`).join("");
   modal.innerHTML = `<div class="modal-box preview-box">
-    <h2>Прописать ID товарам на Prom</h2>
+    <h2>Записать ID товарам на Prom</h2>
     <p>Программа узнаёт товары на Prom по полю «Ідентифікатор_товару». У части ваших товаров в кабинете оно пустое,
       и при отправке Prom может создать копию. Программа уже дала этим товарам ID — их код, а если кода нет или он
-      повторяется, <code>PROM-номер</code>. Осталось один раз записать эти ID в кабинет Prom: сделать это можно только
-      импортом файла (API Prom такое поле не меняет).</p>
-    ${info.flagged ? "" : `<p class="small muted">Каталог загружали прошлой версией программы, поэтому в файле все
-      ${info.count} товаров с Prom. У товаров, где ID уже есть, в файле он тот же — для них ничего не изменится.</p>`}
+      повторяется, <code>PROM-номер</code>. Осталось записать эти ID на Prom — программа сделает это сама.</p>
     <ol class="ext-steps">
-      <li><b>Сначала проба на 2 товарах.</b> <a class="btn small" href="/api/prom/external-ids.xlsx?limit=2">⬇ Пробный файл</a>
-        <ul class="small">${sample}</ul></li>
-      <li>Кабинет Prom → «Товари та послуги» → «Імпорт» → из файла → выберите скачанный файл. Если Prom спросит, что
-        обновлять, ничего лишнего не отмечайте: в файле только номер товара на Prom и ID.</li>
-      <li>Откройте эти 2 товара в кабинете: название, цена и фото не изменились, копий не появилось, в поле
-        «Ідентифікатор товару» стоит ID из списка выше.</li>
-      <li>Всё хорошо — <a class="btn small" href="/api/prom/external-ids.xlsx">⬇ Файл для всех (${info.count})</a> и так же
-        загрузите в кабинете. Что-то не так — не загружайте и напишите в «🆘 Не получается?».</li>
+      <li>Сначала <b>проба на 2 товарах</b>: <ul class="small">${sample}</ul>
+        Программа проверит, что ID записался именно этим товарам, а цена и наличие не изменились.</li>
+      <li>Всё в порядке — остальные ${Math.max(0, info.count - 2)} товаров одним файлом. Если что-то не так, программа
+        остановится и скажет, что именно.</li>
     </ol>
+    <p class="small muted">Меняется только «Ідентифікатор_товару»: названия, цены, наличие, описания и фото остаются
+      как есть, копий не появляется (проверено на тестовых товарах). Prom обрабатывает такие файлы медленно — всё
+      займёт 10–20 минут, окно можно закрыть. ID, которые на Prom уже есть, программа не трогает.</p>
     <div class="toolbar" style="margin:12px 0 0;justify-content:flex-end">
       <button class="btn" data-a="close">Закрыть</button>
-      <button class="btn primary" data-a="done">Готово, файл загружен</button>
+      <button class="btn primary" data-a="write">Записать ID на Prom (${info.count})</button>
     </div></div>`;
   modal.querySelector('[data-a="close"]').onclick = () => modal.classList.add("hidden");
-  modal.querySelector('[data-a="done"]').onclick = (e) => busy(e.target, async () => {
+  modal.querySelector('[data-a="write"]').onclick = (e) => busy(e.target, async () => {
     try {
-      const r = await api("/api/prom/external-ids/done", { method: "POST" });
+      const state = await api("/api/prom/external-ids/write", { method: "POST" });
       modal.classList.add("hidden");
-      toast("Готово. При следующей загрузке каталога программа перепроверит ID", "ok");
-      showCatalogState(r.state);
+      toast("Записываю ID на Prom — ход виден над списком", "ok");
+      showCatalogState(state);
     } catch (err) { toast(err.message, "error"); }
   });
   modal.classList.remove("hidden");

@@ -414,7 +414,7 @@ def test_public_feed_skips_deleting_and_broken_products(client):
 # Обработчики, которым действительно нужен цикл событий (await сети, загрузка файла, фоновая задача).
 # Остальные — обычные def: FastAPI выполняет их в отдельном потоке, и долгая запись в базу не подвешивает программу.
 ASYNC_OK = {"supplier_restore_deleted", "upload_images", "diagnose_start", "prom_link", "check_connection",
-            "import_upload", "upload_supplier_source", "run_supplier", "prom_catalog_load", "refresh_orders",
+            "import_upload", "upload_supplier_source", "run_supplier", "prom_catalog_load", "prom_external_ids_write", "refresh_orders",
             "order_status", "support_create", "handler"}  # handler — отдача страниц (FileResponse)
 
 

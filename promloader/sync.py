@@ -246,12 +246,31 @@ def _per_product_errors(result: dict) -> dict:
 
 BUSY_RETRY_SECONDS = 120
 BUSY_GIVE_UP = timedelta(hours=12)
+BUSY_HINT_AFTER = timedelta(minutes=20)
+CABINET_HINT = ("Prom не запускает новый импорт, пока прошлый не подтверждён или не отменён. Откройте в кабинете Prom "
+                "«Товари» → «Імпорт»: если там импорт «в процесі» с ошибками — нажмите «Скасувати» (или «Продовжити "
+                "імпорт»). Программа ждёт и повторит сама")
+
+
+def busy_text(started_at: str | None = None) -> str:
+    """Что сказать, когда Prom занят прошлым импортом. Проверено на живом кабинете (2026-10-09): импорт, у которого
+    Prom нашёл ошибки строк, остаётся «в процесі» и блокирует все новые, пока его не отменят в кабинете."""
+    last = db.query_one("SELECT result FROM sync_jobs WHERE kind = 'import' AND status IN ('done', 'failed') "
+                        "AND result IS NOT NULL ORDER BY id DESC LIMIT 1")
+    try:
+        had_errors = bool(last and error_positions(json.loads(last["result"])))
+    except ValueError:
+        had_errors = False
+    waited = datetime.now(timezone.utc) - datetime.fromisoformat(started_at) if started_at else timedelta(0)
+    if had_errors or waited > BUSY_HINT_AFTER:
+        return CABINET_HINT
+    return "Prom ещё выполняет предыдущий импорт и не даёт запустить новый — программа подождёт и повторит сама"
 
 
 def _fail_or_retry(job: dict, err: PromError) -> None:
     if getattr(err, "busy", False) and datetime.now(timezone.utc) - datetime.fromisoformat(job["created_at"]) < BUSY_GIVE_UP:
         # Prom занят другим импортом — это не ошибка: ждём, попытки не тратим
-        _update_job(job["id"], last_error=str(err), next_run_at=_at(BUSY_RETRY_SECONDS))
+        _update_job(job["id"], last_error=busy_text(job["created_at"]), next_run_at=_at(BUSY_RETRY_SECONDS))
         return
     attempts = job["attempts"] + 1
     if err.retryable and attempts < MAX_ATTEMPTS:

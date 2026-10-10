@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-09 · версия 2.3.1_
+_Обновлено: 2026-10-10 · версия 2.4.0_
 
 ## Модули
 
@@ -23,7 +23,7 @@ _Обновлено: 2026-10-09 · версия 2.3.1_
 | `rates.py` | 259 | Курс НБУ (кеш на день), настройки курса, `Table.rate` (свой курс поставщика), `coverage`, `check_changed`, `mark_applied` |
 | `diagnose.py` | 213 | «Проверка выгрузки» одного товара по шагам |
 | `promdelete.py` | 196 | Удаление с Prom: `check`, `request`, `process`, `retry`, `cancel` |
-| `promcatalog.py` | 204 | Каталог с Prom: `load` (страницы по `last_id`), `_upsert`, `reconcile`, `recover` (прерванная загрузка при запуске); товар без внешнего ID на Prom — `_own_id` (код, если не занят другим товаром Prom, иначе `PROM-номер`) и пометка `prom_no_ext`; `missing_ext_xlsx` — Excel для импорта в кабинете («Унікальний_ідентифікатор» → «Ідентифікатор_товару»), `mark_ext_done` |
+| `promcatalog.py` | 204 | Каталог с Prom: `load` (страницы по `last_id`), `_upsert`, `reconcile`, `recover` (прерванная загрузка при запуске); товар без внешнего ID на Prom — `_own_id` (код, если не занят другим товаром Prom, иначе `PROM-номер`) и пометка `prom_no_ext`; запись ID на Prom через API — `run_ext_ids` → `write_ext_ids` (живой каталог; пропуск, если на Prom уже другой ID или ID занят; проба `EXT_TRIAL` = 2, затем остальные; `_ext_xlsx` — номер, название и код как на Prom, ID; `EXT_IMPORT_SETTINGS` с `updated_fields: ["sku"]` — без него Prom стирает цену и наличие, а «Ідентифікатор_товару» пишет всегда; `_verify` по `by_external_id` + цена, наличие, название и код не изменились; `_confirm` снимает `prom_no_ext`), ход — `ext_*` в `prom_catalog_state` |
 | `prom_api.py` | 183 | `PromClient`, `PromError(retryable, busy)`, `DEFAULT_IMPORT_SETTINGS` (`mark_missing_product_as: none`), `import_state` |
 | `aibulk.py` | 196 | Массовый ИИ, откат; `estimate` (цена до запуска), `get` → `spent` |
 | `orders.py` | 297 | Заказы: `poll` (всё изменённое с прошлой полной проверки — `last_modified_from` с запасом `OVERLAP`, страницы по `last_id`, незаконченная загрузка продолжается по `orders_cursor`), `_where` (поиск: номер, телефон, имя, товар; даты), `TRANSITIONS` (допустимые переходы), `set_status` (проверяет `processed_ids`), уведомления о новых — `_notify` |
@@ -50,7 +50,7 @@ _Обновлено: 2026-10-09 · версия 2.3.1_
 | Выгрузка | `POST /api/sync`, `GET /api/sync/jobs`, `…/jobs/{id}/file`, `…/jobs/{id}/retry`, `GET /api/sync/photos`, `POST /api/diagnose`, `GET /api/diagnose/{run_id}`, `GET /feed/prom.yml`, `GET /feed/{name}.xml` |
 | Импорт файла | `POST /api/import/upload`, `GET /api/import/{token}/sheet`, `…/image`, `POST …/preview`, `…/commit` |
 | Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`), `POST …/preview` |
-| Prom | `GET/POST /api/prom/catalog`, `GET /api/prom/external-ids` (+ `.xlsx?limit=`), `POST /api/prom/external-ids/done`, `GET /api/orders` (`status, q, date_from, date_to, limit, offset` → `items, total, counts`), `POST /api/orders/refresh`, `…/seen` (`ids`; без них — все), `…/{id}/status` |
+| Prom | `GET/POST /api/prom/catalog`, `GET /api/prom/external-ids` (сколько и пример), `POST /api/prom/external-ids/write` (запись в фоне), `GET /api/orders` (`status, q, date_from, date_to, limit, offset` → `items, total, counts`), `POST /api/orders/refresh`, `…/seen` (`ids`; без них — все), `…/{id}/status` |
 | ИИ | `POST /api/ai/check`, `GET/POST /api/ai/bulk`, `POST /api/ai/bulk/estimate` (`action` + `ids`/`filter`), `…/{job_id}/status`, `…/{job_id}/revert`; окно «✨ ИИ»: `GET /api/ai/status` (выбор, расходы, лимиты, `usd_rate`), `GET /api/ai/models` (цены, статусы), `POST /api/ai/models/check` `{models}`, `POST /api/ai/model` `{provider?, model?, free_tier?}` (ключ — только в «Настройках»); `…/products/{id}/ai` → `{changes, usage}`; `/api/meta.ai` — модель, `auto`, `free`, `today_*` |
 | Настройки и сервис | `GET/POST /api/settings`, `…/check`, `GET /api/meta`, `/api/update/check`, `/api/update/install`, `/api/backups*`, `/api/shutdown`, `/api/restart`, `/api/autostart`, `/api/schedules*`, `/api/r2/check`, `/api/r2/stats` |
 | Telegram и поддержка | `/api/telegram/recipients*` (+ `outbox`), `POST /api/telegram/retry`, `/api/telegram/candidates`, `/api/support*`, `/api/support/channel/chats` |
@@ -86,3 +86,6 @@ _Обновлено: 2026-10-09 · версия 2.3.1_
 - `/api/meta.first_steps` — для «Первых шагов»: `token`, `photos` (`r2`/`site`/`tunnel`/`off`), `products`, `suppliers`, `sent`.
 - Страницы (`main._page`) отдаются с `?v=<версия>` в ссылках на `/static/*.js|css`, сами файлы — с `Cache-Control: no-cache` (`StaticNoCache`). Иначе после обновления браузер брал старые скрипты к новому HTML.
 - Внешний ID существующего товара на Prom через API не поменять (`/products/edit` его не принимает) — только импортом Excel в кабинете. Если у магазина пакет без API, Prom отвечает 403 «Api is not available…» — `PromError.no_api`.
+- Импорт Prom с ошибками строк (`prom_api.error_positions`: `errors[].errors[].positions`, `with_errors_count` при этом 0)
+  остаётся «в процесі» и блокирует новые импорты, пока его не отменят в кабинете — `sync.busy_text`/`CABINET_HINT`.
+  Файл импорта без колонки поля = «очистить поле», если поле есть в `updated_fields` (проверено 2026-10-10).

@@ -352,6 +352,25 @@ def test_prom_busy_with_another_import_waits_instead_of_failing():
     assert all(b"updated_fields" in r.content for r in uploads)
 
 
+def test_busy_after_import_with_row_errors_points_to_cabinet():
+    """Живой Prom (2026-10-09): импорт с ошибками строк висит «в процесі» и не даёт запустить новый, пока его не
+    отменят в кабинете — задача говорит, где это сделать, а не просто «подождёт»."""
+    a = ready_product(external_id="A")
+    sync.enqueue([a])
+    fake = FakeProm(statuses=[(200, {"status": "PARTIAL", "total": 1, "with_errors_count": 0, "errors": [
+        {"category": "validation", "errors": [{"code": 1001, "field_code": "name", "positions": ["A"]}]}]})])
+    run(fake)
+    make_due()
+    run(fake)
+    b = ready_product(external_id="B")
+    sync.enqueue([b])
+    busy = (400, {"status": 400, "message": "В данный момент действует ограничение на запуск одновременных импортов"})
+    fake = FakeProm(upload=[busy])
+    run(fake)
+    last = db.query_one("SELECT * FROM sync_jobs ORDER BY id DESC LIMIT 1")
+    assert last["status"] == "pending" and "«Товари» → «Імпорт»" in last["last_error"] and "Скасувати" in last["last_error"]
+
+
 def test_jobs_failed_because_prom_was_busy_are_requeued():
     pid = ready_product()
     sync.enqueue([pid])

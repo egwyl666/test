@@ -34,7 +34,11 @@ def _set_state(**fields) -> None:
 
 
 def recover() -> bool:
-    """При запуске: загрузка каталога, прерванная выключением, не должна «идти» вечно. True — была прервана."""
+    """При запуске: загрузка каталога (или запись ID), прерванная выключением, не должна «идти» вечно.
+    True — была прервана."""
+    if state().get("ext_running"):
+        _set_state(ext_running=False, ext_error="Запись ID прервана: программа была выключена. Запустите её снова",
+                   ext_finished_at=db.now())
     if not state().get("running"):
         return False
     _set_state(running=False, error="Загрузка прервана: программа была выключена. Запустите её снова",
@@ -124,18 +128,33 @@ def _own_id(sku: str, prom_id) -> str:
     return f"PROM-{prom_id}"
 
 
-# ---------- «Ідентифікатор_товару» в кабинет Prom ----------
-# API Prom не умеет менять внешний ID у существующего товара (/products/edit его не принимает). Это делается
-# импортом Excel в кабинете: Prom находит товар по «Унікальний_ідентифікатор» и записывает «Ідентифікатор_товару».
+# ---------- «Ідентифікатор_товару» на Prom ----------
+# API Prom не умеет менять внешний ID у существующего товара (/products/edit его не принимает), но умеет импорт Excel:
+# Prom находит товар по «Унікальний_ідентифікатор» и записывает «Ідентифікатор_товару». Проверено на живом кабинете
+# (2026-10-10, на своих тестовых товарах):
+# - без колонки названия Prom отклоняет каждую строку (ошибка 1001), и такой импорт висит «в процесі», не давая
+#   запустить ни один новый, пока его не отменят в кабинете;
+# - без updated_fields Prom стирает цену и наличие: их колонок нет — значит «пусто»;
+# - «Ідентифікатор_товару» Prom пишет всегда (файл без этой колонки его стирает), а остальные поля — только из
+#   updated_fields. Поэтому обновляем только код товара тем же значением, что на Prom: названия (в том числе
+#   украинское — колонку «Назва_позиції_укр» такой импорт не понимает), цена, наличие и описание не меняются,
+#   копий не появляется. Название в файле — только для проверки Prom.
 
 EXT_SHEET = "Export Products Sheet"
-EXT_HEADERS = ["Унікальний_ідентифікатор", "Ідентифікатор_товару"]
+EXT_HEADERS = ["Унікальний_ідентифікатор", "Назва_позиції", "Код_товару", "Ідентифікатор_товару"]
+EXT_IMPORT_SETTINGS = {"mark_missing_product_as": "none", "force_update": False, "only_available": False,
+                       "updated_fields": ["sku"]}
+EXT_TRIAL = 2
+EXT_WAIT_SECONDS = 1800  # Prom обрабатывает такой импорт 5–10 минут
+EXT_POLL_SECONDS = 10
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_sleep = asyncio.sleep
 
 
 def missing_ext_rows(limit: int | None = None) -> tuple[list, bool]:
-    """Товары для файла: помеченные при загрузке каталога как «без ID на Prom». Если пометок нет (каталог загружали
-    версией до 2.2.3) — все товары с номером Prom: у тех, где ID уже есть, в файле он тот же, ничего не меняется.
-    Второе значение — True, если это именно помеченные."""
+    """Товары, которым нужно записать ID на Prom: помеченные при загрузке каталога как «без ID на Prom». Если пометок
+    нет (каталог загружали версией до 2.2.3) — все товары с номером Prom: у тех, где ID на Prom уже есть, запись не
+    нужна (это видно по живому каталогу). Второе значение — True, если это именно помеченные."""
     base = ("SELECT id, name, external_id, prom_id FROM products WHERE prom_id IS NOT NULL "
             "AND status != 'deleting' AND external_id != ''")
     flagged = db.query(base + " AND prom_no_ext = 1 ORDER BY id" + (f" LIMIT {int(limit)}" if limit else ""))
@@ -144,30 +163,145 @@ def missing_ext_rows(limit: int | None = None) -> tuple[list, bool]:
     return db.query(base + " ORDER BY id" + (f" LIMIT {int(limit)}" if limit else "")), False
 
 
-def missing_ext_xlsx(limit: int | None = None) -> bytes:
+def _ext_xlsx(items: list[tuple[dict, dict]]) -> bytes:
+    """Файл для импорта: номер на Prom, название и код — как сейчас на Prom (чтобы ничего не изменилось), и ID."""
     import io
 
     import openpyxl
 
-    rows, _ = missing_ext_rows(limit)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = EXT_SHEET
     ws.append(EXT_HEADERS)
-    for r in rows:
-        ws.append([str(r["prom_id"]), r["external_id"]])
+    for row, live in items:
+        ws.append([str(row["prom_id"]), _text(live.get("name")), _text(live.get("sku")), row["external_id"]])
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-def mark_ext_done() -> int:
-    """Пользователь загрузил файл в кабинете: снимаем пометки и предупреждение (следующая загрузка каталога
-    перепроверит — если ID на Prom так и не появились, пометки вернутся)."""
+def _ext_state(**fields) -> None:
+    _set_state(**{f"ext_{k}": v for k, v in fields.items()})
+
+
+def _confirm(prom_ids: list[int]) -> None:
+    if not prom_ids:
+        return
     with db.tx() as c:
-        n = c.execute("UPDATE products SET prom_no_ext = 0 WHERE prom_no_ext = 1").rowcount
-    _set_state(no_external_id=0)
-    return n
+        c.execute(f"UPDATE products SET prom_no_ext = 0 WHERE prom_id {db.IN_LIST}", (db.as_list(prom_ids),))
+    left = db.query_one("SELECT COUNT(*) AS n FROM products WHERE prom_no_ext = 1")["n"]
+    _set_state(no_external_id=left)
+
+
+async def _live_catalog(client) -> dict[int, dict]:
+    out, last_id = {}, None
+    while True:
+        page = (await client.list_products(limit=PAGE, last_id=last_id)).get("products") or []
+        if not page:
+            return out
+        out.update({int(p["id"]): p for p in page if p.get("id") and _text(p.get("status")) not in SKIP_STATUSES})
+        next_id = page[-1].get("id")
+        if not next_id or next_id == last_id:
+            return out
+        last_id = next_id
+
+
+async def _import_and_wait(client, content: bytes) -> dict:
+    from .prom_api import error_positions, import_state
+
+    try:
+        import_id = await client.import_file(content, EXT_IMPORT_SETTINGS, "prom-id.xlsx", XLSX_TYPE)
+    except PromError as exc:
+        if exc.busy:
+            from .sync import CABINET_HINT
+            raise PromError(f"Prom занят другим импортом. {CABINET_HINT}")
+        raise
+    waited = 0
+    while True:
+        result = await client.import_status(import_id)
+        state = import_state(result)
+        if state == "failed":
+            raise PromError("Prom не принял файл с ID: " + json.dumps(result, ensure_ascii=False)[:300])
+        if state == "ok":
+            errors = error_positions(result)
+            if errors:
+                from .sync import CABINET_HINT
+                first = next(iter(errors.values()))
+                raise PromError(f"Prom нашёл ошибки в {len(errors)} строках ({first}). {CABINET_HINT}")
+            return result
+        if waited >= EXT_WAIT_SECONDS:
+            raise PromError("Prom слишком долго обрабатывает файл с ID — проверьте «Товари» → «Імпорт» в кабинете")
+        await _sleep(EXT_POLL_SECONDS)
+        waited += EXT_POLL_SECONDS
+
+
+async def _verify(client, items: list[tuple[dict, dict]]) -> tuple[list[int], str]:
+    """Какие товары получили ID именно на своём номере Prom. Если у товара изменились цена или наличие — стоп:
+    импорт должен был поменять только ID."""
+    ok = []
+    for row, live in items:
+        found = await client.get_by_external_id(row["external_id"])
+        if not found or int(found.get("id") or 0) != int(row["prom_id"]):
+            continue
+        for field in ("price", "presence", "name", "sku"):
+            if str(found.get(field)) != str(live.get(field)):
+                return ok, (f"Prom изменил «{field}» у товара «{_text(live.get('name'))}» (было {live.get(field)}, "
+                            f"стало {found.get(field)}) — запись остановлена, проверьте товар в кабинете")
+        ok.append(int(row["prom_id"]))
+    return ok, ""
+
+
+async def write_ext_ids(client) -> dict:
+    """Записывает на Prom ID товаров, у которых там его нет: сначала 2 товара с проверкой, потом остальные."""
+    rows, _ = missing_ext_rows()
+    live = await _live_catalog(client)
+    used = {_text(p.get("external_id")): pid for pid, p in live.items() if _text(p.get("external_id"))}
+    todo, already, skipped = [], [], 0
+    for r in rows:
+        p = live.get(int(r["prom_id"]))
+        current = _text(p.get("external_id")) if p else ""
+        if p is None:
+            skipped += 1  # товара на Prom уже нет
+        elif current == r["external_id"]:
+            already.append(int(r["prom_id"]))
+        elif current or used.get(r["external_id"]) not in (None, int(r["prom_id"])):
+            skipped += 1  # на Prom уже другой ID, или этот ID занят другим товаром — не трогаем
+        else:
+            todo.append((r, p))
+    _confirm(already)
+    done = len(already)
+    _ext_state(total=len(todo) + len(already), done=done, skipped=skipped)
+    for stage, items in (("проба на 2 товарах", todo[:EXT_TRIAL]), ("остальные товары", todo[EXT_TRIAL:])):
+        if not items:
+            continue
+        _ext_state(stage=f"{stage}: Prom обрабатывает файл ({len(items)})")
+        await _import_and_wait(client, _ext_xlsx(items))
+        ok, problem = await _verify(client, items)
+        _confirm(ok)
+        done += len(ok)
+        _ext_state(done=done)
+        if problem:
+            raise PromError(problem)
+        if len(ok) < len(items):
+            raise PromError(f"Prom записал ID только {len(ok)} из {len(items)} товаров ({stage}) — дальше не продолжаю. "
+                            "Загрузите каталог с Prom заново и попробуйте ещё раз")
+    return {"done": done, "skipped": skipped}
+
+
+async def run_ext_ids(client_factory) -> dict:
+    if not _lock.acquire(blocking=False):
+        raise PromError("Программа уже работает с каталогом Prom — подождите, пока закончит")
+    try:
+        _ext_state(running=True, error="", stage="читаю каталог Prom", done=0, total=0, skipped=0, finished_at=None)
+        async with client_factory() as client:
+            counts = await write_ext_ids(client)
+        _ext_state(running=False, stage="", finished_at=db.now())
+        return counts
+    except PromError as exc:
+        _ext_state(running=False, error=str(exc), finished_at=db.now())
+        raise
+    finally:
+        _lock.release()
 
 
 def _upsert_page(page: list[dict], counts: dict) -> None:
