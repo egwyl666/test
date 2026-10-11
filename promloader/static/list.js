@@ -102,7 +102,7 @@ function priceCell(p) {
   const ch = p.price_change;
   if (ch && ch.old && ch.old !== ch.new) {
     const up = Number(ch.new) > Number(ch.old);
-    notes.push(`<span class="${up ? "price-up" : "price-down"}" title="${esc(formatDate(ch.at))} · ${esc(ch.source)}">было ${esc(formatPrice(ch.old, ch.old_currency || p.currency))}</span>`);
+    notes.push(`<span class="${up ? "price-up" : "price-down"}" title="${esc(formatDate(ch.at))} · ${esc(I18N.tr(ch.source))}">было ${esc(formatPrice(ch.old, ch.old_currency || p.currency))}</span>`);
   }
   const costSm = p.cost_price !== null
     ? `<div class="small muted show-sm">закупка ${esc(formatPrice(p.cost_price, p.cost_currency || "UAH"))}</div>` : "";
@@ -115,7 +115,7 @@ function renderRows() {
   $("#empty").classList.toggle("hidden", list.items.length > 0 || filtered);
   $("#nothing-found").classList.toggle("hidden", list.items.length > 0 || !filtered);
   tbody.innerHTML = list.items.map((p) => {
-    const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.join(" · "))}</div>` : "";
+    const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.map(I18N.tr).join(" · "))}</div>` : "";
     const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
     const deleting = p.status === "deleting" ? `<div class="small deleting-note">${p.last_error
       ? `<span class="err-text">${esc(p.last_error.slice(0, 160))}</span>` : "Ждём подтверждения от Prom…"}
@@ -126,12 +126,13 @@ function renderRows() {
       <td><input type="checkbox" class="sel" ${list.selected.has(p.id) ? "checked" : ""}></td>
       <td>${p.thumb ? `<img class="thumb" src="${esc(p.thumb)}" alt="" loading="lazy">` : `<div class="thumb empty">▢</div>`}</td>
       <td>
-        <a class="name" href="/product?id=${p.id}">${esc(p.name) || '<span class="muted">Без названия</span>'}</a>
-        <div class="small muted">${esc(p.external_id)} · фото: ${p.image_count}${p.supplier_name ? ` · ${esc(p.supplier_name)}` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
+        ${p.name ? `<a class="name" href="/product?id=${p.id}" translate="no">${esc(p.name)}</a>`
+          : `<a class="name" href="/product?id=${p.id}"><span class="muted">Без названия</span></a>`}
+        <div class="small muted"><span translate="no">${esc(p.external_id)}</span> · <span>фото: ${p.image_count}</span>${p.supplier_name ? ` · <span translate="no">${esc(p.supplier_name)}</span>` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
         <div class="show-sm" style="margin-top:4px">${statusBadge(p.status)}</div>
         ${problems}${promError}${deleting}
       </td>
-      <td class="hide-sm">${esc(p.group_name)}</td>
+      <td class="hide-sm" translate="no">${esc(p.group_name)}</td>
       <td class="hide-sm cost">${costCell(p)}</td>
       <td class="price">${priceCell(p)}</td>
       <td class="hide-sm small">${esc(META.presence[p.presence] || "")}${p.quantity !== null ? ` · ${p.quantity}` : ""}</td>
@@ -247,7 +248,7 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", () => busy(
       if (res.accepted) toast(`В очереди на Prom: ${res.accepted}`, "ok");
       if (res.rejected.length) {
         const first = res.rejected[0];
-        toast(`Не отправлено ${res.rejected.length}: «${first.name || "без названия"}» — ${first.reasons.join("; ")}`, "error");
+        toast(`Не отправлено ${res.rejected.length}: «${first.name || "без названия"}» — ${first.reasons.map(I18N.tr).join("; ")}`, "error");
       }
       loadJobs();
     } else if (action === "ai") {
@@ -322,7 +323,7 @@ async function loadJobs() {
     photos && photos.active ? "📷 фото с компьютера сейчас доступны Prom через временный адрес" : "",
     photos && photos.error ? `📷 ${photos.error}` : "",
     active ? "обновляется автоматически" : "",
-  ].filter(Boolean).join(" · ");
+  ].filter(Boolean).map(I18N.tr).join(" · ");
   if (jobs.length) {
     $("#jobs").innerHTML = jobs.slice(0, 6).map((j) => {
       const [cls, label] = JOB_STATUS[j.status] || ["draft", j.status];
@@ -361,7 +362,7 @@ function summarizeResult(r) {
   }
   const parts = [];
   for (const [key, label] of [["imported", "импортировано"], ["created", "создано"], ["updated", "обновлено"], ["not_changed", "без изменений"], ["with_errors_count", "с ошибками"]]) {
-    if (r[key]) parts.push(`${label}: ${r[key]}`);
+    if (r[key]) parts.push(`${I18N.tr(label)}: ${r[key]}`);
   }
   return parts.join(", ") || (r.status ? `статус: ${r.status}` : "");
 }
@@ -449,11 +450,11 @@ async function loadAiJobs() {
     const c = j.counts;
     const doneCount = (c.done || 0) + (c.skipped || 0) + (c.error || 0);
     const stats = [`${doneCount} из ${j.total}`, c.done ? `изменено ${c.done}` : "", c.skipped ? `пропущено ${c.skipped}` : "",
-      c.error ? `ошибок ${c.error}` : ""].filter(Boolean).join(" · ");
+      c.error ? `ошибок ${c.error}` : ""].filter(Boolean).map(I18N.tr).join(" · ");
     const active = j.status === "running" || j.status === "paused";
     return `<div class="job">
       <span class="badge ${cls}">${label}</span>
-      <span>${esc(j.label)}${j.instruction ? `: «${esc(j.instruction.slice(0, 60))}»` : ""}</span>
+      <span><span>${esc(j.label)}</span>${j.instruction ? `: «<span translate="no">${esc(j.instruction.slice(0, 60))}</span>»` : ""}</span>
       <span class="msg">${esc(stats)}${j.spent && j.spent.requests ? ` · потрачено ${esc(aiMoney(j.spent.cost_usd, j.spent.cost_uah, { withUsd: false }))}` : ""}${j.message ? ` · ${esc(j.message)}` : ""}${j.errors.length ? ` · ${esc(j.errors[0].message)}` : ""}</span>
       ${j.status === "running" ? `<button class="btn small" data-ai-job="${j.id}" data-st="paused">Пауза</button>` : ""}
       ${j.status === "paused" ? `<button class="btn small" data-ai-job="${j.id}" data-st="running">Продолжить</button>` : ""}
@@ -534,7 +535,7 @@ async function openExtIds() {
     modal.className = "modal hidden";
     document.body.appendChild(modal);
   }
-  const sample = info.sample.map((p) => `<li>${esc(p.name)} — ID <b>${esc(p.external_id)}</b>
+  const sample = info.sample.map((p) => `<li><span translate="no">${esc(p.name)}</span> — ID <b translate="no">${esc(p.external_id)}</b>
     · <a href="${esc(p.prom_url)}" target="_blank" rel="noopener">открыть на Prom ↗</a></li>`).join("");
   modal.innerHTML = `<div class="modal-box preview-box">
     <h2>Записать ID товарам на Prom</h2>
@@ -586,8 +587,8 @@ function renderFirstSteps() {
   const photo = {
     r2: [true, "Фото хранятся в Cloudflare R2 — Prom забирает их в любое время."],
     site: [true, "Фото отдаются по постоянному адресу сайта."],
-    tunnel: [true, "Фото с компьютера Prom забирает через временный адрес — пока компьютер включён. " +
-      "Надёжнее — <a href=\"/settings\">хранилище R2</a> (бесплатно)."],
+    tunnel: [true, `Фото с компьютера Prom забирает через временный адрес — пока компьютер включён. Надёжнее —
+      <a href="/settings">хранилище R2</a> (бесплатно).`],
     off: [false, "Prom не сможет забрать фото с компьютера: включите временный адрес или R2 в <a href=\"/settings\">Настройках</a>."],
   }[f.photos] || [false, ""];
   const steps = [
@@ -619,10 +620,10 @@ $("#first-steps-hide").onclick = () => {
   api("/api/prom/catalog").then(showCatalogState).catch(() => {});
   loadAiJobs();
   $("#supplier-filter").innerHTML = `<option value="">Все поставщики</option><option value="none">Без поставщика</option>` +
-    META.suppliers.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join("");
+    META.suppliers.map((s) => `<option value="${s.id}" translate="no">${esc(s.name)}</option>`).join("");
   $("#supplier-filter").classList.toggle("hidden", !META.suppliers.length);
   $("#f-group").innerHTML = `<option value="">Все группы</option><option value="-">Без группы</option>` +
-    (META.groups || []).map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+    (META.groups || []).map((g) => `<option value="${esc(g)}" translate="no">${esc(g)}</option>`).join("");
   $("#f-presence").innerHTML = `<option value="">Любое наличие</option>` +
     Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#e-presence").innerHTML = `<option value="">не менять</option>` +
@@ -644,7 +645,7 @@ async function openPricesModal(sel) {
   $("#prices-currency").value = "";
   try {
     const sum = await api("/api/products/currencies", { method: "POST", json: sel });
-    const parts = Object.entries(sum).map(([c, n]) => `${c === "UAH" ? "в гривнах" : "в " + c} — ${n}`);
+    const parts = Object.entries(sum).map(([c, n]) => I18N.tr(c === "UAH" ? `в гривнах — ${n}` : `в ${c} — ${n}`));
     $("#prices-currency-hint").textContent = parts.length ? `Сейчас у выбранных товаров цена ${parts.join(", ")}. ` +
       (sum.UAH ? "Если на самом деле это доллары — выберите «доллары $»." : "") : "";
   } catch { $("#prices-currency-hint").textContent = ""; }
@@ -697,7 +698,7 @@ async function doDelete(fromProm) {
     if (res.deleted) parts.push(`удалено: ${res.deleted}`);
     if (res.deleting) parts.push(`удаляются с Prom: ${res.deleting} — уйдут из списка, когда Prom подтвердит`);
     if (res.kept_on_prom) parts.push(`на Prom остались: ${res.kept_on_prom}`);
-    if (parts.length) toast(parts.join(" · "), "ok");
+    if (parts.length) toast(parts.map(I18N.tr).join(" · "), "ok");
     if (res.rejected.length) toast(`Не удалено ${res.rejected.length}: ${res.rejected[0].reason}`, "error");
     resetSelection();
     loadProducts();
@@ -732,7 +733,7 @@ $("#edit-apply").onclick = async () => {
     if (res.errors.length) toast(`Не изменено ${res.errors.length}: «${res.errors[0].name}» — ${res.errors[0].error}`, "error");
     if (fields.group_name) await loadMeta().then(() => {
       $("#f-group").innerHTML = `<option value="">Все группы</option><option value="-">Без группы</option>` +
-        (META.groups || []).map((g) => `<option value="${esc(g)}">${esc(g)}</option>`).join("");
+        (META.groups || []).map((g) => `<option value="${esc(g)}" translate="no">${esc(g)}</option>`).join("");
       renderFilterControls();
     });
     loadProducts();

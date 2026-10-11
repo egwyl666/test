@@ -85,11 +85,14 @@ def human_wait(seconds: float | None) -> str:
     if seconds < 90:
         return f"{max(1, seconds)} с"
     minutes = round(seconds / 60)
-    text = f"{minutes} мин" if minutes < 90 else f"{minutes // 60} ч" + (f" {minutes % 60} мин" if minutes % 60 else "")
-    if seconds >= 3600:
-        at = time.strftime("%H:%M", time.localtime(time.time() + seconds))
-        text += f" (около {at})"
-    return text
+    if seconds < 3600:
+        return f"{minutes} мин"
+    # каждая форма — целой фразой: так её находит украинский словарь интерфейса
+    at = time.strftime("%H:%M", time.localtime(time.time() + seconds))
+    hours, rest = divmod(minutes, 60)
+    if minutes < 90:
+        return f"{minutes} мин (около {at})"
+    return f"{hours} ч {rest} мин (около {at})" if rest else f"{hours} ч (около {at})"
 
 
 # ---------- ключ ----------

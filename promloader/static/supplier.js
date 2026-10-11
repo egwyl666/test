@@ -65,7 +65,7 @@ function showState(s) {
   document.title = `${s.name} — Prom Loader`;
   $("#products-link").href = `/?supplier=${s.id}`;
   $("#source-info").innerHTML = s.source_name
-    ? `Текущий прайс: <b>${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
+    ? `Текущий прайс: <b translate="no">${esc(s.source_name)}</b> · в прайсе ${s.items_active} товаров` +
       (gridOpened ? "" : ` · <a href="#" id="open-current">открыть для настройки колонок</a>`) +
       (s.items_deleted ? ` · <a href="#deleted-panel">удалено вами: ${s.items_deleted}</a>` : "")
     : "";
@@ -87,7 +87,7 @@ async function loadDeleted(count) {
   $("#deleted-all").checked = false;
   $("#deleted-table tbody").innerHTML = rows.map((r) => `<tr>
     <td><input type="checkbox" class="del-sel" value="${esc(r.sku)}"></td>
-    <td class="small">${esc(r.sku)}</td><td>${esc(r.name) || '<span class="muted">без названия</span>'}</td>
+    <td class="small" translate="no">${esc(r.sku)}</td><td>${r.name ? `<span translate="no">${esc(r.name)}</span>` : '<span class="muted">без названия</span>'}</td>
     <td class="small">${r.price != null ? esc(formatPrice(r.price, r.currency || "UAH")) : ""}</td>
     <td class="small muted">${r.missing ? "сейчас нет в прайсе" : ""}</td></tr>`).join("");
   updateDeletedButtons();
@@ -325,7 +325,9 @@ async function showRate() {
       note = r.error ? r.error + " " : `Общий курс: 1 ${CUR_SIGN[cur] || cur} = ${k.toFixed(2)} грн (меняется на странице «Наценка»). `;
     } catch (err) { note = err.message + " "; }
   }
-  info.textContent = note + (k ? `Закупка 10 ${CUR_SIGN[cur] || cur} = ${(10 * k).toFixed(2)} грн, дальше — наценка. ` : "") +
-    "Цены в гривнах не пересчитываются. Чтобы работала наценка, колонку с ценой поставщика отметьте как «Цена закупки».";
+  // фразы переводятся по одной: склеенные, они не нашлись бы в словаре
+  info.textContent = [note, k ? `Закупка 10 ${CUR_SIGN[cur] || cur} = ${(10 * k).toFixed(2)} грн, дальше — наценка.` : "",
+    "Цены в гривнах не пересчитываются. Чтобы работала наценка, колонку с ценой поставщика отметьте как «Цена закупки»."]
+    .map((x) => I18N.tr(x.trim())).filter(Boolean).join(" ");
 }
 ["#rate-mode", "#rate-value", "#def-currency"].forEach((sel) => $(sel).addEventListener("input", showRate));

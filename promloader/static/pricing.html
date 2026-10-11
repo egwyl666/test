@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Наценка — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
 </head>
@@ -85,7 +87,7 @@
 
     function supplierOptions(selected) {
       return `<option value="">все</option>` + META.suppliers.map((s) =>
-        `<option value="${s.id}" ${String(s.id) === String(selected ?? "") ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+        `<option value="${s.id}" translate="no" ${String(s.id) === String(selected ?? "") ? "selected" : ""}>${esc(s.name)}</option>`).join("");
     }
 
     function render() {
@@ -224,8 +226,8 @@
         const data = await api("/api/rates", { method: "PUT", json: body });
         fillRates(data);
         const r = data.result;
-        $("#rate-result").textContent = `Сохранено. Цен изменено: ${r.changed}` + (r.queued ? `, отправлено на Prom: ${r.queued}` : "") +
-          (r.warnings.length ? ` · ${r.warnings.join("; ")}` : "");
+        $("#rate-result").textContent = I18N.tr(`Сохранено. Цен изменено: ${r.changed}${r.queued ? `, отправлено на Prom: ${r.queued}` : ""}`) +
+          (r.warnings.length ? ` · ${r.warnings.map(I18N.tr).join("; ")}` : "");
         $("#rate-result").style.color = r.warnings.length ? "var(--err)" : "var(--ok)";
         test();
       } catch (err) { $("#rate-result").textContent = err.message; $("#rate-result").style.color = "var(--err)"; }

@@ -111,7 +111,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
       const pics = g.imageRows[String(n)];
       html += `<tr class="${isHeader ? "header" : on ? "on" : "off"}" data-row="${n}">
         <td class="rn">${isHeader ? `заголовок ${n}` : `<label>${pics ? `<span title="картинок в строке: ${pics}">📷</span>` : ""}${n}<input type="checkbox" ${on ? "checked" : ""}></label>`}</td>
-        ${row.map((v, ci) => `<td class="${mappedIdx.has(ci) ? "mapped-col" : ""}" title="${esc(v.slice(0, 500))}">${esc(cell(v))}</td>`).join("")}
+        ${row.map((v, ci) => `<td translate="no" class="${mappedIdx.has(ci) ? "mapped-col" : ""}" title="${esc(v.slice(0, 500))}">${esc(cell(v))}</td>`).join("")}
       </tr>`;
     });
     const rest = g.rows.length - g.shown;
@@ -126,7 +126,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
       .filter((r) => (Array.isArray(r) ? !r.some((x) => mapped.includes(x)) : !mapped.includes(r)))
       .map((r) => (Array.isArray(r) ? r.map((x) => META.targets[x]).join(" или ") : META.targets[r]));
     el("selected").innerHTML = `строк выбрано: <b>${g.selected.size}</b>` +
-      (missing.length ? ` · <span style="color:var(--err)">не выбраны колонки: ${esc(missing.join("; "))}</span>` : "");
+      (missing.length ? ` · <span style="color:var(--err)">не выбраны колонки: ${esc(missing.map(I18N.tr).join("; "))}</span>` : "");
   }
 
   el("grid").addEventListener("change", (e) => {
@@ -183,7 +183,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
     // preset — сохранённые настройки поставщика: {sheet, header_row, rows, mapping}
     async open(token, sheets, preset = null) {
       g.token = token;
-      el("sheet").innerHTML = sheets.map((s) => `<option>${esc(s)}</option>`).join("");
+      el("sheet").innerHTML = sheets.map((s) => `<option translate="no">${esc(s)}</option>`).join("");
       g.mappingTouched = false;
       g.specTouched = false;
       let sheet = sheets[0];
@@ -231,7 +231,7 @@ function renderItemsPreview(box, items, { token, sheet, onlyBad = false, limit =
     return `<div>
       <div class="row-no"><span>строка ${i.row}${i.existing_id ? " · обновит существующий" : ""}${cost}</span>
         <span>${i.embedded_images ? `📷 из Excel: ${i.embedded_images}` : ""}</span></div>
-      <div class="${i.errors.length ? "bad" : ""}" style="border-radius:10px">${renderTile(p)}</div>
+      <div class="${i.errors.length ? "bad" : ""}" style="border-radius:10px" translate="no">${renderTile(p)}</div>
       ${checks ? `<ul class="check-list" style="margin-top:6px">${checks}</ul>` : ""}
     </div>`;
   }).join("") + (list.length > shown.length

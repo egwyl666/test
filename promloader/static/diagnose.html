@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Проверка выгрузки — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
   <style>
@@ -57,14 +59,14 @@
       const order = { error: 0, ready: 1, synced: 2, draft: 3, sending: 4 };
       const items = r.items.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
       $("#product").innerHTML = items.map((p) =>
-        `<option value="${p.id}">${esc(p.name)} · ${esc(p.external_id)} · ${esc(META.statuses[p.status] || p.status)}</option>`).join("")
+        `<option value="${p.id}" translate="no">${esc(p.name)} · ${esc(p.external_id)} · ${esc(I18N.tr(META.statuses[p.status] || p.status))}</option>`).join("")
         || `<option value="">Нет товаров</option>`;
       if (want && !items.some((p) => String(p.id) === want)) {
         // товар не попал в первые 500 — добавляем его в список, чтобы проверялся именно он
         try {
           const p = await api(`/api/products/${want}`);
           $("#product").insertAdjacentHTML("afterbegin",
-            `<option value="${p.id}">${esc(p.name)} · ${esc(p.external_id)} · ${esc(META.statuses[p.status] || p.status)}</option>`);
+            `<option value="${p.id}" translate="no">${esc(p.name)} · ${esc(p.external_id)} · ${esc(I18N.tr(META.statuses[p.status] || p.status))}</option>`);
         } catch (err) {
           toast(err.status === 404 ? "Этот товар не найден — выберите другой" : err.message, "error");
           return;
@@ -80,7 +82,7 @@
         <div class="diag-step">
           <span class="icon">${ICON[s.status] || "•"}</span>
           <div><b>${esc(s.title)}</b><div class="detail">${esc(s.detail || (s.status === "running" ? "выполняется…" : ""))}</div></div>
-          ${s.data ? `<details><summary class="muted">подробности</summary><pre>${esc(JSON.stringify(s.data, null, 2))}</pre></details>` : ""}
+          ${s.data ? `<details><summary class="muted">подробности</summary><pre translate="no">${esc(JSON.stringify(s.data, null, 2))}</pre></details>` : ""}
         </div>`).join("");
       const v = $("#verdict");
       v.classList.toggle("hidden", !st.verdict);

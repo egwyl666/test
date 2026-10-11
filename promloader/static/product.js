@@ -274,6 +274,7 @@ function applyServer(product) {
     if (["price", "currency", "cost_currency"].includes(el.name)) el.value = product[el.name] ?? "";
   }
   $("#title").textContent = product.name || "Новый товар";
+  $("#title").translate = !product.name;  // название товара — данные, «Новый товар» — интерфейс
   $("#status").innerHTML = statusBadge(product.status);
   $("#last-error").textContent = product.status === "error" && product.last_error ? "Ошибка Prom: " + product.last_error : "";
   ["#btn-duplicate", "#btn-delete", "#btn-send"].forEach((s) => ($(s).disabled = false));
@@ -311,8 +312,10 @@ async function loadHistory() {
   catch (err) { $("#history-list").textContent = err.message; return; }
   $("#history-list").innerHTML = data.items.length ? data.items.map((r) => {
     const what = esc(data.labels[r.field] || r.field);
-    const change = r.field === "created" || r.field === "deleted" || r.field === "prom"
-      ? esc(r.new) : `<s>${esc(r.old || "—")}</s> → ${esc(r.new || "—")}`;
+    // значения — данные товара: не переводим (кроме служебных «на Prom» / «нет на Prom»)
+    const value = (v) => `<span translate="no">${esc(v || "—")}</span>`;
+    const change = r.field === "prom" ? esc(r.new) : r.field === "created" || r.field === "deleted"
+      ? value(r.new) : `<s>${value(r.old)}</s> → ${value(r.new)}`;
     const back = r.revertable ? ` <button type="button" class="btn small" data-revert="${r.id}"
       title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : "";
     return `<div class="history-row"><span class="muted">${esc(formatDate(r.at))}</span> <b>${what}</b>: ${change}` +
@@ -346,7 +349,7 @@ function renderSupplier(p) {
   box.classList.toggle("hidden", !p.supplier);
   if (p.supplier) {
     box.classList.toggle("missing", p.supplier.missing);
-    box.innerHTML = `Товар поставщика <a href="/supplier?id=${p.supplier.id}"><b>${esc(p.supplier.name)}</b></a>.
+    box.innerHTML = `Товар поставщика <a href="/supplier?id=${p.supplier.id}"><b translate="no">${esc(p.supplier.name)}</b></a>.
       ${p.supplier.missing ? "<b>Сейчас его нет в прайсе поставщика.</b> " : ""}
       Цена и наличие обновляются из прайса. Поля, которые вы поменяли руками, помечены <span class="lock" style="cursor:default">🔒 своё</span> —
       поставщик их не перезапишет.${renderOffers(p)}`;
@@ -381,7 +384,8 @@ function renderSupplier(p) {
       const m = p.price - costUah;
       parts.push(`маржа ${formatPrice(m, p.currency)} (${Math.round((m / costUah) * 100)}%)`);
     }
-    margin.textContent = parts.join(" · ") + (locked.has("price") ? "" : " · цена считается по правилам наценки");
+    if (!locked.has("price")) parts.push("цена считается по правилам наценки");
+    margin.textContent = parts.map(I18N.tr).join(" · ");
   } else {
     margin.textContent = "";
   }
@@ -391,12 +395,12 @@ function renderOffers(p) {
   if (!p.offers || p.offers.length < 2) return "";
   const presence = (o) => o.missing ? "нет в прайсе" : (META.presence[o.presence] || o.presence);
   return `<div style="margin-top:8px"><b>Этот товар есть у нескольких поставщиков</b> — описание и фото от
-    «${esc(p.supplier.name)}», цена и наличие — от самого дешёвого, у кого он есть:
+    «<span translate="no">${esc(p.supplier.name)}</span>», цена и наличие — от самого дешёвого, у кого он есть:
     <table class="offers">${p.offers.map((o) => `<tr class="${o.active ? "active" : ""}">
-      <td>${o.active ? "✓ " : ""}${esc(o.supplier_name)}</td>
+      <td>${o.active ? "✓ " : ""}<span translate="no">${esc(o.supplier_name)}</span></td>
       <td>закупка ${esc(formatPrice(o.cost_price ?? o.price, p.currency))}</td>
       <td>${esc(presence(o))}${o.quantity != null ? `, ${o.quantity} шт.` : ""}</td>
-      <td class="muted">${esc(o.sku)}</td></tr>`).join("")}</table></div>`;
+      <td class="muted" translate="no">${esc(o.sku)}</td></tr>`).join("")}</table></div>`;
 }
 
 async function unlockField(field) {
@@ -494,7 +498,7 @@ function renderPhotos() {
       el.textContent = "Загрузка…";
     } else {
       el.className = "photo failed";
-      el.innerHTML = `<div>${esc(u.file.name)}<br>${esc(u.error)}</div>`;
+      el.innerHTML = `<div><span translate="no">${esc(u.file.name)}</span><br>${esc(u.error)}</div>`;
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "btn small";
@@ -649,7 +653,7 @@ $("#btn-send").addEventListener("click", () => busy($("#btn-send"), async () => 
     await flush();
     const res = await api("/api/sync", { method: "POST", json: { ids: [state.id] } });
     if (res.rejected.length) {
-      toast("Не отправлено: " + res.rejected[0].reasons.join("; "), "error");
+      toast(`Не отправлено: ${res.rejected[0].reasons.map(I18N.tr).join("; ")}`, "error");
     } else {
       toast("Поставлено в очередь на Prom", "ok");
     }
@@ -758,8 +762,8 @@ function showAiResult(changes, usage) {
     <div class="ai-field">
       <h4>${esc(AI_FIELD_LABEL[field] || field)}</h4>
       <div class="ai-cols">
-        <div class="old"><div class="label">Было</div>${show(field, values[field] || "")}</div>
-        <div class="new"><div class="label">Предлагает ИИ</div>${show(field, value)}</div>
+        <div class="old"><div class="label">Было</div><div translate="no">${show(field, values[field] || "")}</div></div>
+        <div class="new"><div class="label">Предлагает ИИ</div><div translate="no">${show(field, value)}</div></div>
       </div>
     </div>`).join("") + `
     <div class="toolbar" style="margin:0">
@@ -824,7 +828,7 @@ async function init() {
   // более новые данные молча, а спрашиваем
   const serverAt = state.product ? Date.parse(state.product.updated_at) : NaN;
   if (backup && Object.keys(backup.pending || {}).length && serverAt > (backup.at || 0)) {
-    const when = new Date(backup.at || 0).toLocaleString("ru-RU");
+    const when = new Date(backup.at || 0).toLocaleString(uiLocale());
     if (!confirm(`Есть несохранённые правки этого товара от ${when}, но товар с тех пор уже изменился.\n\n` +
                  `ОК — вернуть мои правки поверх, Отмена — оставить как сейчас.`)) {
       try { localStorage.removeItem(backupKey()); } catch {}

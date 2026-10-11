@@ -409,9 +409,9 @@ BAD_KEY = {"error": {"code": 400, "message": "API key not valid. Please pass a v
 
 
 def test_clean_key_and_warning():
-    assert ai.clean_key(' "GEMINI_API_KEY=AQ.Ab8​RN 6 x" ') == "AQ.Ab8RN6x"
+    assert ai.clean_key(' "GEMINI_API_KEY=AQ.Te​st 1 x" ') == "AQ.Test1x"
     assert ai.clean_key("«AIzaSyX»\n") == "AIzaSyX"
-    assert ai.key_warning("gemini", "AIza" + "x" * 35) == "" and ai.key_warning("gemini", "AQ.Ab8RN6I8") == ""
+    assert ai.key_warning("gemini", "AIza" + "x" * 35) == "" and ai.key_warning("gemini", "AQ.TestKey1") == ""
     assert "токен Prom" in ai.key_warning("gemini", "a" * 40)
     assert "AIza" in ai.key_warning("gemini", "sk-ant-123")
     assert "sk-ant-" in ai.key_warning("claude", "AIza123")

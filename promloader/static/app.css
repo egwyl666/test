@@ -618,3 +618,9 @@ table.list.compact td { padding: 6px 8px; }
 .video-item a span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff;
   font-size: 28px; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
 .video-item button { position: absolute; top: 4px; right: 4px; padding: 2px 7px; }
+
+/* ---------- язык интерфейса RU | UK ---------- */
+.lang-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; flex: 0 0 auto; }
+.lang-switch button { border: 0; background: #fff; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
+  padding: 5px 10px; cursor: pointer; }
+.lang-switch button.active { background: var(--accent-soft); color: var(--accent); }

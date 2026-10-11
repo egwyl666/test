@@ -12,8 +12,8 @@ function runSummary(stats) {
     ["created", "новых"], ["updated", "изменено"], ["price_changed", "цен изменилось"], ["missing", "пропало"],
     ["returned", "вернулось"], ["joined", "объединено с другими поставщиками"], ["errors", "с ошибками"],
     ["ignored", "пропущено (удалены вами)"], ["queued", "отправлено на Prom"],
-  ].filter(([k]) => stats[k]).map(([k, label]) => `${label}: ${stats[k]}`);
-  return parts.join(" · ") || "без изменений";
+  ].filter(([k]) => stats[k]).map(([k, label]) => `${I18N.tr(label)}: ${stats[k]}`);
+  return parts.join(" · ") || I18N.tr("без изменений");
 }
 
 function runLine(s) {

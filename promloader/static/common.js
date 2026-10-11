@@ -1,5 +1,7 @@
 // Общие помощники для всех страниц.
 
+if (!window.uiLocale) window.uiLocale = () => "ru-RU";  // язык интерфейса задаёт i18n.js
+
 const META = { presence: {}, statuses: {}, targets: {}, max_images: 10, shop_name: "" };
 
 async function api(path, options = {}) {
@@ -81,7 +83,7 @@ function showFailedSuppliers() {
   const bar = document.createElement("div");
   bar.className = "update-banner supplier-failed-banner";
   const first = show[0];
-  bar.innerHTML = `⚠️ Поставщик <b>«${esc(first.name)}»</b> не обновился: ${esc((first.message || "").slice(0, 160))}
+  bar.innerHTML = `⚠️ Поставщик <b translate="no">«${esc(first.name)}»</b> не обновился: ${esc((first.message || "").slice(0, 160))}
     <a href="/supplier?id=${first.id}">Открыть</a>${show.length > 1 ? ` · и ещё ${show.length - 1} — <a href="/suppliers">все поставщики</a>` : ""}`;
   document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
 }
@@ -111,15 +113,15 @@ function showPreview(title, p, { applyLabel = "Применить", note = "" } 
         ${p.changed - p.price_changed - p.gone > 0 ? `<div><b>${p.changed}</b> товаров изменится всего</div>` : ""}
         ${p.to_prom ? `<div>🚀 <b>${p.to_prom}</b> сразу уйдут на Prom</div>` : ""}
       </div>
-      ${Object.keys(p.fields || {}).length ? `<p class="small muted">Что меняется: ${Object.entries(p.fields).map(([k, n]) => `${esc(k)} — ${n}`).join(", ")}</p>` : ""}
+      ${Object.keys(p.fields || {}).length ? `<p class="small muted">Что меняется: ${Object.entries(p.fields).map(([k, n]) => `${esc(I18N.tr(k))} — ${n}`).join(", ")}</p>` : ""}
       ${p.samples.prices.length ? `<h3>Цены${p.price_changed > p.samples.prices.length ? ` (первые ${p.samples.prices.length})` : ""}</h3>` : ""}
       ${table(p.samples.prices, "<th>Товар</th><th>Было</th><th>Станет</th>", (r) =>
-        `<tr><td>${esc(r.name)}<div class="small muted">${esc(r.code)}</div></td><td class="nowrap">${money(r.old, r.currency)}</td>
+        `<tr><td translate="no">${esc(r.name)}<div class="small muted">${esc(r.code)}</div></td><td class="nowrap">${money(r.old, r.currency)}</td>
          <td class="nowrap"><b>${money(r.new, r.currency)}</b>${pct(r.old, r.new)}</td></tr>`)}
       ${p.samples.created.length ? `<h3>Новые товары${p.created > p.samples.created.length ? ` (первые ${p.samples.created.length})` : ""}</h3>` : ""}
-      ${table(p.samples.created, "<th>Товар</th><th>Артикул</th>", (r) => `<tr><td>${esc(r.name)}</td><td class="small">${esc(r.code)}</td></tr>`)}
+      ${table(p.samples.created, "<th>Товар</th><th>Артикул</th>", (r) => `<tr><td translate="no">${esc(r.name)}</td><td class="small" translate="no">${esc(r.code)}</td></tr>`)}
       ${p.samples.gone.length ? `<h3>Станут «нет в наличии»</h3>` : ""}
-      ${table(p.samples.gone, "<th>Товар</th><th>Артикул</th>", (r) => `<tr><td>${esc(r.name)}</td><td class="small">${esc(r.code)}</td></tr>`)}`}
+      ${table(p.samples.gone, "<th>Товар</th><th>Артикул</th>", (r) => `<tr><td translate="no">${esc(r.name)}</td><td class="small" translate="no">${esc(r.code)}</td></tr>`)}`}
       ${note ? `<p class="small muted">${note}</p>` : ""}
       <div class="toolbar" style="margin:12px 0 0;justify-content:flex-end">
         <button class="btn" data-a="cancel">Отмена</button>
@@ -255,7 +257,7 @@ function formatDate(iso) {
   const d = new Date(iso);
   // год — если не текущий: иначе «05.10» прошлого года не отличить от этого
   const year = d.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined;
-  return d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year, hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleString(uiLocale(), { day: "2-digit", month: "2-digit", year, hour: "2-digit", minute: "2-digit" });
 }
 
 // Кнопка «занята», пока идёт её запрос: двойной клик не отправит товары, не удалит и не запустит ИИ дважды.
@@ -495,7 +497,7 @@ function aiMoney(usd, uah, { free = false, withUsd = true } = {}) {
   return `${about(fmtUah(uah))}${withUsd && usd ? ` (${fmtUsd(usd)})` : ""}`;
 }
 
-function fmtTokens(n) { return Number(n || 0).toLocaleString("ru-RU"); }
+function fmtTokens(n) { return Number(n || 0).toLocaleString(uiLocale()); }
 
 // Строка под ответом ИИ: «Gemini 3.8 Flash · 1 240 + 610 токенов · ≈ 0,13 грн ($0.0032)»
 function aiUsageLine(u) {
@@ -537,8 +539,9 @@ function renderAiChip() {
   const model = aiModelName(ai.model) || "авто";
   const spent = ai.free ? "бесплатно" : ai.today_requests ? aiMoney(ai.today_usd, ai.today_uah, { withUsd: false }) : "";
   chip.innerHTML = `✨ <span class="ai-chip-model">${esc(model)}</span>${spent ? `<span class="ai-chip-spent"> · сегодня ${esc(spent)}</span>` : ""}`;
-  chip.title = `ИИ: ${model}${ai.auto ? " (программа выбирает сама)" : ""}. Сегодня запросов: ${ai.today_requests}`
-    + `${spent ? `, ${spent}` : ""}.\nНажмите — сменить модель, посмотреть цены, расходы и лимиты.`;
+  // «(программа выбирает сама)» переводится отдельно: в общей фразе это подстановка
+  const which = ai.auto ? `${model} ${I18N.tr("(программа выбирает сама)")}` : model;
+  chip.title = `ИИ: ${which}. Сегодня запросов: ${ai.today_requests}${spent ? `, ${spent}` : ""}.\nНажмите — сменить модель, посмотреть цены, расходы и лимиты.`;
 }
 
 // После смены модели или запроса к ИИ — обновить значок (и карточку товара, если ИИ включили/выключили)
@@ -665,7 +668,7 @@ function renderAiModels() {
     let [icon, label] = AI_STATUS[m.status] || ["", m.status];
     if (m.status === "limit" && m.limit_until) {
       const until = new Date(m.limit_until);
-      label = until > new Date() ? `лимит до ${until.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}` : "лимит сброшен";
+      label = until > new Date() ? `лимит до ${until.toLocaleTimeString(uiLocale(), { hour: "2-digit", minute: "2-digit" })}` : "лимит сброшен";
       if (until <= new Date()) icon = "↻";
     }
     return `<span class="ai-st st-${esc(m.status)}" title="${esc(m.status_message || "")}${m.checked_at ? ` · ${esc(formatDate(m.checked_at))}` : ""}">${icon} ${esc(label)}</span>`;
@@ -732,7 +735,7 @@ function renderAiLimits() {
     const rows = Object.entries(names).filter(([k]) => lim[k]).map(([k, label]) => {
       const x = lim[k];
       const low = x.limit && x.remaining !== null && x.remaining / x.limit < 0.1;
-      const reset = x.reset ? new Date(x.reset).toLocaleTimeString("ru-RU") : "";
+      const reset = x.reset ? new Date(x.reset).toLocaleTimeString(uiLocale()) : "";
       return `<tr><td>${label}</td><td class="nowrap${low ? " err-text" : ""}">${x.remaining !== null ? fmtTokens(x.remaining) : "?"} из ${x.limit !== null ? fmtTokens(x.limit) : "?"}</td>
         <td class="small muted">${reset ? `полностью восстановится к ${reset}` : ""}</td></tr>`;
     }).join("");
@@ -809,6 +812,31 @@ function bindAiWindow() {
   }));
 }
 
+// RU | UK — язык интерфейса: запоминается в этом браузере, страница перезагружается
+function renderLangSwitch() {
+  const bar = document.querySelector(".topbar");
+  if (!bar || document.getElementById("lang-switch")) return;
+  let right = bar.querySelector(".right");
+  if (!right) {
+    right = document.createElement("div");
+    right.className = "right";
+    bar.appendChild(right);
+  }
+  const current = (window.I18N && window.I18N.lang) || "ru";
+  const box = document.createElement("span");
+  box.id = "lang-switch";
+  box.className = "lang-switch";
+  box.setAttribute("translate", "no");
+  box.innerHTML = [["ru", "Русский"], ["uk", "Українська"]].map(([code, name]) =>
+    `<button type="button" data-lang="${code}" title="${name}"${code === current ? ' class="active"' : ""}>${code.toUpperCase()}</button>`).join("");
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-lang]");
+    if (b && b.dataset.lang !== current && window.I18N) window.I18N.set(b.dataset.lang);
+  });
+  right.prepend(box);
+}
+
 renderNav();
+renderLangSwitch();
 syncActionMenus();
 document.addEventListener("DOMContentLoaded", () => { initNav(); syncActionMenus(); addHelpButton(); });

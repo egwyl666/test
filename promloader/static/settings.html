@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Настройки — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
 </head>
@@ -153,7 +155,7 @@
     <div class="panel" id="ai">
       <h2>✨ ИИ-помощник</h2>
       <p class="small muted" style="margin-top:-6px">
-        Помогает в карточке товара: улучшить описание, перевести на украинский, придумать название и ключевые слова.
+        Помогает в карточке товара: улучшить описание, перевести на украинский или русский, придумать название и ключевые слова.
         ИИ только предлагает текст — в карточку он попадает после нажатия «Применить».
       </p>
       <p class="small" style="margin-top:-4px">Здесь — ключи. Модель, цена запроса, расходы и лимиты — в окне
@@ -627,7 +629,7 @@
     function renderRecipients(items) {
       $("#tg-recipients").innerHTML = items.length ? items.map((r) => `
         <div class="recipient" data-id="${r.id}">
-          <div><b>${esc(r.name)}</b> <span class="muted small">ID ${esc(r.chat_id)}</span></div>
+          <div><b translate="no">${esc(r.name)}</b> <span class="muted small">ID ${esc(r.chat_id)}</span></div>
           <div class="small">${Object.entries(tgEvents).map(([k, v]) =>
             `<label style="margin-right:12px;white-space:nowrap"><input type="checkbox" value="${k}" ${r.events.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("")}</div>
           <div class="toolbar" style="margin:6px 0 0"><button class="btn small" data-act="test">Тест</button>
@@ -673,7 +675,7 @@
         const r = await api("/api/telegram/candidates", { method: "POST" });
         $("#tg-candidates").innerHTML = r.items.length
           ? `<p class="small" style="margin:8px 0 4px">Недавно писали боту:</p>` + r.items.map((c) =>
-            `<div class="toolbar" style="margin:0 0 4px"><span>${esc(c.name)} <span class="muted small">ID ${esc(c.chat_id)}</span></span>
+            `<div class="toolbar" style="margin:0 0 4px"><span><span translate="no">${esc(c.name)}</span> <span class="muted small">ID ${esc(c.chat_id)}</span></span>
              <button class="btn small primary" data-chat="${esc(c.chat_id)}" data-name="${esc(c.name)}">Добавить</button></div>`).join("")
           : `<p class="small muted">Новых чатов нет. Пусть человек откроет бота, нажмёт «Старт» — и нажмите кнопку ещё раз.</p>`;
       } catch (err) { tgOut(err.message, false); }
@@ -725,7 +727,7 @@
       try {
         const r = await api("/api/support/channel/chats", { method: "POST", json: { token: $("#sup-token").value } });
         $("#sup-chats").innerHTML = r.items.length ? "Писали боту: " + r.items.map((c) =>
-          `<a href="#" data-chat="${esc(c.chat_id)}">${esc(c.name)} (${esc(c.chat_id)})</a>`).join(", ")
+          `<a href="#" data-chat="${esc(c.chat_id)}" translate="no">${esc(c.name)} (${esc(c.chat_id)})</a>`).join(", ")
           : "Никто не писал боту поддержки. Напишите ему что-нибудь и нажмите ещё раз.";
       } catch (err) { supOut(err.message, false); }
     };

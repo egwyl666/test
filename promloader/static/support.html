@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Поддержка — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
 </head>
@@ -100,7 +102,7 @@
       $("#shots").innerHTML = files.map((f, i) => `
         <div class="shot">
           ${f.url ? `<img src="${f.url}" alt="">` : `<div class="file-icon">📄</div>`}
-          <div class="name" title="${esc(f.name)}">${esc(f.name)}</div>
+          <div class="name" title="${esc(f.name)}" translate="no">${esc(f.name)}</div>
           <button data-i="${i}" title="Убрать">✕</button>
         </div>`).join("");
     }
@@ -187,10 +189,10 @@
       $("#tickets").innerHTML = r.items.length ? r.items.map((t) => {
         const [cls, label] = STATUS[t.status] || ["draft", t.status];
         return `<div class="ticket" data-id="${t.id}">
-          <div><b>№${t.id}</b> <span class="muted small">${formatDate(t.created_at)}${t.page ? " · " + esc(t.page) : ""}</span>
+          <div><b>№${t.id}</b> <span class="muted small">${formatDate(t.created_at)}${t.page ? ` · <span translate="no">${esc(t.page)}</span>` : ""}</span>
             <span class="badge ${cls}">${label}</span></div>
-          <div style="margin:6px 0;white-space:pre-wrap">${esc(t.description.length > 400 ? t.description.slice(0, 400) + "…" : t.description)}</div>
-          ${t.files.length ? `<div class="small muted">Файлы: ${t.files.map((f) => esc(f.name)).join(", ")}</div>` : ""}
+          <div style="margin:6px 0;white-space:pre-wrap" translate="no">${esc(t.description.length > 400 ? t.description.slice(0, 400) + "…" : t.description)}</div>
+          ${t.files.length ? `<div class="small muted">Файлы: <span translate="no">${t.files.map((f) => esc(f.name)).join(", ")}</span></div>` : ""}
           ${t.error && t.status !== "sent" ? `<div class="small err-text">${esc(t.error)}</div>` : ""}
           <div class="toolbar" style="margin:6px 0 0">
             <a class="btn small" href="/api/support/${t.id}/archive">Скачать архив</a>

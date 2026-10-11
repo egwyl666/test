@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Заказы — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
 </head>
@@ -108,7 +110,7 @@
       const items = o.items.map((i) => `
         <div class="order-item">
           ${i.image ? `<img src="${esc(i.image)}" alt="" loading="lazy">` : `<div class="noimg"></div>`}
-          <div style="flex:1">${i.local_id ? `<a href="/product?id=${i.local_id}">${esc(i.name)}</a>` : esc(i.name)}
+          <div style="flex:1" translate="no">${i.local_id ? `<a href="/product?id=${i.local_id}">${esc(i.name)}</a>` : esc(i.name)}
             <div class="small muted">${esc(i.sku || i.external_id)}</div></div>
           <div class="small">× ${esc(i.quantity)}</div>
           <div class="price">${esc(i.total || i.price)}</div>
@@ -121,18 +123,18 @@
           <b>№${o.id}</b>
           <span class="badge ${STATUS_CLASS[o.status] || "draft"}">${esc(o.status_label)}</span>
           ${o.new ? `<button class="badge ready seen-btn" data-seen="${o.id}" title="Отметить просмотренным">не просмотрен ✓</button>` : ""}
-          <span class="muted small">${esc(formatDate(o.date))}${o.source ? ` · ${esc(o.source)}` : ""}</span>
+          <span class="muted small">${esc(formatDate(o.date))}${o.source ? ` · <span translate="no">${esc(o.source)}</span>` : ""}</span>
           <span class="spacer"></span>
           <b style="font-size:17px">${esc(o.price)}</b>
         </div>
         <div class="order-grid">
           <div>
-            <div><b>${esc(o.client) || "Покупатель"}</b></div>
+            <div>${o.client ? `<b translate="no">${esc(o.client)}</b>` : "<b>Покупатель</b>"}</div>
             ${o.phone ? `<div><a href="tel:${esc(o.phone)}" data-call="${o.id}">${esc(o.phone)}</a></div>` : ""}
             ${o.email ? `<div class="small muted">${esc(o.email)}</div>` : ""}
-            ${o.delivery ? `<div class="small" style="margin-top:6px">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
-            ${o.payment ? `<div class="small">💳 ${esc(o.payment)}</div>` : ""}
-            ${o.notes ? `<div class="small" style="margin-top:6px">💬 ${esc(o.notes)}</div>` : ""}
+            ${o.delivery ? `<div class="small" style="margin-top:6px" translate="no">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
+            ${o.payment ? `<div class="small" translate="no">💳 ${esc(o.payment)}</div>` : ""}
+            ${o.notes ? `<div class="small" style="margin-top:6px" translate="no">💬 ${esc(o.notes)}</div>` : ""}
           </div>
           <div>${items}</div>
         </div>
