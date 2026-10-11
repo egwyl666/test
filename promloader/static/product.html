@@ -50,6 +50,18 @@
           </div>
 
           <div class="panel">
+            <h2 data-lock="videos">Видео</h2>
+            <div class="videos" id="videos"></div>
+            <div class="row" style="align-items:flex-end;margin-top:8px">
+              <label class="field" style="margin:0"><span>Ссылка на YouTube</span>
+                <input id="video-url" placeholder="https://www.youtube.com/watch?v=… или https://youtu.be/…"></label>
+              <button type="button" class="btn small" id="btn-video-add" style="flex:0 0 auto">Добавить</button>
+            </div>
+            <p class="small muted" style="margin-bottom:0">Только YouTube, до 5 видео. На Prom видео показывается плеером
+              в конце описания товара — программа добавляет его при отправке, само описание здесь не меняется.</p>
+          </div>
+
+          <div class="panel">
             <div class="lang-tabs" id="lang-tabs">
               <button type="button" data-lang="ru" class="active">Русский</button>
               <button type="button" data-lang="ua">Українська</button>

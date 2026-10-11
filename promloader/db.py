@@ -259,6 +259,7 @@ MIGRATIONS = {
         "delete_attempts": "INTEGER NOT NULL DEFAULT 0",
         # в кабинете Prom у товара не заполнен «Ідентифікатор_товару» (узнали при загрузке каталога)
         "prom_no_ext": "INTEGER NOT NULL DEFAULT 0",
+        "videos": "TEXT NOT NULL DEFAULT '[]'",  # ссылки YouTube (JSON-список)
     },
     "supplier_items": {
         "ignored": "INTEGER NOT NULL DEFAULT 0",

@@ -32,7 +32,7 @@ NEW_STATUSES = ("draft", "ready")
 SYNC_FIELDS = (
     "name", "name_ua", "description", "description_ua", "price", "old_price", "cost_price", "rrp", "currency",
     "unit", "quantity", "presence", "group_name", "vendor", "country", "keywords", "barcode",
-    "vendor_code", "cost_currency",
+    "vendor_code", "cost_currency", "videos",
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
             "missing_action", "auto_sync", "interval_hours", "merge_by_barcode",

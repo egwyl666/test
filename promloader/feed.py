@@ -28,6 +28,20 @@ def description_html(text: str) -> str:
     return "".join("<p>" + html.escape(p).replace("\n", "<br>") + "</p>" for p in paragraphs)
 
 
+# Видео YouTube Prom через импорт принимает только встроенным плеером в описании: теги <video>, <videos>,
+# <video_url>, <video_link> он пропускает, а <param name="Відео"> показывает как текст характеристики. iframe YouTube
+# в описании он сохраняет и показывает плеером на странице товара (проверено на живом кабинете 2026-10-11).
+VIDEO_IFRAME = ('<p><iframe width="560" height="315" src="https://www.youtube.com/embed/{id}" frameborder="0" '
+                'allowfullscreen></iframe></p>')
+
+
+def with_videos(description: str, videos: list[str]) -> str:
+    """Описание для Prom: в конец — плеер каждого видео, которого в описании ещё нет."""
+    players = "".join(VIDEO_IFRAME.format(id=vid) for vid in (products.youtube_id(v) for v in videos or [])
+                      if vid and vid not in (description or ""))
+    return (description or "") + players
+
+
 def category_id(group_name: str) -> str:
     """Стабильный числовой id группы — один и тот же при каждой выгрузке."""
     return str(zlib.crc32(group_name.strip().lower().encode()) % 10_000_000 + 1)
@@ -94,11 +108,12 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
             _sub(offer, "quantity_in_stock", str(p["quantity"]))
         if p["keywords"]:
             _sub(offer, "keywords", p["keywords"])
-        if p["description"]:
-            _sub(offer, "description", description_html(p["description"]))
+        description = with_videos(description_html(p["description"]), p["videos"])
+        if description:
+            _sub(offer, "description", description)
         description_ua = p["description_ua"] or (p["description"] if products.looks_ukrainian(p["description"]) else "")
         if description_ua:
-            _sub(offer, "description_ua", description_html(description_ua))
+            _sub(offer, "description_ua", with_videos(description_html(description_ua), p["videos"]))
         for param in p["params"]:
             if param["name"] and param["value"]:
                 _sub(offer, "param", param["value"], name=param["name"])

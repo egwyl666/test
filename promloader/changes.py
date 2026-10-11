@@ -22,7 +22,7 @@ LABELS = {
     "price": "Цена", "old_price": "Старая цена", "cost_price": "Закупка", "cost_currency": "Валюта закупки",
     "rrp": "РРЦ", "currency": "Валюта", "presence": "Наличие", "quantity": "Количество", "name": "Название",
     "name_ua": "Название (укр.)", "description": "Описание", "description_ua": "Описание (укр.)",
-    "group_name": "Группа", "keywords": "Ключевые слова", "params": "Характеристики", "images": "Фото",
+    "group_name": "Группа", "keywords": "Ключевые слова", "params": "Характеристики", "images": "Фото", "videos": "Видео",
     "vendor": "Производитель", "country": "Страна", "barcode": "Штрихкод", "vendor_code": "Артикул поставщика",
     "external_id": "Артикул", "unit": "Ед. изм.", "created": "Создан", "deleted": "Удалён", "prom": "Prom",
 }
@@ -57,6 +57,8 @@ def record(c, product_id: int, field: str, old="", new="", who: str | None = Non
         from .products import PRESENCE
 
         old, new = PRESENCE.get(old, old), PRESENCE.get(new, new)
+    if field == "videos":  # не JSON, а ссылки строками
+        old, new = ("\n".join(json.loads(v or "[]")) if isinstance(v, str) else v for v in (old, new))
     c.execute("INSERT INTO product_changes (product_id, at, source, field, old, new) VALUES (?, ?, ?, ?, ?, ?)",
               (product_id, db.now(), who or _source.get(), field, _text(old), _text(new)))
 

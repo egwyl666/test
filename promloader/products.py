@@ -32,11 +32,12 @@ TEXT_FIELDS = (
 )
 NUMBER_FIELDS = ("price", "old_price", "cost_price", "rrp")
 INT_FIELDS = ("quantity",)
-EDITABLE = TEXT_FIELDS + NUMBER_FIELDS + INT_FIELDS + ("params",)
+EDITABLE = TEXT_FIELDS + NUMBER_FIELDS + INT_FIELDS + ("params", "videos")
 # Поля, которые при ручной правке закрепляются: обновление прайса поставщика их больше не перезапишет.
 LOCKABLE = tuple(f for f in EDITABLE if f not in ("external_id", "cost_price", "rrp")) + ("images",)
 
 MAX_IMAGES = 10
+MAX_VIDEOS = 5
 MAX_IMAGE_SIDE = 4000
 KEEP_FORMATS = {"JPEG": "jpg", "PNG": "png", "GIF": "gif"}
 
@@ -173,6 +174,52 @@ def parse_params(value) -> list[dict]:
     return params
 
 
+# YouTube: watch?v=ID, youtu.be/ID, shorts/ID, embed/ID, live/ID, youtube-nocookie — у видео ровно 11 символов ID
+_YOUTUBE = re.compile(r"(?:youtube(?:-nocookie)?\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/|live/|v/)|youtu\.be/)"
+                      r"([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])", re.I)
+
+
+def youtube_url(url: str) -> str | None:
+    """Ссылка на видео YouTube в одном виде (https://www.youtube.com/watch?v=ID) или None — это не YouTube."""
+    m = _YOUTUBE.search(str(url or ""))
+    return f"https://www.youtube.com/watch?v={m.group(1)}" if m else None
+
+
+def youtube_id(url: str) -> str:
+    m = _YOUTUBE.search(str(url or ""))
+    return m.group(1) if m else ""
+
+
+def split_videos(value) -> tuple[list[str], list[str]]:
+    """Ссылки на видео из ячейки, списка или JSON: (ссылки YouTube без повторов, всё остальное, что не YouTube)."""
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            pass
+    parts = value if isinstance(value, list) else re.split(r"[\s,;|]+", str(value or ""))
+    videos, other = [], []
+    for part in parts:
+        part = str(part or "").strip()
+        if not part:
+            continue
+        url = youtube_url(part)
+        if url and url not in videos:
+            videos.append(url)
+        elif not url:
+            other.append(part)
+    return videos, other
+
+
+def parse_videos(value) -> list[str]:
+    videos, other = split_videos(value)
+    if other:
+        raise ProductError(f"Видео — только ссылки YouTube, а это не она: {other[0][:80]}")
+    if len(videos) > MAX_VIDEOS:
+        raise ProductError(f"Не больше {MAX_VIDEOS} видео у товара")
+    return videos
+
+
 def normalize(data: dict) -> dict:
     """Приводит пришедшие поля к типам базы. Незнакомые поля игнорируются."""
     out = {}
@@ -188,6 +235,8 @@ def normalize(data: dict) -> dict:
                 out[key] = parse_int(value)
             elif key == "params":
                 out[key] = json.dumps(parse_params(value), ensure_ascii=False)
+            elif key == "videos":
+                out[key] = json.dumps(parse_videos(value))
             if key == "presence":
                 out[key] = parse_presence(out[key]) or "available"
         except ProductError as exc:
@@ -208,6 +257,7 @@ def normalize(data: dict) -> dict:
 def _row_to_dict(row) -> dict:
     p = dict(row)
     p["params"] = json.loads(p["params"] or "[]")
+    p["videos"] = json.loads(p.get("videos") or "[]")
     p["locked_fields"] = json.loads(p.get("locked_fields") or "[]")
     return p
 

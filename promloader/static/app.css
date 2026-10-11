@@ -609,3 +609,12 @@ table.list.compact td { padding: 6px 8px; }
   .ai-model .ai-price { grid-area: p; }
   .ai-model .ai-st { grid-area: s; }
 }
+
+/* ---------- видео товара (YouTube) ---------- */
+.videos { display: flex; flex-wrap: wrap; gap: 10px; }
+.video-item { position: relative; width: 160px; }
+.video-item a { display: block; position: relative; border-radius: 8px; overflow: hidden; background: #000; aspect-ratio: 16 / 9; }
+.video-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.video-item a span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff;
+  font-size: 28px; text-shadow: 0 2px 8px rgba(0,0,0,.6); }
+.video-item button { position: absolute; top: 4px; right: 4px; padding: 2px 7px; }

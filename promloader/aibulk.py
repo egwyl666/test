@@ -12,7 +12,7 @@ import time
 from . import ai, aiprice, db, products
 from . import changes as changes_log
 
-BULK_ACTIONS = ("improve", "shorten", "translate_ua", "name", "keywords", "custom")
+BULK_ACTIONS = ("improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
 ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",)}
@@ -158,6 +158,9 @@ def process_one(runner=ai.run) -> str:
     fields = EMPTY_CHECK.get(item["action"])
     if item["only_empty"] and fields and all((p.get(f) or "").strip() for f in fields):
         _mark(item["id"], "skipped", "уже заполнено")
+        return "skipped"
+    if ai.nothing_to_translate(p, item["action"]):
+        _mark(item["id"], "skipped", "нет украинского текста")  # запрос к ИИ не нужен и не оплачивается
         return "skipped"
     try:
         with ai.usage_source("bulk", item["job_id"]):

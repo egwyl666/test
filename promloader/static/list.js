@@ -368,7 +368,7 @@ function summarizeResult(r) {
 
 // ---------- массовый ИИ ----------
 
-const AI_BULK = ["translate_ua", "improve", "keywords", "name", "shorten", "custom"];
+const AI_BULK = ["translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
 let aiSel = { ids: [] };
 let aiRate = 8;
 

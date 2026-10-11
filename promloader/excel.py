@@ -40,11 +40,16 @@ TARGETS = {
     "keywords": "Ключевые слова",
     "unit": "Единица измерения",
     "images": "Фото (ссылки)",
+    "videos": "Видео (ссылки YouTube)",
     "param": "Характеристика",
 }
 
+# отдельное слово «видео» (не «Видеокарта», не «видеорегистратор») или ссылка на YouTube
+VIDEO_HINT = r"\b(видео|відео|video|videos|ролик)(\b|_)|youtube|youtu\.be"
+
 # Подсказки для автоматического сопоставления по заголовкам колонок.
 HINTS = [
+    ("videos", VIDEO_HINT),  # раньше названия: «Видео товара» — это видео, а не название
     ("name_ua", r"назв\w*.*(укр|ua)|найменування|name_(ua|uk)"),
     ("description_ua", r"опис\w*.*(укр|ua)|^опис$|description_(ua|uk)"),
     ("old_price", r"стар\w* цен|цена до|стара ціна|old.?price"),
@@ -158,7 +163,8 @@ def _read_xml(path: Path) -> list[list[str]]:
             elif len(child):
                 add(name, "\n".join(t.strip() for t in child.itertext() if t.strip()))
             else:
-                add(name, child.text or "")
+                # <video url="…"/> — ссылка в атрибуте, а не в тексте тега
+                add(name, (child.text or "").strip() or child.get("url") or child.get("href") or child.get("src") or "")
         category_id = rec.get("categoryId") or rec.get("category_id")
         if categories and category_id in categories:
             add("category", categories[category_id])
@@ -259,12 +265,14 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
         if not text:
             continue
         if text.startswith("param:"):
-            mapping[get_column_letter(idx + 1)] = "param"
+            # <param name="Відео"> — ссылка на видео, а не характеристика «Відео» у покупателя
+            mapping[get_column_letter(idx + 1)] = "videos" if re.search(VIDEO_HINT, text[6:]) else "param"
             continue
         for target, pattern in HINTS:
             if target not in used and re.search(pattern, text):
                 mapping[get_column_letter(idx + 1)] = target
-                used.add(target)
+                if target != "videos":  # видео бывает в нескольких колонках («Видео», «Видео 2»)
+                    used.add(target)
                 break
     return mapping
 
@@ -406,7 +414,7 @@ def build_products(
         row = rows[number - 1]
         if not any(row):
             continue
-        raw, params, urls, errors = dict(defaults), [], [], []
+        raw, params, urls, errors, videos, not_youtube = dict(defaults), [], [], [], [], []
         for idx, target in columns:
             value = row[idx] if idx < len(row) else ""
             if target.startswith("param:"):
@@ -414,10 +422,16 @@ def build_products(
                     params.append({"name": target[6:], "value": value})
             elif target == "images":
                 urls += _split_urls(value)
+            elif target == "videos":
+                found, other = products.split_videos(value)
+                videos += [v for v in found if v not in videos]
+                not_youtube += other
             elif value != "":
                 raw[target] = value
         if params:
             raw["params"] = params
+        if videos:
+            raw["videos"] = videos[: products.MAX_VIDEOS]
         data = {}
         for key, value in raw.items():
             # по одному полю: кривое значение в одной колонке не выбрасывает всю строку
@@ -440,7 +454,11 @@ def build_products(
             "embedded_images": len(files),
             "errors": errors + check["errors"],
             "field_errors": errors,  # непонятные ячейки: поле пропущено, остальная строка годится
-            "warnings": price_warnings + check["warnings"],
+            "warnings": price_warnings + check["warnings"]
+            + ([f"Видео: пропущено {len(not_youtube)} ссылок не на YouTube (Prom принимает только YouTube)"]
+               if not_youtube else [])
+            + ([f"Видео: больше {products.MAX_VIDEOS} — взяты первые {products.MAX_VIDEOS}"]
+               if len(videos) > products.MAX_VIDEOS else []),
         })
     return result
 

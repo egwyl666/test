@@ -134,7 +134,7 @@ function createMappingGrid(container, { openEnded = false, required = ["name", [
     if (!sel) return;
     const target = sel.value;
     // одно поле — одна колонка (кроме характеристик и фото)
-    if (target && !["param", "images"].includes(target)) {
+    if (target && !["param", "images", "videos"].includes(target)) {
       for (const [l, t] of Object.entries(g.mapping)) if (t === target && l !== sel.dataset.col) g.mapping[l] = "";
     }
     g.mapping[sel.dataset.col] = target;

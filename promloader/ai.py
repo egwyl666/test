@@ -36,6 +36,13 @@ ACTIONS = {
     "translate_ua": ("Перевести на украинский",
                      "Переведи название и описание на украинский язык: заполни name_ua и description_ua. "
                      "Перевод живой и грамотный, не дословный; HTML-разметку сохрани. Остальные поля оставь пустыми."),
+    "translate_ru": ("Перевести на русский",
+                     "Переведи название и описание товара на русский язык и запиши перевод в name и description. "
+                     "Исходный текст — украинский: name_ua и description_ua, а если их нет — name и description, когда "
+                     "они написаны по-украински (так бывает у товаров из украинских прайсов). Если украинский текст "
+                     "был в name/description, а name_ua/description_ua пустые — запиши в name_ua и description_ua этот "
+                     "исходный украинский текст без изменений. Поле, которое уже на русском, оставь пустым. "
+                     "Перевод живой и грамотный, не дословный; HTML-разметку сохрани. Остальные поля оставь пустыми."),
     "name": ("Улучшить название",
              "Предложи название товара для поиска на Prom.ua в поле name: «Тип товара + бренд/модель + 2–3 ключевые "
              "характеристики», до 120 символов, без рекламных слов («лучший», «хит», «акция») и без капса. "
@@ -211,6 +218,20 @@ def _clean(result: dict, p: dict) -> dict:
     return changes
 
 
+NOTHING_TO_TRANSLATE = "Нет украинского названия и описания — переводить на русский нечего"
+
+
+def nothing_to_translate(p: dict, action: str) -> bool:
+    """«Перевести на русский» без украинского текста: ни name_ua/description_ua, ни украинского name/description."""
+    if action != "translate_ru":
+        return False
+    from .products import looks_ukrainian
+
+    if (p.get("name_ua") or "").strip() or (p.get("description_ua") or "").strip():
+        return False
+    return not (looks_ukrainian(p.get("name") or "") or looks_ukrainian(p.get("description") or ""))
+
+
 def run(p: dict, action: str, instruction: str = "", transport=None) -> dict:
     return run_detailed(p, action, instruction, transport)[0]
 
@@ -222,6 +243,8 @@ def run_detailed(p: dict, action: str, instruction: str = "", transport=None) ->
         raise AIError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
     if not s["key"]:
         raise AIError("Не указан API-ключ ИИ (Настройки)")
+    if nothing_to_translate(p, action):
+        raise AIError(NOTHING_TO_TRANSLATE)
     prompt = build_prompt(p, action, instruction)
     if s["provider"] == "gemini":
         result, used = _gemini(s, prompt, transport, action)

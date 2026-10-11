@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-10 · версия 2.4.0_
+_Обновлено: 2026-10-11 · версия 2.5.0_
 
 ## Модули
 
@@ -89,3 +89,9 @@ _Обновлено: 2026-10-10 · версия 2.4.0_
 - Импорт Prom с ошибками строк (`prom_api.error_positions`: `errors[].errors[].positions`, `with_errors_count` при этом 0)
   остаётся «в процесі» и блокирует новые импорты, пока его не отменят в кабинете — `sync.busy_text`/`CABINET_HINT`.
   Файл импорта без колонки поля = «очистить поле», если поле есть в `updated_fields` (проверено 2026-10-10).
+- Видео: `products.videos` (JSON, ссылки `https://www.youtube.com/watch?v=ID`) — `youtube_url`/`youtube_id`/`split_videos`/`parse_videos`
+  (`MAX_VIDEOS` = 5), в `EDITABLE`/`LOCKABLE` и `suppliers.SYNC_FIELDS`; прайсы — `excel.TARGETS["videos"]`, `VIDEO_HINT`
+  (раньше подсказки названия; `param:Відео` → видео; `<video url>`). На Prom — только iframe YouTube в описании
+  (`feed.with_videos`, `VIDEO_IFRAME`): теги `<video>`, `<videos>`, `<video_url>`, `<video_link>` Prom пропускает (2026-10-11).
+- ИИ «Перевести на русский» — `ai.ACTIONS["translate_ru"]`; без украинского текста запрос не делается
+  (`ai.nothing_to_translate`; массовый ИИ такие товары пропускает).

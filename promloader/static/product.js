@@ -54,6 +54,7 @@ function formValues() {
     if (el.name) values[el.name] = el.value;
   }
   values.params = readParams();
+  values.videos = [...videoList];
   return values;
 }
 
@@ -64,6 +65,7 @@ function fillForm(p) {
     el.value = v === null || v === undefined ? "" : v;
   }
   renderParams(p.params || []);
+  renderVideos(p.videos || []);
 }
 
 // Обновить поля из ответа сервера («↩ Вернуть», «🔒 своё»), не трогая то, что пользователь сейчас набирает
@@ -76,7 +78,49 @@ function fillUntouched(p) {
     el.value = v === null || v === undefined ? "" : v;
   }
   if (!("params" in state.pending) && !$("#params").contains(active)) renderParams(p.params || []);
+  if (!("videos" in state.pending)) renderVideos(p.videos || []);
 }
+
+// ---------- видео (ссылки YouTube) ----------
+const MAX_VIDEOS = 5;
+let videoList = [];
+
+function youtubeId(url) {
+  const m = String(url || "").match(/(?:[?&]v=|youtu\.be\/|shorts\/|embed\/|live\/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])/);
+  return m ? m[1] : "";
+}
+
+function renderVideos(list) {
+  videoList = [...list];
+  const box = $("#videos");
+  box.innerHTML = videoList.length ? videoList.map((url, i) => `<div class="video-item">
+      <a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">
+        <img src="https://img.youtube.com/vi/${esc(youtubeId(url))}/mqdefault.jpg" alt="" loading="lazy"
+          onerror="this.style.visibility='hidden'"><span>▶</span></a>
+      <button type="button" class="btn small" data-i="${i}" title="Удалить видео">✕</button></div>`).join("")
+    : `<p class="small muted" style="margin:0">Видео нет. Из прайса поставщика оно добавляется само, если там есть колонка или тег со ссылкой YouTube.</p>`;
+  $$("[data-i]", box).forEach((b) => (b.onclick = () => {
+    videoList.splice(Number(b.dataset.i), 1);
+    renderVideos(videoList);
+    changed("videos");
+  }));
+}
+
+function addVideo() {
+  const input = $("#video-url");
+  const url = input.value.trim();
+  if (!url) return;
+  const id = youtubeId(url);
+  if (!id) { toast("Это не ссылка на видео YouTube — Prom принимает только YouTube", "error"); return; }
+  if (videoList.some((v) => youtubeId(v) === id)) { toast("Это видео уже добавлено", "error"); return; }
+  if (videoList.length >= MAX_VIDEOS) { toast(`Не больше ${MAX_VIDEOS} видео у товара`, "error"); return; }
+  videoList.push(`https://www.youtube.com/watch?v=${id}`);
+  input.value = "";
+  renderVideos(videoList);
+  changed("videos");
+}
+$("#btn-video-add").addEventListener("click", addVideo);
+$("#video-url").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addVideo(); } });
 
 function readParams() {
   return $$(".param-row", $("#params")).map((row) => ({
@@ -294,7 +338,7 @@ $("#history-list").addEventListener("click", async (e) => {
 
 // ---------- поставщик и закреплённые поля ----------
 
-const LOCK_LABEL = { images: "фото", params: "характеристики" };
+const LOCK_LABEL = { images: "фото", params: "характеристики", videos: "видео" };
 
 function renderSupplier(p) {
   const box = $("#supplier-box");
@@ -729,7 +773,10 @@ function showAiResult(changes, usage) {
       form.elements[field].value = value;
       changed(field);
     }
-    if (changes.name_ua || changes.description_ua) $("#lang-tabs [data-lang=ua]").click();
+    // показываем язык, на который переводили: «на украинский» — вкладка UA, «на русский» — RU
+    const toRu = changes.name || changes.description;
+    if (!toRu && (changes.name_ua || changes.description_ua)) $("#lang-tabs [data-lang=ua]").click();
+    else if (toRu) $("#lang-tabs [data-lang=ru]")?.click();
     box.classList.add("hidden");
     toast("Применено — сохраняю", "ok");
   };
