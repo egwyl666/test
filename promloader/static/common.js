@@ -340,6 +340,7 @@ const NAV = [
   ["/orders", "Заказы"],
   ["/suppliers", "Поставщики", ["/supplier"]],
   ["/pricing", "Наценка"],
+  ["/categories", "Категории"],
   ["/changes", "Журнал"],
   ["/import", "Импорт файла"],
   ["/diagnose", "Проверка выгрузки"],

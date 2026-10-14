@@ -2,7 +2,7 @@
 
 const PAGE = 200;
 // фильтры списка — те же имена, что у /api/products; хранятся и в адресе страницы (?group=…&sort=…)
-const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors"];
+const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "prom_category", "cat_mismatch"];
 const START = new URLSearchParams(location.search);
 const list = {
   ...Object.fromEntries(FILTERS.map((k) => [k, START.get(k) || ""])),
@@ -195,13 +195,15 @@ $("#reset-filters").addEventListener("click", () => {
 });
 
 // ---------- фильтры и сортировка ----------
-const FLAG_LABELS = { errors: "с ошибками заполнения", no_photo: "без фото", gone: "пропали у поставщика" };
+const FLAG_LABELS = { errors: "с ошибками заполнения", no_photo: "без фото", gone: "пропали у поставщика",
+  cat_mismatch: "Prom поставил не ту категорию" };
 const ON_PROM_LABELS = { yes: "есть на Prom", no: "нет на Prom" };
 
 function renderFilterControls() {
   $("#f-group").value = list.group;
   $("#f-presence").value = list.presence;
   $("#f-on_prom").value = list.on_prom;
+  $("#f-prom_category").value = list.prom_category;
   $("#f-sort").value = list.sort;
   $("#supplier-filter").value = list.supplier;
   for (const k of Object.keys(FLAG_LABELS)) $(`#f-${k}`).checked = !!list[k];
@@ -210,10 +212,15 @@ function renderFilterControls() {
   if (list.group) active.push(["group", `группа: ${list.group === "-" ? "без группы" : list.group}`]);
   if (list.presence) active.push(["presence", META.presence[list.presence] || list.presence]);
   if (list.on_prom) active.push(["on_prom", ON_PROM_LABELS[list.on_prom]]);
+  if (list.prom_category) {
+    const cat = (META.prom_categories || []).find((c) => String(c.id) === list.prom_category);
+    active.push(["prom_category", list.prom_category === "none" ? "без категории Prom"
+      : `${I18N.tr("категория Prom:")} ${cat ? cat.caption || "№" + cat.id : "№" + list.prom_category}`]);
+  }
   for (const [k, label] of Object.entries(FLAG_LABELS)) if (list[k]) active.push([k, label]);
   $("#active-filters").innerHTML = active.map(([k, label]) =>
     `<button class="chip active" data-clear="${k}" title="Убрать фильтр">${esc(label)} ×</button>`).join("");
-  const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0);
+  const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0) + (list.prom_category ? 1 : 0);
   $("#more-filters-label").textContent = more ? `Ещё фильтры (${more}) ▾` : "Ещё фильтры ▾";
 }
 $("#active-filters").addEventListener("click", (e) => {
@@ -225,6 +232,7 @@ $("#active-filters").addEventListener("click", (e) => {
 $("#f-group").addEventListener("change", (e) => { list.group = e.target.value; applyFilters(); });
 $("#f-presence").addEventListener("change", (e) => { list.presence = e.target.value; applyFilters(); });
 $("#f-on_prom").addEventListener("change", (e) => { list.on_prom = e.target.value; applyFilters(); });
+$("#f-prom_category").addEventListener("change", (e) => { list.prom_category = e.target.value; applyFilters(); });
 $("#f-sort").addEventListener("change", (e) => { list.sort = e.target.value; list.items = []; syncUrl(); loadProducts(); });
 for (const k of Object.keys(FLAG_LABELS)) {
   $(`#f-${k}`).addEventListener("change", (e) => { list[k] = e.target.checked ? "1" : ""; applyFilters(); });
@@ -626,6 +634,8 @@ $("#first-steps-hide").onclick = () => {
     (META.groups || []).map((g) => `<option value="${esc(g)}" translate="no">${esc(g)}</option>`).join("");
   $("#f-presence").innerHTML = `<option value="">Любое наличие</option>` +
     Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+  $("#f-prom_category").innerHTML = `<option value="">все</option><option value="none">без категории Prom</option>` +
+    (META.prom_categories || []).map((c) => `<option value="${c.id}" translate="no">${esc(c.caption || "№" + c.id)}</option>`).join("");
   $("#e-presence").innerHTML = `<option value="">не менять</option>` +
     Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#e-groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");

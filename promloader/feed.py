@@ -42,6 +42,11 @@ def with_videos(description: str, videos: list[str]) -> str:
     return (description or "") + players
 
 
+# Как передать категорию каталога Prom (не группу магазина). None — способ не найден, категорию решает Prom.
+# Проверяется на живом кабинете перед выпуском (scratchpad: PLTEST-CAT-*).
+CATEGORY_TAG: str | None = None
+
+
 def category_id(group_name: str) -> str:
     """Стабильный числовой id группы — один и тот же при каждой выгрузке."""
     return str(zlib.crc32(group_name.strip().lower().encode()) % 10_000_000 + 1)
@@ -95,6 +100,8 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
             _sub(offer, "oldprice", _fmt_price(p["old_price"]))
         _sub(offer, "currencyId", p["currency"] or "UAH")
         _sub(offer, "categoryId", category_id(p["group_name"] or NO_GROUP))
+        if CATEGORY_TAG and p.get("target_category_id"):
+            _sub(offer, CATEGORY_TAG, str(p["target_category_id"]))
         for img in products.image_rows(p["id"])[: products.MAX_IMAGES]:
             _sub(offer, "picture", products.image_src(img, base_url))
         _sub(offer, "vendorCode", p["external_id"])

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Категории Prom — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav></nav>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <h1 style="margin:0">Категории Prom</h1>
+      <span class="spacer"></span>
+      <button class="btn" id="refresh">↻ Обновить с Prom</button>
+    </div>
+    <p class="muted small" style="margin-top:-4px">Категория каталога Prom («Зарядные станции», «Праздничное освещение»…) — не ваша группа:
+      по ней покупатели находят товар в каталоге и фильтрах Prom. Prom ставит её сам по названию и иногда ошибается.
+      Здесь видно, какие категории Prom поставил товарам каждой группы, и можно задать правильную.</p>
+    <div class="panel hidden" id="no-send" style="border-left:4px solid var(--warn)">
+      Prom пока не принимает категорию при импорте из программы — нужную категорию программа запоминает и показывает
+      расхождения, а поменять её на Prom можно в кабинете («Товари» → товар → «Категорія»).
+    </div>
+    <div class="err-text" id="error"></div>
+    <div id="groups"></div>
+    <div id="empty" class="panel empty-state hidden">Товаров пока нет.</div>
+  </main>
+
+  <div class="modal hidden" id="pick-modal">
+    <div class="modal-box">
+      <h2>Категория Prom для группы «<span id="pick-group" translate="no"></span>»</h2>
+      <label class="field"><span>Найти на prom.ua</span>
+        <div class="row" style="gap:8px"><input id="pick-q" placeholder="например: гирлянда штора" style="flex:1">
+          <button class="btn" id="pick-search">Найти</button></div></label>
+      <div id="pick-found" class="cat-options"></div>
+      <label class="field"><span>или ссылка на страницу категории prom.ua</span>
+        <div class="row" style="gap:8px"><input id="pick-url" placeholder="https://prom.ua/ua/Zaryadnye-stantsii" style="flex:1">
+          <button class="btn" id="pick-url-go">Взять</button></div></label>
+      <h3 class="small muted" style="margin:14px 0 6px">Уже встречались в вашем магазине</h3>
+      <div id="pick-known" class="cat-options"></div>
+      <div class="toolbar" style="margin:12px 0 0;justify-content:flex-end">
+        <button class="btn" id="pick-clear">Убрать правило</button>
+        <button class="btn" id="pick-close">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/categories.js"></script>
+</body>
+</html>

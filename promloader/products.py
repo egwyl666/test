@@ -32,9 +32,12 @@ TEXT_FIELDS = (
 )
 NUMBER_FIELDS = ("price", "old_price", "cost_price", "rrp")
 INT_FIELDS = ("quantity",)
-EDITABLE = TEXT_FIELDS + NUMBER_FIELDS + INT_FIELDS + ("params", "videos")
+EDITABLE = TEXT_FIELDS + NUMBER_FIELDS + INT_FIELDS + ("params", "videos", "target_category_id")
 # Поля, которые при ручной правке закрепляются: обновление прайса поставщика их больше не перезапишет.
 LOCKABLE = tuple(f for f in EDITABLE if f not in ("external_id", "cost_price", "rrp")) + ("images",)
+# Категорию Prom перезаписывает правило группы — у любого товара, не только у товара поставщика. Поэтому выбранная
+# руками категория закрепляется всегда.
+ALWAYS_LOCK = {"target_category_id"}
 
 MAX_IMAGES = 10
 MAX_VIDEOS = 5
@@ -120,6 +123,17 @@ def parse_number(value) -> float | None:
     if not math.isfinite(number) or abs(number) > MAX_NUMBER:
         raise ProductError(f"Не похоже на число: {value!r}")
     return number
+
+
+def parse_category(value) -> int | None:
+    """Номер категории каталога Prom; пусто — «как в группе». Принимает и ссылку с номером (…/c500901)."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    m = re.search(r"(\d{2,12})(?!.*\d)", text)
+    if not m or int(m.group(1)) <= 0:
+        raise ProductError(f"Не похоже на номер категории Prom: {text[:60]}")
+    return int(m.group(1))
 
 
 def parse_int(value) -> int | None:
@@ -237,6 +251,8 @@ def normalize(data: dict) -> dict:
                 out[key] = json.dumps(parse_params(value), ensure_ascii=False)
             elif key == "videos":
                 out[key] = json.dumps(parse_videos(value))
+            elif key == "target_category_id":
+                out[key] = parse_category(value)
             if key == "presence":
                 out[key] = parse_presence(out[key]) or "available"
         except ProductError as exc:
@@ -285,6 +301,8 @@ def get(product_id: int) -> dict:
     p["check"] = validate(p)
     p["offers"] = offers(product_id)
     p["prom_url"] = prom_url(p.get("prom_id"))
+    from . import categories
+    p["categories"] = categories.for_product(p)
     p["cost_uah"] = None
     if p["cost_price"] is not None and (p["cost_currency"] or "UAH") != "UAH":
         from . import rates
@@ -368,7 +386,8 @@ def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
     return f"({cols})", [like] * len(SEARCH_COLUMNS)
 
 
-FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors")
+FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors",
+               "prom_category", "cat_mismatch")
 SORTS = {
     "updated": "p.updated_at DESC, p.id DESC",
     "created": "p.created_at DESC, p.id DESC",
@@ -411,6 +430,16 @@ def _filter_where(flt: dict, with_status: bool = True) -> tuple[str, list]:
         # пропал из прайса поставщика (и ни у кого из поставщиков его нет)
         where.append("EXISTS (SELECT 1 FROM supplier_items si WHERE si.product_id = p.id AND si.missing = 1) "
                      "AND NOT EXISTS (SELECT 1 FROM supplier_items si WHERE si.product_id = p.id AND si.missing = 0)")
+    category = str(flt.get("prom_category") or "")
+    if category == "none":
+        where.append("p.prom_category_id IS NULL")
+    elif category.isdigit():
+        where.append("p.prom_category_id = ?")
+        args.append(int(category))
+    if flt.get("cat_mismatch") in _TRUE:
+        # Prom поставил не ту категорию, которую мы хотим
+        where.append("p.target_category_id IS NOT NULL AND p.prom_category_id IS NOT NULL "
+                     "AND p.target_category_id != p.prom_category_id")
     q = flt.get("q") or ""
     if q.strip():
         clause, more = search_clause(q, "p.")
@@ -558,6 +587,10 @@ def create(data: dict) -> int:
         fields.update(_initial_price(fields))
     ts = db.now()
     with db.tx() as c:
+        if fields.get("target_category_id") is None:
+            rule = group_category(c, fields.get("group_name") or "")
+            if rule:
+                fields["target_category_id"] = rule
         if external_id and c.execute("SELECT 1 FROM products WHERE external_id = ?", (external_id,)).fetchone():
             raise ProductError(f"Артикул {external_id} уже занят другим товаром", field="external_id")
         cols = ["created_at", "updated_at"] + list(fields)
@@ -637,9 +670,14 @@ def _lock(c, product_id: int, names: list[str]) -> None:
     if not names:
         return
     row = c.execute("SELECT supplier_id, cost_price, rrp, locked_fields FROM products WHERE id = ?", (product_id,)).fetchone()
-    # закрепление нужно только товарам, которые что-то может перезаписать: прайс поставщика или пересчёт наценки
-    if row is None or (row["supplier_id"] is None and row["cost_price"] is None and row["rrp"] is None):
+    if row is None:
         return
+    # закрепление нужно только товарам, которые что-то может перезаписать: прайс поставщика или пересчёт наценки
+    # (категорию — правило группы, поэтому её всегда)
+    if row["supplier_id"] is None and row["cost_price"] is None and row["rrp"] is None:
+        names = [n for n in names if n in ALWAYS_LOCK]
+        if not names:
+            return
     locked = json.loads(row["locked_fields"] or "[]")
     merged = sorted(set(locked) | set(names))
     if merged != sorted(locked):
@@ -653,9 +691,19 @@ def unlock(product_id: int, names: list[str]) -> None:
             raise KeyError(product_id)
         locked = [f for f in json.loads(row["locked_fields"] or "[]") if f not in names]
         c.execute("UPDATE products SET locked_fields = ? WHERE id = ?", (json.dumps(locked), product_id))
+        if "target_category_id" in names:
+            # своя категория снята — снова по правилу группы
+            group = c.execute("SELECT group_name FROM products WHERE id = ?", (product_id,)).fetchone()["group_name"]
+            _touch(c, product_id, {"target_category_id": group_category(c, group)})
 
 
-NOT_TRACKED = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields"}
+NOT_TRACKED = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields", "prom_category_id"}
+
+
+def group_category(c, group_name: str) -> int | None:
+    """Категория Prom по правилу группы (None — правила нет)."""
+    row = c.execute("SELECT category_id FROM group_categories WHERE group_name = ?", (group_name or "",)).fetchone()
+    return row["category_id"] if row else None
 
 
 def _touch(c, product_id: int, fields: dict, status: str | None = None) -> None:
@@ -672,6 +720,10 @@ def _touch(c, product_id: int, fields: dict, status: str | None = None) -> None:
     if row is None:
         return
     photos = not fields
+    if "group_name" in fields and "target_category_id" not in fields and fields["group_name"] != row["group_name"] \
+            and "target_category_id" not in json.loads(row["locked_fields"] or "[]"):
+        # товар перешёл в другую группу — категория Prom по правилу новой группы (нет правила — пусть решает Prom)
+        fields["target_category_id"] = group_category(c, fields["group_name"])
     fields = {k: v for k, v in fields.items() if k not in row.keys() or row[k] != v}  # то же значение — не изменение
     if not fields and not photos:
         return
@@ -746,7 +798,8 @@ EXPORT_COLUMNS = (
     ("Артикул", "external_id"), ("Название", "name"), ("Группа", "group_name"), ("Закупка", "cost_price"),
     ("Валюта закупки", "cost_currency"), ("Закупка, грн", "cost_uah"), ("Цена", "price"), ("Валюта", "currency"),
     ("Наличие", "presence"), ("Количество", "quantity"), ("Статус", "status"), ("Поставщик", "supplier_name"),
-    ("Артикул поставщика", "vendor_code"), ("На Prom", "on_prom"), ("Изменён", "updated_at"),
+    ("Артикул поставщика", "vendor_code"), ("На Prom", "on_prom"), ("Категория Prom", "prom_category"),
+    ("Нужная категория Prom", "target_category"), ("Изменён", "updated_at"),
 )
 
 
@@ -758,6 +811,7 @@ def export_xlsx(flt: dict, sort: str = "updated") -> bytes:
 
     rows, _, _ = _rows(flt, sort)
     table = rates.Table()
+    cats = {r["id"]: r["caption"] or str(r["id"]) for r in db.query("SELECT id, caption FROM prom_categories")}
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("Товары")
     ws.append([title for title, _ in EXPORT_COLUMNS])
@@ -767,6 +821,8 @@ def export_xlsx(flt: dict, sort: str = "updated") -> bytes:
         p["presence"] = PRESENCE.get(p["presence"], p["presence"])
         p["status"] = STATUSES.get(p["status"], p["status"])
         p["on_prom"] = "да" if p["synced_at"] else "нет"
+        p["prom_category"] = cats.get(p["prom_category_id"], p["prom_category_id"])
+        p["target_category"] = cats.get(p["target_category_id"], p["target_category_id"])
         p["updated_at"] = (p["updated_at"] or "")[:16].replace("T", " ")
         ws.append([p.get(key) if p.get(key) is not None else "" for _, key in EXPORT_COLUMNS])
     buf = io.BytesIO()

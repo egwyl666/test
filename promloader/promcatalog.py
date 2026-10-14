@@ -9,7 +9,7 @@ import json
 import logging
 import threading
 
-from . import changes, db, products
+from . import categories, changes, db, products
 from .prom_api import PromError
 
 log = logging.getLogger("promloader.promcatalog")
@@ -101,8 +101,8 @@ def _upsert(p: dict, counts: dict) -> None:
         if status in ("ready", "error", "sending", "deleting"):
             # в программе есть неотправленные правки — не затираем их данными с Prom, только связываем
             with db.tx() as c:
-                c.execute("UPDATE products SET prom_id = ?, prom_no_ext = ? WHERE id = ?",
-                          (prom_id, 0 if external else 1, existing))
+                c.execute("UPDATE products SET prom_id = ?, prom_no_ext = ?, prom_category_id = ? WHERE id = ?",
+                          (prom_id, 0 if external else 1, categories.from_catalog(c, p), existing))
             counts["kept_local"] += 1
             return
         products.update(existing, data, lock=False)
@@ -114,8 +114,10 @@ def _upsert(p: dict, counts: dict) -> None:
     if images and not products.image_rows(pid):
         products.replace_images(pid, images, [])
     with db.tx() as c:
+        # категория Prom — только «что стоит на Prom»; нужную категорию (target) загрузка каталога не трогает
         c.execute("UPDATE products SET prom_id = ?, status = 'synced', synced_at = ?, last_error = '', "
-                  "pending_fields = '[]', prom_no_ext = ? WHERE id = ?", (prom_id, db.now(), 0 if external else 1, pid))
+                  "pending_fields = '[]', prom_no_ext = ?, prom_category_id = ? WHERE id = ?",
+                  (prom_id, db.now(), 0 if external else 1, categories.from_catalog(c, p), pid))
 
 
 def _own_id(sku: str, prom_id) -> str:

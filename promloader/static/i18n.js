@@ -32,7 +32,9 @@
     if (!letters) continue;
     patterns.push({
       // подстановка может оказаться пустой: необязательный хвост `${условие ? "…" : ""}`
-      re: new RegExp("^" + parts.map(escRe).join("([\\s\\S]*?)") + "$"),
+      // пробелы вокруг подстановки необязательны: пустая подстановка « {} » на экране — один пробел
+      re: new RegExp("^" + parts.map((x, i) => escRe(i ? x.replace(/^ /, "") : x).replace(/ $/, i < parts.length - 1 ? "" : " "))
+        .join("\\s*([\\s\\S]*?)\\s*") + "$"),
       key: parts.reduce((a, b) => (norm(b).length > norm(a).length ? b : a), "").trim(),
       size: literal.length,
       // короткий шаблон («{} ч», «{} в {}») задел бы и название товара — он срабатывает, только когда
@@ -65,7 +67,7 @@
         if (t === undefined) { if (p.short) ok = false; return v; }
         return t;
       });
-      if (ok) return out;
+      if (ok) return out.replace(/ {2,}/g, " ");  // пустая подстановка оставила бы двойной пробел
     }
     // «Prom: …», «Anthropic Claude — нет ключа» — имя сервиса (латиницей) перед фразой программы
     const first = key.search(CYR);

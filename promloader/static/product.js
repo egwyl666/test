@@ -294,6 +294,7 @@ function applyServer(product) {
   $("#btn-send").textContent = product.status === "sending" ? "Отправляется…" : "Отправить на Prom";
   renderCheck(product.check);
   renderSupplier(product);
+  renderCategory(product);
   renderPhotos();
   renderPreview();
   if (product.status === "sending") pollStatus();
@@ -339,9 +340,60 @@ $("#history-list").addEventListener("click", async (e) => {
   } catch (err) { toast(err.message, "error"); btn.disabled = false; }
 });
 
+// ---------- категория каталога Prom ----------
+// Названия категорий приходят от Prom — translate="no".
+
+function catLabel(c) { return c ? (c.caption || `№${c.id}`) : ""; }
+
+function renderCategory(p) {
+  const c = p.categories || {};
+  const chip = (cat) => `<span class="chip cat-chip"${cat.path ? ` title="${esc(cat.path)}"` : ""}><span translate="no">${esc(catLabel(cat))}</span></span>`;
+  const parts = [];
+  if (c.target) {
+    parts.push(`${I18N.tr("Нужная:")} ${chip(c.target)} ` + (c.locked
+      ? `<button type="button" class="lock" id="cat-unlock" title="Выбрано в карточке. Нажмите, чтобы снова брать категорию по правилу группы">🔒 своё</button>`
+      : `<span class="muted">${esc(I18N.tr("по правилу группы"))}</span>`));
+  } else {
+    parts.push(`<span class="muted">${esc(I18N.tr("не задана — решает Prom"))}</span>`);
+  }
+  if (c.prom) parts.push(`${I18N.tr("Сейчас на Prom:")} ${chip(c.prom)}`);
+  if (c.mismatch) parts.push(`<b class="err-text">${esc(I18N.tr("Prom поставил другую категорию — уйдёт со следующей отправкой"))}</b>`);
+  $("#cat-box").innerHTML = parts.join("<br>") +
+    ` <button type="button" class="btn small" id="cat-change">${c.target ? "Изменить" : "Выбрать"}</button>`;
+  $("#cat-change").onclick = () => {
+    $("#cat-pick").classList.toggle("hidden");
+    if (!$("#cat-q").value) $("#cat-q").value = p.name || "";
+    $("#cat-q").focus();
+  };
+  const unlock = $("#cat-unlock");
+  if (unlock) unlock.onclick = () => unlockField("target_category_id");
+}
+
+async function searchCategory() {
+  const q = $("#cat-q").value.trim();
+  if (!q) return;
+  $("#cat-found").innerHTML = `<span class="muted small">Ищу на prom.ua…</span>`;
+  try {
+    const res = await api(`/api/categories/suggest?q=${encodeURIComponent(q)}`);
+    $("#cat-found").innerHTML = res.items.length ? res.items.map((c) => `<button type="button" class="cat-option" data-cat="${c.id}">
+        <b translate="no">${esc(catLabel(c))}</b>${c.path ? `<span class="small muted" translate="no">${esc(c.path)}</span>` : ""}</button>`).join("")
+      : `<span class="muted small">prom.ua ничего не нашёл — попробуйте другие слова.</span>`;
+  } catch (err) { $("#cat-found").innerHTML = `<span class="err-text">${esc(err.message)}</span>`; }
+}
+$("#cat-search").onclick = () => busy($("#cat-search"), searchCategory);
+$("#cat-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#cat-search").click(); } });
+$("#cat-found").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-cat]");
+  if (!b) return;
+  state.pending.target_category_id = Number(b.dataset.cat);
+  $("#cat-pick").classList.add("hidden");
+  $("#cat-found").innerHTML = "";
+  try { await save(); } catch { /* ошибку уже показал save() */ }
+});
+
 // ---------- поставщик и закреплённые поля ----------
 
-const LOCK_LABEL = { images: "фото", params: "характеристики", videos: "видео" };
+const LOCK_LABEL = { images: "фото", params: "характеристики", videos: "видео", target_category_id: "категорию Prom" };
 
 function renderSupplier(p) {
   const box = $("#supplier-box");
@@ -405,7 +457,8 @@ function renderOffers(p) {
 
 async function unlockField(field) {
   const what = LOCK_LABEL[field] || "это поле";
-  const source = state.product.supplier ? "из прайса поставщика" : "по правилам наценки";
+  const source = field === "target_category_id" ? "по правилу группы"
+    : state.product.supplier ? "из прайса поставщика" : "по правилам наценки";
   if (!confirm(`Вернуть ${what} ${source}? Ваше значение будет заменено.`)) return;
   try {
     await flush();

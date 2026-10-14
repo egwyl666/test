@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, aiprice, autostart, backup, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, aiprice, autostart, backup, categories, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, promdelete, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -28,6 +28,7 @@ PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
     "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
+    "/categories": "categories.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -474,6 +475,10 @@ def meta():
             "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
         "groups": [r["group_name"] for r in db.query(
             "SELECT DISTINCT group_name FROM products WHERE group_name != '' ORDER BY group_name")],
+        # для фильтра списка — только категории, в которых есть наши товары
+        "prom_categories": [{"id": r["id"], "caption": r["caption"]} for r in db.query(
+            "SELECT id, caption FROM prom_categories WHERE id IN (SELECT prom_category_id FROM products) "
+            "OR id IN (SELECT target_category_id FROM products) ORDER BY lower_u(caption), id")],
         "first_steps": _first_steps(),
     }
 
@@ -1556,6 +1561,58 @@ async def _catalog_bg() -> None:
     except Exception as exc:
         log.exception("Сбой загрузки каталога Prom")
         promcatalog._set_state(running=False, error=f"Внутренняя ошибка: {exc}")
+
+
+# ---------- категории Prom ----------
+
+@app.get("/api/categories")
+def categories_overview():
+    return {"groups": categories.overview(), "known": categories.listing(), "send": feed.CATEGORY_TAG is not None}
+
+
+@app.post("/api/categories/group")
+def categories_set_group(group: str = Body(...), category_id: int | str | None = Body(None)):
+    try:
+        changed = categories.set_group(group, category_id)
+    except products.ProductError as exc:
+        raise HTTPException(400, str(exc))
+    return {"changed": changed, "groups": categories.overview()}
+
+
+@app.post("/api/categories/group/preview")
+def categories_preview_group(group: str = Body(...), category_id: int | str | None = Body(None)):
+    try:
+        return categories.preview_group(group, category_id)
+    except products.ProductError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/api/categories/suggest")
+def categories_suggest(q: str = ""):
+    try:
+        return {"items": categories.suggest(q)}
+    except categories.CategoryError as exc:
+        raise HTTPException(502, str(exc))
+
+
+@app.post("/api/categories/url")
+def categories_from_url(url: str = Body(..., embed=True)):
+    try:
+        return categories.from_url(url)
+    except categories.CategoryError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/categories/refresh")
+async def categories_refresh():
+    """Только категории с Prom (без загрузки всего каталога): что сейчас стоит у наших товаров."""
+    if not config.get("prom_token"):
+        raise HTTPException(400, "Сначала укажите API-токен Prom в «Настройках»")
+    try:
+        async with sync.make_client() as client:
+            return await categories.refresh(client)
+    except PromError as exc:
+        raise HTTPException(502, str(exc))
 
 
 # ---------- массовый ИИ ----------

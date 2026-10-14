@@ -241,6 +241,22 @@ CREATE TABLE IF NOT EXISTS price_rules (
     rounding        TEXT NOT NULL DEFAULT 'none',
     use_rrp         INTEGER NOT NULL DEFAULT 0
 );
+
+-- Категории каталога Prom (не группы магазина): узнаём их из своего каталога, поиска и ссылок prom.ua
+CREATE TABLE IF NOT EXISTS prom_categories (
+    id          INTEGER PRIMARY KEY,
+    caption     TEXT NOT NULL DEFAULT '',
+    path        TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    updated_at  TEXT NOT NULL
+);
+
+-- Правило «группа магазина → категория Prom»: применяется к товарам группы, у которых категория не закреплена
+CREATE TABLE IF NOT EXISTS group_categories (
+    group_name   TEXT PRIMARY KEY,
+    category_id  INTEGER NOT NULL,
+    updated_at   TEXT NOT NULL
+);
 """
 
 # Колонки, добавленные после первой версии: для уже существующих баз добавляются через ALTER TABLE.
@@ -260,6 +276,10 @@ MIGRATIONS = {
         # в кабинете Prom у товара не заполнен «Ідентифікатор_товару» (узнали при загрузке каталога)
         "prom_no_ext": "INTEGER NOT NULL DEFAULT 0",
         "videos": "TEXT NOT NULL DEFAULT '[]'",  # ссылки YouTube (JSON-список)
+        # категория каталога Prom. Две колонки, а не одна: что стоит на Prom сейчас (пишет только загрузка
+        # каталога) и что нужно нам — иначе не увидеть, где Prom поставил не то
+        "prom_category_id": "INTEGER",
+        "target_category_id": "INTEGER",
     },
     "supplier_items": {
         "ignored": "INTEGER NOT NULL DEFAULT 0",

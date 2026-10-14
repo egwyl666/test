@@ -25,10 +25,11 @@ LABELS = {
     "group_name": "Группа", "keywords": "Ключевые слова", "params": "Характеристики", "images": "Фото", "videos": "Видео",
     "vendor": "Производитель", "country": "Страна", "barcode": "Штрихкод", "vendor_code": "Артикул поставщика",
     "external_id": "Артикул", "unit": "Ед. изм.", "created": "Создан", "deleted": "Удалён", "prom": "Prom",
+    "target_category_id": "Категория Prom",
 }
 # не показываем в журнале: служебные поля
 SKIP = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields", "revision", "updated_at",
-        "synced_at", "prom_id", "created_at"}
+        "synced_at", "prom_id", "created_at", "prom_category_id"}
 
 
 @contextmanager
@@ -59,6 +60,9 @@ def record(c, product_id: int, field: str, old="", new="", who: str | None = Non
         old, new = PRESENCE.get(old, old), PRESENCE.get(new, new)
     if field == "videos":  # не JSON, а ссылки строками
         old, new = ("\n".join(json.loads(v or "[]")) if isinstance(v, str) else v for v in (old, new))
+    if field == "target_category_id":  # название, а не номер; номер — в скобках, по нему «↩ Вернуть»
+        from .categories import label
+        old, new = label(old), label(new)
     c.execute("INSERT INTO product_changes (product_id, at, source, field, old, new) VALUES (?, ?, ?, ?, ?, ?)",
               (product_id, db.now(), who or _source.get(), field, _text(old), _text(new)))
 
@@ -80,7 +84,7 @@ def record_diff(c, product_id: int, before, fields: dict) -> None:
 # что можно вернуть одним нажатием: обычные поля товара (не фото, не характеристики — они хранятся в журнале не целиком)
 REVERTABLE = {"price", "old_price", "cost_price", "cost_currency", "rrp", "currency", "presence", "quantity", "name",
               "name_ua", "description", "description_ua", "group_name", "keywords", "vendor", "country", "barcode",
-              "vendor_code", "unit"}
+              "vendor_code", "unit", "target_category_id"}
 
 
 class RevertError(Exception):
@@ -108,6 +112,9 @@ def revert(change_id: int) -> dict:
     value = row["old"]
     if row["field"] == "presence":
         value = {v: k for k, v in products.PRESENCE.items()}.get(value, value)
+    if row["field"] == "target_category_id":
+        from .categories import id_from_label
+        value = id_from_label(value)
     with source(f"Откат: {LABELS.get(row['field'], row['field'])}"):
         return products.update(row["product_id"], {row["field"]: value})
 

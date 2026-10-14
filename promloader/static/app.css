@@ -624,3 +624,16 @@ table.list.compact td { padding: 6px 8px; }
 .lang-switch button { border: 0; background: #fff; color: var(--muted); font: inherit; font-size: 12px; font-weight: 600;
   padding: 5px 10px; cursor: pointer; }
 .lang-switch button.active { background: var(--accent-soft); color: var(--accent); }
+
+/* ---------- категории Prom ---------- */
+.cat-chip { cursor: default; }
+.cat-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0; }
+.cat-label { min-width: 130px; }
+.cat-options { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; max-height: 260px; overflow-y: auto; }
+.cat-option { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: inherit; cursor: pointer; font: inherit; }
+.cat-option:hover { border-color: var(--accent); }
+.cat-group h3 a { color: inherit; }
+@media (max-width: 640px) {
+  .cat-label { min-width: 0; width: 100%; }
+}
