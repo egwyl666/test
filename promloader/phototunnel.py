@@ -100,6 +100,11 @@ class _PhotoHandler(BaseHTTPRequestHandler):
 
 
 class Tunnel:
+    # подклассы (доступ с телефона, phone.py) пускают через тот же cloudflared другой локальный сервер
+    label = "Фото доступны Prom"
+    start_error = "Не удалось открыть временный доступ к фото (Cloudflare не ответил). Повторим позже"
+    probe = (f"/media/{'0' * 32}.jpg", 404)  # что отвечает наш сервер, когда туннель уже работает
+
     def __init__(self):
         self.lock = threading.Lock()
         self.server: ThreadingHTTPServer | None = None
@@ -108,6 +113,7 @@ class Tunnel:
         self.last_used = 0.0
         self.error = ""
         self.reach_timeout = 30
+        self.reachable = False
 
     # --- сервер фото ---
     def _ensure_server(self) -> int:
@@ -176,23 +182,24 @@ class Tunnel:
             if not found.wait(START_TIMEOUT):
                 self._stop_proc()
                 self.error = "Cloudflare не выдал адрес вовремя"
-                raise TunnelError("Не удалось открыть временный доступ к фото (Cloudflare не ответил). Повторим позже")
-            self._wait_reachable(self.reach_timeout)
+                raise TunnelError(self.start_error)
+            self.reachable = self._wait_reachable(self.reach_timeout)
             self.error = ""
-            log.info("Фото доступны Prom по адресу %s", self.url)
+            log.info("%s по адресу %s", self.label, self.url)
             return self.url
 
-    def _wait_reachable(self, seconds: int = 30) -> None:
+    def _wait_reachable(self, seconds: int = 30) -> bool:
         """Новому адресу Cloudflare нужно несколько секунд, чтобы заработать."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             try:
-                r = httpx.head(f"{self.url}/media/{'0' * 32}.jpg", timeout=5)
-                if r.status_code == 404:  # ответил наш сервер фото — туннель работает
-                    return
+                r = httpx.head(self.url + self.probe[0], timeout=5)
+                if r.status_code == self.probe[1]:  # ответил наш сервер — туннель работает
+                    return True
             except httpx.HTTPError:
                 pass
             time.sleep(2)
+        return False
 
     def touch(self) -> None:
         self.last_used = time.monotonic()

@@ -30,6 +30,8 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 
 ## Ключи `settings` (основные)
 
+- Доступ с телефона (не меняются восстановлением копии — `backup.DEVICE_SETTINGS`): `phone_lan`, `phone_remote`,
+  `phone_password_hash` (pbkdf2), `phone_secret` (ключ подписи входа).
 - Prom и фото: `prom_token`, `prom_api_base`, `public_base_url`, настройки R2, `import_method`, `import_plain_v2`, `import_settings`, `quick_updates`
 - ИИ: `ai_provider`, `gemini_key`, `anthropic_key`, `gemini_model` (пусто — авто), `gemini_model_used`, `claude_model`, `ai_rate`, `gemini_free_tier` (`1`/`0`/пусто — не знаем), `ai_model_status` (JSON `provider:model` → статус, у лимита — `until`), `ai_key_error` (JSON provider → текст: ключ не принят), `ai_limits` (JSON: Claude — остаток из заголовков, Gemini — `last_limit`)
 - Курс: `rate_mode` (`nbu`/`manual`), `rate_add`, `rate_manual` (JSON), `rate_auto_send`, `rate_applied` (курс последнего пересчёта), `nbu_rate_<КОД>` (кеш на день)

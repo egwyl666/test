@@ -19,7 +19,7 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
 | `tray.py` | 249 | Значок у часов, перезапуск, присмотр |
 | `schedule.py` | 235 | Выгрузка по расписанию, пропущенные запуски |
 | `updater.py` | 260 | Самообновление с GitHub по `VERSION`; `pending-check` пишется до копирования, `_put_back` — откат при сбое |
-| `phototunnel.py` | 229 | Временный публичный адрес для фото, `/feed/<hex>.xml` |
+| `phototunnel.py` | 235 | Временный публичный адрес для фото, `/feed/<hex>.xml`; класс `Tunnel` (cloudflared, `probe`, `reachable`) — общий с `phone.PhoneTunnel` |
 | `rates.py` | 259 | Курс НБУ (кеш на день), настройки курса, `Table.rate` (свой курс поставщика), `coverage`, `check_changed`, `mark_applied` |
 | `diagnose.py` | 213 | «Проверка выгрузки» одного товара по шагам |
 | `promdelete.py` | 196 | Удаление с Prom: `check`, `request`, `process`, `retry`, `cancel` |
@@ -38,6 +38,7 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
 | `i18n_extract.py` | 269 | Русские строки интерфейса для украинского словаря: `collect()` (HTML, JS, сообщения Python; без логов, заданий ИИ, регулярок, SQL, проверок `in`/`==`), `dictionary()` (`static/i18n-uk.js`), `missing()`; `python -m promloader.i18n_extract` — что не переведено |
 | `categories.py` | 290 | Категории каталога Prom: справочник `prom_categories` (`remember`, `info`, `label`), `for_product`, `overview` (по группам: категории на Prom, расхождения), `set_group`/`preview_group` (правило группы → товары без 🔒 через `_touch`), `from_catalog` (из `/products/list`), `refresh`, `suggest` (поиск prom.ua: `topHitsCategory`), `from_url` (`categoryId` на странице категории) |
 | `reports.py` | 420 | Отчёты: `period_bounds`, `_load_orders` (заказы → позиции, комиссия `cpa_commission`, причина отмены), `_link_products` (по `prom_id`, затем артикулу — одним запросом), `_cost_history`/`_cost_at` (закупка на дату заказа по журналу, иначе текущая и «≈»), `sales`, `products_report` (ABC, `dead_stock`), `suppliers_report`, `store_report`, `build`, `xlsx` |
+| `phone.py` | 326 | Доступ с телефона: пароль (`hash_password` pbkdf2, `check_password`), сессия (`make_session` / `valid_session`, `sign_out_everywhere`), `LoginLimiter`, `client_kind`, `from_this_computer`, `lan_addresses` / `lan_urls`, `qr_svg` (segno), `PhoneTunnel` (cloudflared к самой программе, подкласс `phototunnel.Tunnel`), `keep_tunnel` (шаг `phone_worker`, новый адрес → Telegram «phone»), `status` |
 | `chat.py` | 270 | Чат с покупателями Prom: `poll` (комнаты → история только изменившихся, `_store`, уведомление «chat» о новых сообщениях покупателя, при первом опросе — без уведомлений), `rooms`, `messages`, `unseen`, `send` (`user_id` из `room_ident`), `mark_read`, `ai_draft` (`ai.chat_reply`) |
 | `autostart.py`, `runtime.py` | 48, 38 | Автозапуск Windows; перезапуск из веб-сервера |
 
@@ -56,12 +57,25 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
 | Поставщики | `GET/POST /api/suppliers`, `GET/PATCH/DELETE /api/suppliers/{id}`, `…/source`, `…/open`, `…/run`, `GET …/deleted`, `POST …/restore-deleted` (`skus`, `run`), `POST …/preview` |
 | Prom | `GET/POST /api/prom/catalog`, `GET /api/prom/external-ids` (сколько и пример), `POST /api/prom/external-ids/write` (запись в фоне), `GET /api/orders` (`status, q, date_from, date_to, limit, offset` → `items, total, counts`), `POST /api/orders/refresh`, `…/seen` (`ids`; без них — все), `…/{id}/status` |
 | ИИ | `POST /api/ai/check`, `GET/POST /api/ai/bulk`, `POST /api/ai/bulk/estimate` (`action` + `ids`/`filter`), `…/{job_id}/status`, `…/{job_id}/revert`; окно «✨ ИИ»: `GET /api/ai/status` (выбор, расходы, лимиты, `usd_rate`), `GET /api/ai/models` (цены, статусы), `POST /api/ai/models/check` `{models}`, `POST /api/ai/model` `{provider?, model?, free_tier?}` (ключ — только в «Настройках»); `…/products/{id}/ai` → `{changes, usage}`; `/api/meta.ai` — модель, `auto`, `free`, `today_*` |
-| Настройки и сервис | `GET/POST /api/settings`, `…/check`, `GET /api/meta`, `/api/update/check`, `/api/update/install`, `/api/backups*`, `/api/shutdown`, `/api/restart`, `/api/autostart`, `/api/schedules*`, `/api/r2/check`, `/api/r2/stats` |
+| Доступ с телефона | `GET /login`, `POST /api/login` (`password`, `next`; 10 неудач за 15 мин → 429), `POST /api/logout`, `GET/POST /api/phone` (`password?`, `lan?`, `remote?` → состояние, `restarting`), `POST /api/phone/sign-out-all`, `GET /api/phone/qr.svg?text=` |
+| Настройки и сервис | `GET/POST /api/settings`, `…/check`, `GET /api/meta` (`access`: local / phone), `/api/update/check`, `/api/update/install`, `/api/backups*`, `/api/shutdown`, `/api/restart`, `/api/autostart`, `/api/schedules*`, `/api/r2/check`, `/api/r2/stats` |
 | Telegram и поддержка | `/api/telegram/recipients*` (+ `outbox`), `POST /api/telegram/retry`, `/api/telegram/candidates`, `/api/support*`, `/api/support/channel/chats` |
 
 ## Правила, которые легко нарушить
 
-- Доступ: middleware `same_site_only` (`main.py`) — только `localhost` (или `APP_PASSWORD` / `PROMLOADER_ALLOWED_HOSTS`), изменяющие запросы только с Origin своей страницы; `/media/` и `/feed/` открыты для Prom. В тестах `conftest.py` разрешает адрес `testserver`.
+- Доступ: middleware `same_site_only` (`main.py`) → `phone.client_kind`. Изменяющие запросы принимаются только с
+  Origin своей страницы. `/media/` и `/feed/` открыты для Prom. В тестах `conftest.py` разрешает адрес `testserver`.
+  - **«Свой» компьютер** — `127.0.0.1` без `Cf-Connecting-Ip` и с адресом из `_allowed_hosts`. Решает настоящий
+    адрес клиента, а не `Host`: когда программа слушает сеть (`runtime.lan_bound`), `Host` подделывается.
+  - **«Телефон»** — нужна кука `pl_phone` (HMAC на `phone_secret`, 30 дней), иначе страница → `/login?next=`, API →
+    401 `{login: true}`. Телефон — это:
+    - клиент из сети при `lan_bound` и включённом Wi‑Fi;
+    - запрос через cloudflared (`127.0.0.1` + `Cf-Connecting-Ip`) на адрес туннеля `phone.tunnel` при включённом
+      доступе из интернета.
+  - Всё остальное → 403.
+  - `APP_PASSWORD` (Docker) — Basic, как раньше.
+  - Пароль, доступ, QR — `/api/phone*`, только `access == "local"`. `/api/shutdown` — только
+    `phone.from_this_computer`.
 - Никаких запросов в интернет внутри `db.tx()`: курс заранее — `rates.prefetch()`.
 - Эндпоинты — обычные `def` (FastAPI выполняет их в пуле потоков). `async def` — только если нужен цикл событий
   (запрос к Prom через `PromClient`, чтение загружаемого файла, фоновая задача); тогда работа с базой — через

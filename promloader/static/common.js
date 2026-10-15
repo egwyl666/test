@@ -25,6 +25,10 @@ async function api(path, options = {}) {
   const text = await response.text();
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!response.ok) {
+    // вход с телефона истёк или ещё не выполнен — на страницу входа, потом обратно сюда
+    if (response.status === 401 && body && body.login) {
+      location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+    }
     let detail = body && body.detail !== undefined ? body.detail : body;
     if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
     const err = new Error(typeof detail === "string" && detail ? detail : `Ошибка ${response.status}`);
@@ -46,6 +50,7 @@ async function loadMeta() {
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
   const chatLink = document.querySelector('.topbar nav a[href="/chat"]');
   if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
+  showLogout();
   return META;
 }
 
@@ -361,6 +366,22 @@ function renderNav() {
 }
 
 function initNav() { renderNav(); }
+
+// С телефона (вход по паролю) в меню есть «Выйти»; на самом компьютере выходить не из чего.
+function showLogout() {
+  const nav = document.querySelector(".topbar nav");
+  if (!nav || META.access !== "phone" || nav.querySelector("[data-logout]")) return;
+  const a = document.createElement("a");
+  a.href = "/login";
+  a.dataset.logout = "1";
+  a.textContent = "Выйти";
+  a.onclick = async (e) => {
+    e.preventDefault();
+    await api("/api/logout", { method: "POST" }).catch(() => {});
+    location.href = "/login";
+  };
+  nav.appendChild(a);
+}
 
 // Перетаскивание файлов на всю страницу.
 function onPageFileDrop(handler, { accept = (f) => true, text = "Отпустите, чтобы добавить",

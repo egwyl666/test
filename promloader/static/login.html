@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+  </header>
+  <main style="max-width:420px">
+    <form class="panel" id="login" style="margin-top:24px">
+      <h2>📱 Вход с телефона</h2>
+      <p class="small muted" style="margin-top:-6px">Введите пароль, который задан на компьютере в «Настройках» → «Доступ с телефона».</p>
+      <label class="field"><span>Пароль</span>
+        <input id="password" type="password" autocomplete="current-password" required autofocus></label>
+      <button class="btn primary" id="go" type="submit" style="width:100%">Войти</button>
+      <p class="small err-text" id="error" style="margin-bottom:0"></p>
+    </form>
+  </main>
+  <script>
+    // отдельная маленькая страница: common.js здесь не нужен — без входа его запросы к программе всё равно отклоняются
+    const form = document.getElementById("login");
+    const error = document.getElementById("error");
+    const next = new URLSearchParams(location.search).get("next") || "/";
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const button = document.getElementById("go");
+      button.disabled = true;
+      error.textContent = "";
+      try {
+        const r = await fetch("/api/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: document.getElementById("password").value, next }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.detail || `Ошибка ${r.status}`);
+        location.replace(body.next || "/");
+      } catch (err) {
+        error.textContent = err.message === "Failed to fetch" ? "Нет связи с программой — компьютер выключен или программа не запущена" : err.message;
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

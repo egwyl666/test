@@ -12,13 +12,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, aiprice, autostart, backup, categories, changes, chat, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, aiprice, autostart, backup, categories, changes, chat, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phone, phototunnel, pricing, products, r2,
                promcatalog, promdelete, reports, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
                  asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop)),
-                 asyncio.create_task(chat_worker(stop))]
+                 asyncio.create_task(chat_worker(stop)), asyncio.create_task(phone_worker(stop))]
     try:
         yield
     finally:
@@ -100,6 +100,7 @@ async def lifespan(app: FastAPI):
             if isinstance(result, Exception):
                 log.error("Воркер завершился с ошибкой: %r", result)
         phototunnel.tunnel.close()
+        phone.tunnel.close()
 
 
 async def rates_worker(stop: asyncio.Event) -> None:
@@ -177,6 +178,19 @@ async def chat_worker(stop: asyncio.Event) -> None:
             log.exception("Сбой опроса чата")
         try:
             await asyncio.wait_for(stop.wait(), timeout=chat.POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def phone_worker(stop: asyncio.Event) -> None:
+    """Держит открытым адрес для телефона через Cloudflare, пока включён доступ из интернета."""
+    while not stop.is_set():
+        try:
+            await asyncio.to_thread(phone.keep_tunnel)
+        except Exception:
+            log.exception("Сбой туннеля для телефона")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=5)
         except asyncio.TimeoutError:
             pass
 
@@ -352,10 +366,17 @@ async def same_site_only(request: Request, call_next):
     """
     path = request.url.path
     if not path.startswith(OPEN_PATHS):
-        host = request.headers.get("host", "")
-        if not os.environ.get("APP_PASSWORD") and _host_name(host) not in _allowed_hosts():
-            return JSONResponse({"detail": "Программа открывается только по адресу http://localhost. Для доступа по "
-                                           "сети задайте APP_PASSWORD (см. README)"}, status_code=403)
+        if not os.environ.get("APP_PASSWORD"):
+            kind = phone.client_kind(request, _allowed_hosts())
+            if kind is None:
+                return JSONResponse({"detail": "Программа открывается только по адресу http://localhost. Для доступа с "
+                                               "телефона включите его в «Настройках» → «Доступ с телефона»"}, status_code=403)
+            request.state.access = kind
+            if kind == "phone" and not phone.valid_session(request.cookies.get(phone.COOKIE)) \
+                    and path not in phone.PUBLIC_PATHS and not path.startswith("/static/"):
+                if request.method == "GET" and not path.startswith("/api/"):
+                    return RedirectResponse("/login?" + urlencode({"next": path + (f"?{request.url.query}" if request.url.query else "")}), 303)
+                return JSONResponse({"detail": "Нужно войти — введите пароль для доступа с телефона", "login": True}, status_code=401)
         if request.method in UNSAFE_METHODS:
             origin = request.headers.get("origin")
             site = request.headers.get("sec-fetch-site", "")
@@ -398,6 +419,7 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(notify.NotifyError)
 @app.exception_handler(support.SupportError)
 @app.exception_handler(autostart.AutostartError)
+@app.exception_handler(phone.PhoneError)
 async def user_error(request: Request, exc: Exception):
     body = {"detail": str(exc)}
     if getattr(exc, "field", None):
@@ -475,8 +497,9 @@ def feed_all(key: str = ""):
 # ---------- товары ----------
 
 @app.get("/api/meta")
-def meta():
+def meta(request: Request):
     return {
+        "access": getattr(request.state, "access", "local"),
         "presence": products.PRESENCE,
         "statuses": products.STATUSES,
         "targets": excel.TARGETS,
@@ -1471,10 +1494,83 @@ def restore_uploaded_backup(file: UploadFile = File(...)):
 
 @app.post("/api/shutdown")
 def shutdown(request: Request):
-    """Выключение из меню значка у часов. Только с этого компьютера."""
-    if request.client and request.client.host not in ("127.0.0.1", "::1", "localhost"):
+    """Выключение из меню значка у часов. Только с этого компьютера (не с телефона и не через туннель)."""
+    if not phone.from_this_computer(request):
         raise HTTPException(403)
     return {"stopping": runtime.request_stop()}
+
+
+# ---------- доступ с телефона ----------
+
+def _this_computer_only(request: Request) -> None:
+    """Пароль и сам доступ меняются только на компьютере: вошедший телефон не может их поменять или отключить."""
+    if getattr(request.state, "access", "local") != "local":
+        raise HTTPException(403, "Доступ с телефона настраивается только на самом компьютере")
+
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    return _page("login.html")()
+
+
+@app.post("/api/login")
+def login(request: Request, data: dict = Body(...)):
+    if getattr(request.state, "access", "local") == "local":
+        return {"ok": True, "next": phone.safe_next(data.get("next"))}  # с этого компьютера пароль не нужен
+    if not phone.password_set():
+        raise HTTPException(400, "Доступ с телефона не настроен")
+    who = phone.client_key(request)
+    if phone.limiter.blocked(who):
+        raise HTTPException(429, "Слишком много неудачных попыток — подождите 15 минут")
+    if not phone.check_password(str(data.get("password") or "")):
+        phone.limiter.failed(who)
+        log.warning("Неверный пароль входа с телефона (%s)", who)
+        raise HTTPException(400, "Неверный пароль")
+    response = JSONResponse({"ok": True, "next": phone.safe_next(data.get("next"))})
+    secure = request.url.scheme == "https" or "cf-connecting-ip" in request.headers  # через Cloudflare — https
+    response.set_cookie(phone.COOKIE, phone.make_session(), max_age=phone.SESSION_DAYS * 86400, httponly=True,
+                        samesite="lax", secure=secure)
+    return response
+
+
+@app.post("/api/logout")
+def logout():
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(phone.COOKIE)
+    return response
+
+
+@app.get("/api/phone")
+def phone_status(request: Request):
+    _this_computer_only(request)
+    return phone.status()
+
+
+@app.post("/api/phone")
+def phone_save(request: Request, data: dict = Body(...)):
+    _this_computer_only(request)
+    lan_changed = phone.update(data)
+    restarting = lan_changed and runtime.request_restart(2.0)
+    return {**phone.status(), "restarting": restarting, "need_restart": lan_changed and not restarting}
+
+
+@app.post("/api/phone/sign-out-all")
+def phone_sign_out_all(request: Request):
+    _this_computer_only(request)
+    phone.sign_out_everywhere()
+    return {"ok": True}
+
+
+@app.get("/api/phone/qr.svg")
+def phone_qr(request: Request, text: str):
+    _this_computer_only(request)
+    if len(text) > 300:
+        raise HTTPException(400, "Слишком длинная ссылка")
+    try:
+        svg = phone.qr_svg(text)
+    except ImportError:
+        raise HTTPException(404, "QR-код недоступен: не установлен компонент segno (перезапустите программу)")
+    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/restart")

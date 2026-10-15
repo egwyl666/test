@@ -26,8 +26,9 @@ EVENTS = {
     "supplier_failed": "сбои обновления поставщиков",
     "schedule_missed": "пропущенная выгрузка по расписанию",
     "chat": "новые сообщения покупателей в чате Prom",
+    "phone": "новый адрес для входа с телефона",
 }
-DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_missed"]
+DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_missed", "phone"]
 
 
 class NotifyError(Exception):

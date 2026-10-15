@@ -188,6 +188,41 @@
       <p class="small err-text hidden" id="ai-key-warning"></p>
     </div>
 
+    <div class="panel" id="phone">
+      <h2>📱 Доступ с телефона</h2>
+      <p class="small muted" style="margin-top:-4px">Открывайте программу с телефона: дома по Wi‑Fi или из любого места через интернет.
+        Компьютер с программой должен быть включён. Вход — по паролю, который вы придумаете здесь.</p>
+      <p class="small muted hidden" id="phone-remote-only">Эти настройки меняются только на самом компьютере.</p>
+      <div id="phone-form">
+        <label class="field"><span>Пароль для входа с телефона <span class="muted" id="phone-pass-state"></span></span>
+          <input id="phone-password" type="password" autocomplete="new-password" placeholder="не меньше 8 символов"></label>
+        <label class="photo-mode"><input type="checkbox" id="phone-lan">
+          <span><b>Дома — по Wi‑Fi</b><br>
+          <span class="small muted">Телефон и компьютер подключены к одному роутеру. Быстро, через интернет ничего не идёт.
+            Включение и выключение перезапускает программу (несколько секунд). Windows может спросить, разрешить ли
+            Python доступ к сети, — отметьте «Частные сети» и нажмите «Разрешить».</span></span></label>
+        <label class="photo-mode"><input type="checkbox" id="phone-remote">
+          <span><b>Из любого места — через Cloudflare</b><br>
+          <span class="small muted">Бесплатный защищённый адрес вида https://….trycloudflare.com. Адрес меняется при каждом
+            запуске программы — новый адрес придёт в Telegram (событие «новый адрес для входа с телефона»).</span></span></label>
+        <div class="toolbar">
+          <button class="btn primary" id="phone-save">Сохранить</button>
+          <button class="btn" id="phone-sign-out">Выйти на всех телефонах</button>
+          <span class="small" id="phone-result"></span>
+        </div>
+        <div id="phone-lan-box" class="hidden phone-box">
+          <h3>Дома по Wi‑Fi</h3>
+          <p class="small muted" id="phone-lan-note"></p>
+          <div id="phone-lan-urls" class="phone-urls"></div>
+        </div>
+        <div id="phone-remote-box" class="hidden phone-box">
+          <h3>Из любого места</h3>
+          <p class="small" id="phone-remote-state"></p>
+          <div id="phone-remote-url" class="phone-urls"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="panel" id="updates">
       <h2>🔄 Обновления программы</h2>
       <p style="margin-top:-4px">Установлена версия <b id="version"></b> <span id="update-state" class="small"></span></p>
@@ -270,6 +305,7 @@
   </main>
 
   <script src="/static/common.js"></script>
+  <script src="/static/phone.js"></script>
   <script>
     let current = {};
 

@@ -698,3 +698,12 @@ a.kpi-link:hover { border-color: var(--accent); }
 }
 .chat-photo { max-width: 220px; max-height: 220px; border-radius: 8px; display: block; margin-top: 4px; }
 .chat-room-item .nav-badge { flex: none; }
+
+/* «Настройки» → «Доступ с телефона» */
+.phone-box { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.phone-box h3 { margin: 0 0 6px; font-size: 15px; }
+.phone-urls { display: flex; flex-wrap: wrap; gap: 14px; }
+.phone-url { display: flex; gap: 10px; align-items: center; min-width: 0; }
+.phone-url img { width: 140px; height: 140px; flex: none; background: #fff; border-radius: 6px; }
+.phone-url a { word-break: break-all; font-weight: 600; }
+.phone-url .btn { margin-top: 6px; }

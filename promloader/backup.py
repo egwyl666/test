@@ -170,7 +170,9 @@ def stage_restore_stream(source) -> None:
         upload.unlink(missing_ok=True)
 
 
-DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update")
+# настройки этого компьютера: восстановление копии их не меняет (в том числе пароль и доступ с телефона)
+DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update", "phone_lan", "phone_remote", "phone_password_hash",
+                   "phone_secret")
 
 
 def _device_settings(data_dir: Path) -> dict:
