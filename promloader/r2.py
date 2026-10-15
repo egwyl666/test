@@ -161,6 +161,71 @@ def delete(key: str, s: dict | None = None, transport=None) -> None:
     request("DELETE", key, s=s, transport=transport)
 
 
+# ---------- большие файлы (резервные копии) ----------
+# Копия с фото весит сотни мегабайт: отправляем и скачиваем потоком, не держа файл в памяти. Тело при отправке не
+# хешируем (UNSIGNED-PAYLOAD — R2 это принимает), подпись по-прежнему защищает адрес и заголовки.
+
+def _signed(method: str, key: str, query: dict, headers: dict, payload_hash: str, s: dict) -> tuple[str, dict]:
+    host = f"{s['r2_account_id']}.r2.cloudflarestorage.com"
+    path = f"/{s['r2_bucket']}/{key}" if key else f"/{s['r2_bucket']}"
+    signed = sign(method, host, path, query, headers, payload_hash, s["r2_access_key_id"], s["r2_secret_access_key"],
+                  datetime.now(timezone.utc))
+    return f"https://{host}{quote(path, safe='/-_.~')}", signed
+
+
+def put_file(key: str, path, content_type: str = "application/zip", s: dict | None = None, transport=None) -> None:
+    s = s or settings()
+    url, headers = _signed("PUT", key, {}, {"content-type": content_type, "cache-control": "private, no-store"},
+                           "UNSIGNED-PAYLOAD", s)
+    headers["content-length"] = str(path.stat().st_size)
+    try:
+        with open(path, "rb") as f, httpx.Client(timeout=httpx.Timeout(60, write=600), transport=transport) as client:
+            r = client.put(url, content=f, headers=headers)
+    except httpx.HTTPError as exc:
+        raise R2Error(f"Нет связи с хранилищем R2: {exc}", retryable=True)
+    if r.status_code >= 300:
+        raise _error(r)
+
+
+def list_keys(prefix: str, s: dict | None = None, transport=None) -> list[dict]:
+    """Объекты с этим началом имени: [{key, size, modified}] (ListObjectsV2, до 1000 штук — копий меньше)."""
+    s = s or settings()
+    query = {"list-type": "2", "prefix": prefix}
+    url, headers = _signed("GET", "", query, {}, hashlib.sha256(b"").hexdigest(), s)
+    try:
+        with httpx.Client(timeout=60, transport=transport) as client:
+            r = client.get(url, params=query, headers=headers)
+    except httpx.HTTPError as exc:
+        raise R2Error(f"Нет связи с хранилищем R2: {exc}", retryable=True)
+    if r.status_code >= 300:
+        raise _error(r)
+    out = []
+    for block in re.findall(r"<Contents>(.*?)</Contents>", r.text, re.S):
+        key = re.search(r"<Key>([^<]*)</Key>", block)
+        size = re.search(r"<Size>(\d+)</Size>", block)
+        modified = re.search(r"<LastModified>([^<]*)</LastModified>", block)
+        if key:
+            out.append({"key": key.group(1), "size": int(size.group(1)) if size else 0,
+                        "modified": modified.group(1) if modified else ""})
+    return out
+
+
+def download(key: str, out, s: dict | None = None, transport=None) -> None:
+    """Скачать объект в открытый файл out частями."""
+    s = s or settings()
+    url, headers = _signed("GET", key, {}, {}, hashlib.sha256(b"").hexdigest(), s)
+    try:
+        with httpx.Client(timeout=httpx.Timeout(60, read=600), transport=transport) as client:
+            with client.stream("GET", url, headers=headers) as r:
+                if r.status_code >= 300:
+                    r.read()
+                    raise _error(r)
+                for chunk in r.iter_bytes(1024 * 1024):
+                    out.write(chunk)
+    except httpx.HTTPError as exc:
+        raise R2Error(f"Нет связи с хранилищем R2: {exc}", retryable=True)
+
+
 # ---------- фото ----------
 
 def _target(s: dict) -> str:

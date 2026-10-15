@@ -114,7 +114,8 @@ def test_search_and_dates():
     orders.store([order(1001, day=1), order(1002, day=5, name=("Олена", "Коваль"), phone="+380671112233",
                                                 product="Воблер Kosadaka"),
                   order(1003, day=9, status="delivered")], notify_new=False)
-    ids = lambda **f: [o["id"] for o in orders.list_orders(f)["items"]]
+    def ids(**f):
+        return [o["id"] for o in orders.list_orders(f)["items"]]
     assert ids(q="1002") == [1002]
     assert ids(q="067 111-22-33") == [1002]
     assert ids(q="коваль олена") == [1002]                 # регистр и порядок слов не важны

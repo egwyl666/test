@@ -203,7 +203,7 @@ def test_restore_selected_deleted_items(client):
 
 def test_import_with_supplier_links_products(client):
     sid, old = supplier_with_deleted()
-    from promloader import main
+    from promloader.routes import imports as main  # _link_imported — в разделе импорта
     item = {"data": {"external_id": old["external_id"], "name": "З файлу"}, "params": [], "image_urls": []}
     pid = products.create({"name": "З файлу", "price": 5, "external_id": old["external_id"]})
     main._link_imported(suppliers.get(sid), old["external_id"], pid, item)

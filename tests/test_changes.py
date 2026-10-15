@@ -1,4 +1,4 @@
-from promloader import changes, db, pricing, products, rates, suppliers
+from promloader import changes, db, pricing, products, rates
 
 
 def rows(pid=None, **filters):

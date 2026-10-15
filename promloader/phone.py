@@ -124,28 +124,36 @@ def valid_session(token: str | None) -> bool:
 
 
 class LoginLimiter:
-    """Неудачные попытки входа: не больше 10 с одного адреса и 30 со всех за 15 минут."""
+    """Неудачные попытки входа: не больше per_client с одного адреса и total со всех за window секунд.
+    Когда адрес упирается в предел, владельцу уходит тревога в Telegram — кто-то подбирает пароль."""
 
-    def __init__(self):
+    def __init__(self, per_client: int = LOGIN_FAILS_PER_CLIENT, total: int = LOGIN_FAILS_TOTAL,
+                 window: int = LOGIN_WINDOW, what: str = "входа с телефона"):
         self.lock = threading.Lock()
         self.fails: dict[str, list[float]] = {}
+        self.per_client, self.total, self.window, self.what = per_client, total, window, what
 
     def _recent(self, key: str, now: float) -> list[float]:
-        items = [t for t in self.fails.get(key, []) if now - t < LOGIN_WINDOW]
+        items = [t for t in self.fails.get(key, []) if now - t < self.window]
         self.fails[key] = items
         return items
 
     def blocked(self, client: str) -> bool:
         now = time.monotonic()
         with self.lock:
-            return (len(self._recent(client, now)) >= LOGIN_FAILS_PER_CLIENT
-                    or len(self._recent("*", now)) >= LOGIN_FAILS_TOTAL)
+            return len(self._recent(client, now)) >= self.per_client or len(self._recent("*", now)) >= self.total
 
     def failed(self, client: str) -> None:
         now = time.monotonic()
         with self.lock:
             for key in (client, "*"):
                 self._recent(key, now).append(now)
+            just_blocked = len(self._recent(client, now)) == self.per_client
+        if just_blocked:
+            minutes = self.window // 60
+            log.warning("Подбор пароля %s с адреса %s — вход закрыт на %d мин", self.what, client, minutes)
+            notify.send("phone", f"🔐 Prom Loader: {self.per_client} неверных паролей {self.what} подряд с адреса "
+                                 f"{client}. Вход с этого адреса закрыт на {minutes} мин. Если это не вы — смените пароль.")
 
     def reset(self) -> None:
         with self.lock:

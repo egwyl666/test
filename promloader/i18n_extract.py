@@ -245,10 +245,10 @@ def collect() -> dict[str, set[str]]:
         if path.name.startswith("i18n") or path.name == "preview.js":
             continue
         add(js_strings(path.read_text(encoding="utf-8")), path.name)
-    for path in sorted(ROOT.glob("*.py")):
+    for path in sorted([*ROOT.glob("*.py"), *ROOT.glob("routes/*.py")]):  # routes/ — обработчики API по разделам
         if path.name in PY_SKIP_MODULES:
             continue
-        add(py_strings(path.read_text(encoding="utf-8")), path.name)
+        add(py_strings(path.read_text(encoding="utf-8")), path.relative_to(ROOT).as_posix())
     return found
 
 

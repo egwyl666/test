@@ -157,7 +157,7 @@ def test_list_filters_and_sorting(client):
 
 
 def test_gone_from_supplier_filter(client):
-    from promloader import db, products, suppliers
+    from promloader import db, suppliers
     a, b, _ = _seed_list()
     sid = suppliers.create("Опт")
     with db.tx() as c:

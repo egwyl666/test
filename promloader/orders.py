@@ -12,7 +12,7 @@ import json
 import logging
 import re
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from . import config, db, notify
 from .prom_api import PromError

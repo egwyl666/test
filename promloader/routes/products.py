@@ -1,0 +1,341 @@
+"""Товары: список, карточка, фото, массовые действия, журнал."""
+
+import asyncio
+from datetime import datetime
+
+from fastapi import (
+    APIRouter,
+    Body,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import (
+    Response,
+)
+
+from .. import (
+    ai,
+    aibulk,
+    aiprice,
+    changes,
+    chat,
+    config,
+    db,
+    excel,
+    pricing,
+    products,
+    promdelete,
+    r2,
+    schedule,
+    suppliers,
+    updater,
+)
+from ..web import MAX_UPLOAD, _background
+from .suppliers import _run_supplier_bg
+
+router = APIRouter()
+
+
+@router.get("/api/meta")
+def meta(request: Request):
+    return {
+        "access": getattr(request.state, "access", "local"),
+        "presence": products.PRESENCE,
+        "statuses": products.STATUSES,
+        "targets": excel.TARGETS,
+        "max_images": products.MAX_IMAGES,
+        "shop_name": db.get_setting("shop_name"),
+        "prom_token_set": bool(config.get("prom_token")),
+        "failed_suppliers": suppliers.failed(),
+        "version": updater.current_version(),
+        "update_available": db.get_setting("update_latest"),
+        "missed_schedules": schedule.missed(),
+        "orders_unseen": db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"],
+        "chat_unseen": chat.unseen(),
+        "ai": _ai_meta(),
+        "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
+            "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
+        "groups": [r["group_name"] for r in db.query(
+            "SELECT DISTINCT group_name FROM products WHERE group_name != '' ORDER BY group_name")],
+        # для фильтра списка — только категории, в которых есть наши товары
+        "prom_categories": [{"id": r["id"], "caption": r["caption"]} for r in db.query(
+            "SELECT id, caption FROM prom_categories WHERE id IN (SELECT prom_category_id FROM products) "
+            "OR id IN (SELECT target_category_id FROM products) ORDER BY lower_u(caption), id")],
+        "first_steps": _first_steps(),
+    }
+
+
+def _ai_meta() -> dict:
+    s = ai.settings()
+    today = aiprice.today()
+    return {"enabled": ai.enabled(), "provider": s["provider"],
+            "model": s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else ""),
+            "auto": s["provider"] == "gemini" and not s["model"], "free": s["provider"] == "gemini" and aiprice.free_tier(),
+            "today_usd": today["cost_usd"], "today_uah": aiprice.to_uah(today["cost_usd"]), "today_requests": today["requests"],
+            "key_error": bool(aiprice.key_errors().get(s["provider"])),
+            "actions": {k: v[0] for k, v in ai.ACTIONS.items()}}
+
+
+def _first_steps() -> dict:
+    """Для «Первых шагов» на главной: что уже настроено."""
+    if r2.active():
+        photos = "r2"
+    elif config.public_base_url():
+        photos = "site"
+    elif config.get("photo_tunnel") != "0":
+        photos = "tunnel"
+    else:
+        photos = "off"
+    return {
+        "token": bool(config.get("prom_token")),
+        "photos": photos,
+        "products": db.query_one("SELECT COUNT(*) AS n FROM products")["n"],
+        "suppliers": db.query_one("SELECT COUNT(*) AS n FROM suppliers")["n"],
+        "sent": db.query_one("SELECT 1 AS x FROM products WHERE synced_at IS NOT NULL LIMIT 1") is not None,
+    }
+
+
+@router.get("/api/products")
+def list_products(request: Request, limit: int = 200, offset: int = 0, sort: str = "updated"):
+    """Фильтры (все необязательные): status, q, supplier ('' — все, 'none' — без поставщика, число), group ('-' —
+    без группы), presence, on_prom (yes/no), no_photo, gone (пропал у поставщика), errors (ошибки заполнения)."""
+    return products.list_products(_list_filter(request), sort, max(1, min(limit, 1000)), max(0, offset))
+
+
+def _list_filter(request: Request) -> dict:
+    return {k: request.query_params.get(k, "") for k in products.FILTER_KEYS}
+
+
+@router.get("/api/products.xlsx")
+def export_products(request: Request, sort: str = "updated"):
+    content = products.export_xlsx(_list_filter(request), sort)
+    name = f"tovary-{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.post("/api/products/bulk-edit")
+def bulk_edit(fields: dict = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    with changes.source("Массово «✏ Изменить»"):
+        return products.bulk_edit(_selected(ids, filter), fields)
+
+
+@router.post("/api/products")
+def create_product(data: dict = Body(default={})):
+    return products.get(products.create(data))
+
+
+@router.get("/api/products/{product_id}")
+def get_product(product_id: int):
+    return products.get(product_id)
+
+
+@router.patch("/api/products/{product_id}")
+def update_product(product_id: int, data: dict = Body(...)):
+    return products.update(product_id, data)
+
+
+@router.post("/api/products/{product_id}/ai")
+def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body("")):
+    """Предложение ИИ по карточке. Ничего не сохраняет: пользователь сам решает, применять ли."""
+    product = products.get(product_id)
+    changes, used = ai.run_detailed(product, action, instruction)
+    return {"changes": changes, "usage": {**used, "cost_uah": aiprice.to_uah(used["cost_usd"])}}
+
+
+@router.get("/api/ai/status")
+def ai_status():
+    """Для окна «ИИ» на любой странице: что выбрано, сколько потрачено, лимиты."""
+    s = ai.settings()
+    keys = {"gemini": bool(config.get("gemini_key")), "claude": bool(config.get("anthropic_key"))}
+    summary = aiprice.summary()
+    for period in ("today", "month"):
+        summary[period]["cost_uah"] = aiprice.to_uah(summary[period]["cost_usd"])
+    return {
+        "provider": s["provider"], "providers": ai.PROVIDERS, "keys": keys, "enabled": ai.enabled(),
+        "model": s["model"], "model_used": db.get_setting("gemini_model_used") if s["provider"] == "gemini" else s["model"],
+        "free_tier": aiprice.free_tier(), "free_tier_setting": db.get_setting("gemini_free_tier"),
+        "summary": summary, "limits": aiprice.limits().get(s["provider"], {}),
+        "key_error": aiprice.key_errors().get(s["provider"]),
+        "pace_per_minute": aibulk.rate_per_minute(), "prices_checked": aiprice.PRICES_CHECKED,
+        "usd_rate": aiprice.usd_rate(), "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
+    }
+
+
+@router.get("/api/ai/models")
+def ai_models():
+    try:
+        return {"items": ai.list_models()}
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/api/ai/models/check")
+def ai_models_check(models: list[str] = Body(..., embed=True)):
+    """Короткий настоящий запрос к каждой модели — какие работают на этом ключе. Стоит доли цента."""
+    items = ai.check_models(models)
+    spent = round(sum(x["cost_usd"] or 0 for x in items), 6)
+    return {"items": items, "spent_usd": spent, "spent_uah": aiprice.to_uah(spent)}
+
+
+@router.post("/api/ai/model")
+def ai_choose(provider: str | None = Body(None), model: str | None = Body(None), free_tier: bool | None = Body(None)):
+    """Выбор провайдера и модели из окна «ИИ». Ключи вводятся только в «Настройках»."""
+    with db.tx():
+        if provider is not None:
+            if provider not in ai.PROVIDERS:
+                raise HTTPException(400, "Неизвестный провайдер ИИ")
+            key = config.get("gemini_key" if provider == "gemini" else "anthropic_key")
+            if not key:
+                raise HTTPException(400, f"Для {ai.PROVIDERS[provider]} не введён ключ — вставьте его в «Настройках»")
+            db.set_setting("ai_provider", provider)
+        if model is not None:
+            current = provider or ai.settings()["provider"]
+            if current not in ai.PROVIDERS:
+                raise HTTPException(400, "Сначала выберите провайдера ИИ")
+            db.set_setting(f"{current}_model", str(model).strip().removeprefix("models/"))
+        if free_tier is not None:
+            db.set_setting("gemini_free_tier", "1" if free_tier else "0")
+    return ai_status()
+
+
+@router.post("/api/ai/bulk/estimate")
+def ai_bulk_estimate(action: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return aibulk.estimate(len(_selected(ids, filter)), action)
+
+
+@router.post("/api/ai/check")
+def ai_check():
+    try:
+        return ai.check()
+    except ai.AIError as exc:
+        return {"ok": False, "models": [], "message": str(exc)}
+
+
+@router.post("/api/products/{product_id}/unlock")
+def unlock_fields(product_id: int, fields: list[str] = Body(..., embed=True)):
+    """Снять закрепление: поля снова берутся у поставщика / из правил наценки."""
+    products.unlock(product_id, fields)
+    suppliers.reapply(product_id)
+    if "price" in fields:
+        _recalc_one(product_id)
+    return products.get(product_id)
+
+
+def _recalc_one(product_id: int) -> None:
+    p = products.get(product_id)
+    if p["supplier_id"] or (p["cost_price"] is None and p["rrp"] is None):
+        return
+    data = {k: p[k] for k in ("cost_price", "rrp", "group_name", "price", "currency")}
+    data["cost_currency"] = p["cost_currency"] or p["currency"] or "UAH"
+    pricing.Pricer().apply(data)
+    if data.get("price") is not None and data["price"] != p["price"]:
+        products.update(product_id, {"price": data["price"]}, lock=False)
+
+
+@router.post("/api/products/{product_id}/duplicate")
+def duplicate_product(product_id: int):
+    src = products.get(product_id)
+    data = {k: src[k] for k in products.EDITABLE if k != "external_id"}
+    data["name"] = (src["name"] + " (копия)").strip()
+    new_id = products.create(data)
+    for img in products.image_rows(product_id):
+        if img["url"]:
+            products.add_image_url(new_id, img["url"])
+            continue
+        try:
+            content = (db.uploads_dir() / img["file"]).read_bytes()
+        except OSError:
+            continue  # файл фото пропал с диска — копия без него, а не ошибка посреди копирования
+        products.add_image_file(new_id, content)
+    return products.get(new_id)
+
+
+@router.get("/api/suppliers/{supplier_id}/deleted")
+def supplier_deleted(supplier_id: int):
+    return suppliers.deleted_items(supplier_id)
+
+
+@router.post("/api/suppliers/{supplier_id}/restore-deleted")
+async def supplier_restore_deleted(supplier_id: int, body: dict = Body(default={})):
+    """Вернуть удалённые вами товары поставщика: все или skus; run — сразу обновить прайс, чтобы они появились."""
+    skus = body.get("skus")
+    count = await asyncio.to_thread(suppliers.restore_deleted, supplier_id,
+                                    [str(x) for x in skus] if skus is not None else None)
+    started = False
+    if count and body.get("run", True) and not (await asyncio.to_thread(suppliers.get, supplier_id))["running"]:
+        task = asyncio.create_task(_run_supplier_bg(supplier_id, False))
+        _background.add(task)
+        task.add_done_callback(_background.discard)
+        started = True
+    return {"count": count, "started": started}
+
+
+def _selected(ids: list[int] | None, flt: dict | None) -> list[int]:
+    """Выбранные товары: список id или «все по фильтру списка» ({status, q, supplier})."""
+    if flt is not None:
+        return products.ids_for_filter(flt)
+    if ids is None:
+        raise HTTPException(400, "Не выбраны товары")
+    return [int(i) for i in ids]
+
+
+@router.post("/api/products/delete")
+def delete_products(ids: list[int] | None = Body(None), prom: bool = Body(True), filter: dict | None = Body(None)):
+    """Удалить товары. prom=True — и на Prom (товар уйдёт из программы, когда Prom подтвердит удаление)."""
+    return promdelete.request(_selected(ids, filter), prom)
+
+
+@router.post("/api/products/delete/check")
+def delete_check(ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return promdelete.check(_selected(ids, filter))
+
+
+@router.post("/api/products/delete/retry")
+def delete_retry(ids: list[int] = Body(..., embed=True)):
+    return {"count": promdelete.retry(ids)}
+
+
+@router.post("/api/products/delete/cancel")
+def delete_cancel(ids: list[int] = Body(..., embed=True)):
+    return {"count": promdelete.cancel(ids)}
+
+
+@router.post("/api/products/status")
+def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
+    return {"ok": True, "changed": products.set_status(_selected(ids, filter), status)}
+
+
+@router.post("/api/products/{product_id}/images")
+async def upload_images(product_id: int, files: list[UploadFile] = File(...)):
+    added, errors = [], []
+    for f in files:
+        content = await f.read(MAX_UPLOAD + 1)
+        if len(content) > MAX_UPLOAD:
+            errors.append(f"{f.filename}: файл больше 25 МБ")
+            continue
+        try:
+            added.append(await asyncio.to_thread(products.add_image_file, product_id, content))
+        except products.ProductError as exc:
+            errors.append(f"{f.filename}: {exc}")
+    return {"added": added, "errors": errors, "product": await asyncio.to_thread(products.get, product_id)}
+
+
+@router.post("/api/products/{product_id}/images/url")
+def add_image_url(product_id: int, url: str = Body(..., embed=True)):
+    products.add_image_url(product_id, url)
+    return products.get(product_id)
+
+
+@router.delete("/api/products/{product_id}/images/{image_id}")
+def delete_image(product_id: int, image_id: int):
+    products.delete_image(product_id, image_id)
+    return products.get(product_id)
+
+
+@router.post("/api/products/{product_id}/images/order")
+def reorder_images(product_id: int, ids: list[int] = Body(..., embed=True)):
+    products.reorder_images(product_id, ids)
+    return products.get(product_id)

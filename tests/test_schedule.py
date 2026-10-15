@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from promloader import db, products, schedule, sync
+from promloader import products, schedule, sync
 
 MON_0800 = datetime(2026, 9, 28, 8, 0)  # понедельник
 

@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS product_changes (
 );
 CREATE INDEX IF NOT EXISTS product_changes_product ON product_changes(product_id, id);
 CREATE INDEX IF NOT EXISTS product_changes_at ON product_changes(at);
+CREATE INDEX IF NOT EXISTS product_changes_source ON product_changes(source);
 
 CREATE TABLE IF NOT EXISTS price_rules (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -375,6 +376,10 @@ def init(path: str | os.PathLike | None = None) -> None:
         # строки в нижнем регистре: lower_u(name) LIKE '%кросс%'
         conn.create_function("lower_u", 1, lambda s: s.lower() if isinstance(s, str) else s, deterministic=True)
         conn.execute("PRAGMA journal_mode=WAL")
+        # в режиме WAL NORMAL не теряет целостность базы при сбое питания, но пишет заметно быстрее FULL;
+        # busy_timeout — подождать, а не упасть «database is locked», если базу держит другой процесс (копия)
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(SCHEMA)
         _migrate(conn)

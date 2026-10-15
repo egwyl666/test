@@ -139,7 +139,6 @@ def test_unprocessed_products_requeued_as_import():
 
 
 def test_migration_marks_unsent_products(tmp_path):
-    import sqlite3
     pid = synced()
     products.update(pid, {"name": "правка до обновления программы"}, lock=False)
     conn = db._conn

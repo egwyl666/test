@@ -94,6 +94,13 @@ def old_ai_usage() -> int:
         return c.execute("DELETE FROM ai_usage WHERE at < ?", (_ago(AI_USAGE_KEEP_DAYS),)).rowcount
 
 
+def optimize() -> int:
+    """После уборки SQLite пересчитывает статистику индексов (запросы остаются быстрыми по мере роста базы)."""
+    with db.tx() as c:
+        c.execute("PRAGMA optimize")
+    return 0
+
+
 def run() -> dict:
     """Всё сразу. Ошибка одной уборки не мешает остальным."""
     steps = {
@@ -105,6 +112,7 @@ def run() -> dict:
         "changes": changes.cleanup,
         "diagnose_runs": diagnose_runs,
         "ai_usage": old_ai_usage,
+        "optimize": optimize,
     }
     result = {}
     for name, step in steps.items():

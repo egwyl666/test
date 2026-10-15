@@ -1,0 +1,28 @@
+# Проверка каждого обновления: программа у пользователей обновляется сама из ветки main, поэтому сломанная
+# версия не должна туда попасть незамеченной. Запускаются ruff и все тесты (в том числе полнота перевода на
+# украинский — tests/test_i18n.py).
+name: Проверка
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Установить зависимости
+        run: pip install -r requirements-dev.txt ruff
+      - name: ruff
+        run: ruff check promloader tests
+      - name: pytest
+        run: python -m pytest -q

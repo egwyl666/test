@@ -50,7 +50,8 @@ def test_deps_failure():
 
 def test_needs_deps_and_rollback(tmp_path):
     app, venv, data = tmp_path / "app", tmp_path / "venv", tmp_path / "data"
-    app.mkdir(); venv.mkdir()
+    app.mkdir()
+    venv.mkdir()
     (app / "requirements.txt").write_text("a\n")
     assert tray.needs_deps(app, venv)
     (venv / "installed-requirements.txt").write_text("a\n")

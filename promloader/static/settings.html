@@ -256,6 +256,15 @@
         <span class="small muted" id="backup-last"></span>
       </div>
       <table class="runs" id="backup-list"></table>
+      <div id="cloud-backup" class="hidden" style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px">
+        <label class="small" style="display:block"><input type="checkbox" id="cloud-backup-on">
+          <b>Хранить копии и в облаке R2</b> — на случай, если пропадёт компьютер или диск.</label>
+        <p class="small muted" style="margin:4px 0 8px">Ежедневные и ручные копии уходят в ваше хранилище R2 (последние 10).
+          Токены, ключи и пароль в облачную копию <b>не попадают</b>; при восстановлении на этом компьютере они сохраняются,
+          на новом — их нужно будет ввести заново.</p>
+        <p class="small err-text" id="cloud-backup-error"></p>
+        <table class="runs" id="cloud-backup-list"></table>
+      </div>
     </div>
 
     <div class="panel">
@@ -513,8 +522,42 @@
       });
     }
     $("#backup-now").onclick = async () => {
-      try { await api("/api/backups", { method: "POST" }); toast("Копия создана", "ok"); loadBackups(); }
-      catch (err) { toast(err.message, "error"); }
+      try {
+        const r = await api("/api/backups", { method: "POST" });
+        toast(r.cloud ? "Копия создана, отправляю в облако…" : "Копия создана", "ok");
+        loadBackups();
+        if (r.cloud) setTimeout(loadCloudBackups, 15000);
+      } catch (err) { toast(err.message, "error"); }
+    };
+
+    // ---------- копии в облаке R2 ----------
+    async function loadCloudBackups() {
+      let r;
+      try { r = await api("/api/backups/cloud"); } catch (err) { if (!err.network) toast(err.message, "error"); return; }
+      $("#cloud-backup").classList.toggle("hidden", !r.available);
+      $("#cloud-backup-on").checked = r.enabled;
+      $("#cloud-backup-error").textContent = r.error || "";
+      $("#cloud-backup-list").innerHTML = !r.enabled ? "" : r.items.map((b) => `
+        <tr>
+          <td>☁ ${esc(formatDate(b.created))}</td>
+          <td class="muted">${esc(b.reason_label)}</td>
+          <td class="muted">${fmtSize(b.size)}</td>
+          <td style="text-align:right"><button class="btn small" data-cloud-restore="${esc(b.name)}">Восстановить</button></td>
+        </tr>`).join("") || `<tr><td class="muted">В облаке копий пока нет — первая уйдёт со следующей копией</td></tr>`;
+      $$("[data-cloud-restore]").forEach((btn) => btn.onclick = () => busy(btn, async () => {
+        if (!confirm("Скачать эту копию из облака и вернуть к ней товары и фото? Текущие данные перед этим сохранятся в копию.")) return;
+        try {
+          const res = await api(`/api/backups/cloud/${encodeURIComponent(btn.dataset.cloudRestore)}/restore`, { method: "POST" });
+          waitForRestart("Восстанавливаю данные…", res.restarting);
+        } catch (err) { toast(err.message, "error"); }
+      }));
+    }
+    $("#cloud-backup-on").onchange = async (e) => {
+      try {
+        await api("/api/backups/cloud", { method: "POST", json: { enabled: e.target.checked } });
+        toast("Сохранено", "ok");
+        loadCloudBackups();
+      } catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
     };
     $("#backup-upload").onclick = async () => {
       const [file] = await pickFiles({ accept: ".zip", multiple: false });
@@ -779,6 +822,7 @@
     loadSchedules().catch((err) => toast(`Расписание не загрузилось: ${err.message}`, "error"));
     api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); fillPhotos(s); }).catch((err) => toast(err.message, "error"));
     loadBackups().catch((err) => toast(`Список копий не загрузился: ${err.message}`, "error"));
+    loadCloudBackups();
     loadRecipients().catch((err) => toast(`Получатели Telegram не загрузились: ${err.message}`, "error"));
   </script>
 </body>

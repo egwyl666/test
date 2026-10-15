@@ -38,6 +38,9 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
 | `i18n_extract.py` | 269 | Русские строки интерфейса для украинского словаря: `collect()` (HTML, JS, сообщения Python; без логов, заданий ИИ, регулярок, SQL, проверок `in`/`==`), `dictionary()` (`static/i18n-uk.js`), `missing()`; `python -m promloader.i18n_extract` — что не переведено |
 | `categories.py` | 290 | Категории каталога Prom: справочник `prom_categories` (`remember`, `info`, `label`), `for_product`, `overview` (по группам: категории на Prom, расхождения), `set_group`/`preview_group` (правило группы → товары без 🔒 через `_touch`), `from_catalog` (из `/products/list`), `refresh`, `suggest` (поиск prom.ua: `topHitsCategory`), `from_url` (`categoryId` на странице категории), `mismatch_rows`/`mismatch_xlsx` (файл для кабинета: `GET /api/categories/mismatch.xlsx`); исправление на Prom — `promcatalog.fix_categories` (импорт Excel с «Ідентифікатор_підрозділу», проба на 2 товарах, сверка; `POST /api/categories/fix`, ход — `cat_*` в `prom_catalog_state`) |
 | `reports.py` | 420 | Отчёты: `period_bounds`, `_load_orders` (заказы → позиции, комиссия `cpa_commission`, причина отмены), `_link_products` (по `prom_id`, затем артикулу — одним запросом), `_cost_history`/`_cost_at` (закупка на дату заказа по журналу, иначе текущая и «≈»), `sales`, `products_report` (ABC, `dead_stock`), `suppliers_report`, `store_report`, `build`, `xlsx` |
+| `web.py` | 40 | Общее для `main.py` и `routes/`: `log`, `_background`, `STATIC`, `_page` (страницы с `?v=`) |
+| `routes/*.py` | 1800 | Обработчики API по разделам (`APIRouter`): products, sending, settings, imports, suppliers, pricing, service, phone_access, schedule, catalog, chat, reports, categories, ai_bulk, orders, support. Подключаются в `main.py` в порядке `routes.ROUTERS` — порядок важен (`/api/reports/{tab}.xlsx` раньше `/api/reports/{tab}`, `/api/backups/cloud` раньше `/api/backups/{name}`) |
+| `cloudbackup.py` | 150 | Копии в облаке R2: `strip_secrets` (без токенов, VACUUM), `upload` (`backups/<32 hex>/…`, последние 10), `listing`, `stage_restore`, `after_backup` (daily/manual) |
 | `phone.py` | 326 | Доступ с телефона: пароль (`hash_password` pbkdf2, `check_password`), сессия (`make_session` / `valid_session`, `sign_out_everywhere`), `LoginLimiter`, `client_kind`, `from_this_computer`, `lan_addresses` / `lan_urls`, `qr_svg` (segno), `PhoneTunnel` (cloudflared к самой программе, подкласс `phototunnel.Tunnel`), `keep_tunnel` (шаг `phone_worker`, новый адрес → Telegram «phone»), `status` |
 | `chat.py` | 270 | Чат с покупателями Prom: `poll` (комнаты → история только изменившихся, `_store`, уведомление «chat» о новых сообщениях покупателя, при первом опросе — без уведомлений), `rooms`, `messages`, `unseen`, `send` (`user_id` из `room_ident`), `mark_read`, `ai_draft` (`ai.chat_reply`) |
 | `autostart.py`, `runtime.py` | 48, 38 | Автозапуск Windows; перезапуск из веб-сервера |
@@ -77,6 +80,11 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
   - Пароль, доступ, QR — `/api/phone*`, только `access == "local"`. `/api/shutdown` — только
     `phone.from_this_computer`.
 - Никаких запросов в интернет внутри `db.tx()`: курс заранее — `rates.prefetch()`.
+- `main.py` — только приложение, middleware, воркеры, страницы. Новый обработчик — в свой раздел `routes/<раздел>.py`
+  (`@router.get…`), общий помощник другого раздела — `from .products import _selected`. Все пути вместе —
+  `main.all_routes()` (FastAPI прячет подключённые роутеры от `app.routes`).
+- Секреты в `settings` перечислены в `cloudbackup.SECRET_SETTINGS` и `backup.KEEP_IF_MISSING`: новый токен или ключ —
+  добавить туда, иначе он уйдёт в облачную копию.
 - Эндпоинты — обычные `def` (FastAPI выполняет их в пуле потоков). `async def` — только если нужен цикл событий
   (запрос к Prom через `PromClient`, чтение загружаемого файла, фоновая задача); тогда работа с базой — через
   `asyncio.to_thread`. Список разрешённых `async` — `ASYNC_OK` в `tests/test_regressions.py`.

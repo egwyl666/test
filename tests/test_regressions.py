@@ -7,7 +7,6 @@ import httpx
 import pytest
 
 from promloader import changes, db, pricing, products, promcatalog, promdelete, rates, suppliers, sync
-from promloader.prom_api import PromClient
 
 from .test_suppliers import BASE, make_supplier, make_yml, run
 
@@ -148,7 +147,7 @@ def test_preview_blocks_parallel_run(monkeypatch):
 
 def test_preview_counts_gone_items_like_real_run(client):
     """Строки, привязанные импортом файла, предпросмотр не считал «пропавшими», а настоящее обновление — считало."""
-    from promloader import main
+    from promloader.routes import imports as main  # _link_imported — в разделе импорта
     sid = make_supplier(make_yml(BASE))
     pid = products.create({"name": "Тарілка з імпорту", "price": 1, "external_id": "Z9", "presence": "available"})
     main._link_imported(suppliers.get(sid), "Z9", pid, {"data": {"external_id": "Z9"}, "params": [], "image_urls": []})
@@ -425,9 +424,10 @@ def test_blocking_endpoints_do_not_run_on_the_event_loop():
 
     from fastapi.routing import APIRoute
 
-    from promloader.main import app
-    async_routes = {r.endpoint.__name__ for r in app.routes
-                    if isinstance(r, APIRoute) and inspect.iscoroutinefunction(r.endpoint)}
+    from promloader.main import all_routes
+    routes = [r for r in all_routes() if isinstance(r, APIRoute)]
+    assert len(routes) > 100  # обработчики из routes/ тоже видны (раньше их скрывал include_router)
+    async_routes = {r.endpoint.__name__ for r in routes if inspect.iscoroutinefunction(r.endpoint)}
     assert async_routes - ASYNC_OK == set()
 
 
@@ -571,7 +571,7 @@ def test_app_starts_in_a_fresh_process(tmp_path):
 def test_import_does_not_bring_back_a_product_being_deleted(client):
     """Импорт с поставщиком снимал «удалён вами» у товара, который ещё удалялся с Prom: после удаления
     поставщик создавал его заново."""
-    from promloader import main
+    from promloader.routes import imports as main  # _link_imported — в разделе импорта
     sid = make_supplier(make_yml(BASE), prefix="PO-")
     run(sid)
     pid = products.find_by_external_id("PO-A1")

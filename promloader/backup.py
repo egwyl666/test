@@ -68,15 +68,21 @@ def create(reason: str = "manual") -> dict:
     return _info(target)
 
 
-def _info(path: Path) -> dict:
-    m = NAME_RE.match(path.name)
+def describe(name: str, mtime: float | None = None) -> dict:
+    """Дата и причина копии — по её имени (копии на диске и в облаке называются одинаково)."""
+    m = NAME_RE.match(name)
     try:
         created = datetime.strptime(m.group(1), "%Y%m%d-%H%M%S")
     except (AttributeError, ValueError):  # чужое или переименованное имя файла — берём дату изменения
-        created = datetime.fromtimestamp(path.stat().st_mtime)
+        created = datetime.fromtimestamp(mtime or 0)
     reason = m.group(2) if m else "manual"
-    return {"name": path.name, "size": path.stat().st_size, "created": created.isoformat(timespec="seconds"),
-            "reason": reason, "reason_label": REASONS.get(reason, reason)}
+    return {"name": name, "created": created.isoformat(timespec="seconds"), "reason": reason,
+            "reason_label": REASONS.get(reason, reason)}
+
+
+def _info(path: Path) -> dict:
+    stat = path.stat()
+    return {**describe(path.name, stat.st_mtime), "size": stat.st_size}
 
 
 def list_backups() -> list[dict]:
@@ -172,7 +178,10 @@ def stage_restore_stream(source) -> None:
 
 # настройки этого компьютера: восстановление копии их не меняет (в том числе пароль и доступ с телефона)
 DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update", "phone_lan", "phone_remote", "phone_password_hash",
-                   "phone_secret")
+                   "phone_secret", "backup_cloud", "backup_cloud_prefix")
+# токены и ключи этого компьютера: если в восстановленной копии их нет (облачная копия — без секретов), остаются свои
+KEEP_IF_MISSING = ("prom_token", "feed_key", "gemini_key", "anthropic_key", "telegram_token", "support_token",
+                   "r2_access_key_id", "r2_secret_access_key")
 
 
 def _device_settings(data_dir: Path) -> dict:
@@ -181,8 +190,9 @@ def _device_settings(data_dir: Path) -> dict:
         return {}
     conn = sqlite3.connect(path)
     try:
-        marks = ",".join("?" * len(DEVICE_SETTINGS))
-        return dict(conn.execute(f"SELECT key, value FROM settings WHERE key IN ({marks})", DEVICE_SETTINGS).fetchall())
+        keys = DEVICE_SETTINGS + KEEP_IF_MISSING
+        return dict(conn.execute(f"SELECT key, value FROM settings WHERE key IN ({','.join('?' * len(keys))})",
+                                 keys).fetchall())
     except sqlite3.DatabaseError:
         return {}
     finally:
@@ -193,8 +203,12 @@ def _restore_device_settings(data_dir: Path, kept: dict) -> None:
     conn = sqlite3.connect(data_dir / DB_NAME)
     try:
         with conn:
+            device = {k: v for k, v in kept.items() if k in DEVICE_SETTINGS}
             conn.execute(f"DELETE FROM settings WHERE key IN ({','.join('?' * len(DEVICE_SETTINGS))})", DEVICE_SETTINGS)
-            conn.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", list(kept.items()))
+            conn.executemany("INSERT INTO settings (key, value) VALUES (?, ?)", list(device.items()))
+            have = {r[0] for r in conn.execute("SELECT key FROM settings WHERE value != ''")}
+            conn.executemany("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                             [(k, v) for k, v in kept.items() if k in KEEP_IF_MISSING and v and k not in have])
     except sqlite3.DatabaseError as exc:
         log.warning("Не удалось вернуть настройки обновлений после восстановления: %s", exc)
     finally:
