@@ -144,6 +144,15 @@ class PromClient:
             body["cancellation_text"] = cancellation_text
         return await self._request("POST", "/orders/set_status", json=body)
 
+    async def save_declaration(self, order_id: int, declaration_id: str, delivery_type: str = "nova_poshta") -> dict:
+        """Номер ТТН, созданной не в кабинете Prom, — в заказ Prom (покупатель видит его в своём заказе)."""
+        body = await self._request("POST", "/delivery/save_declaration_id",
+                                   json={"order_id": order_id, "declaration_id": declaration_id,
+                                         "delivery_type": delivery_type})
+        if isinstance(body, dict) and body.get("status") == "error":
+            raise PromError(f"Prom не сохранил номер ТТН: {body.get('message') or ''} {json.dumps(body.get('errors') or '', ensure_ascii=False)}".strip())
+        return body
+
     async def import_file(self, content: bytes, settings: dict | None = None, filename: str = "products.xml",
                           content_type: str = "text/xml") -> str:
         """Загружает файл целиком: YML (фото Prom скачает сам по ссылкам <picture>) или Excel."""

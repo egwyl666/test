@@ -33,6 +33,7 @@ from . import (
     feed,
     housekeeping,
     notify,
+    novaposhta,
     orders,
     phone,
     phototunnel,
@@ -121,7 +122,8 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
                  asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop)),
-                 asyncio.create_task(chat_worker(stop)), asyncio.create_task(phone_worker(stop))]
+                 asyncio.create_task(chat_worker(stop)), asyncio.create_task(phone_worker(stop)),
+                 asyncio.create_task(np_worker(stop))]
     try:
         yield
     finally:
@@ -224,6 +226,24 @@ async def phone_worker(stop: asyncio.Event) -> None:
             log.exception("Сбой туннеля для телефона")
         try:
             await asyncio.wait_for(stop.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def np_worker(stop: asyncio.Event) -> None:
+    """Раз в 30 минут — статусы посылок Новой Почты (ключ не нужен): прибыла, не забирают, отказ."""
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=60)
+    except asyncio.TimeoutError:
+        pass
+    while not stop.is_set():
+        try:
+            if not db.paused() and novaposhta.enabled():
+                await asyncio.to_thread(novaposhta.track)
+        except Exception:
+            log.exception("Сбой отслеживания посылок")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=novaposhta.TRACK_MINUTES * 60)
         except asyncio.TimeoutError:
             pass
 

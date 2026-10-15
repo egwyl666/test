@@ -53,6 +53,36 @@
     <div id="empty" class="panel empty-state hidden">Заказов пока нет.</div>
   </main>
 
+  <div class="modal hidden" id="ttn-modal">
+    <div class="modal-box">
+      <h2>📦 ТТН Новой Почты — заказ №<span id="ttn-order"></span></h2>
+      <p class="small err-text hidden" id="ttn-not-ready">Сначала подключите Новую Почту: «Настройки» → «Новая Почта» (ключ API, отправитель, отделение отправки).</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <label class="field" style="flex:1;min-width:140px"><span>Фамилия</span><input id="ttn-last" translate="no"></label>
+        <label class="field" style="flex:1;min-width:140px"><span>Имя</span><input id="ttn-first" translate="no"></label>
+        <label class="field" style="flex:1;min-width:140px"><span>Отчество</span><input id="ttn-middle" translate="no"></label>
+      </div>
+      <label class="field"><span>Телефон получателя</span><input id="ttn-phone" placeholder="380XXXXXXXXX" inputmode="tel"></label>
+      <label class="field"><span>Город <span class="small muted" id="ttn-hint" translate="no"></span></span>
+        <input id="ttn-city" list="ttn-cities" autocomplete="off" translate="no"><datalist id="ttn-cities"></datalist></label>
+      <label class="field"><span>Отделение или почтомат</span><select id="ttn-warehouse" translate="no"></select></label>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <label class="field" style="flex:1;min-width:110px"><span>Вес, кг</span><input id="ttn-weight" inputmode="decimal"></label>
+        <label class="field" style="flex:1;min-width:110px"><span>Оценочная стоимость, грн</span><input id="ttn-cost" inputmode="decimal"></label>
+        <label class="field" style="flex:2;min-width:160px"><span>Что в посылке</span><input id="ttn-desc"></label>
+      </div>
+      <label class="field"><span>Доставку оплачивает</span><select id="ttn-payer"></select></label>
+      <label class="small" style="display:block"><input type="checkbox" id="ttn-cod"> <b>Наложенный платёж</b> — покупатель платит
+        при получении, деньги возвращаются вам</label>
+      <label class="field hidden" id="ttn-cod-wrap"><span>Сумма наложенного платежа, грн</span><input id="ttn-cod-amount" inputmode="decimal"></label>
+      <p class="small err-text hidden" id="ttn-cod-warn">Заказ не оплачен (наложенный платёж) — без него посылку отдадут бесплатно.</p>
+      <div class="toolbar" style="margin:12px 0 0;justify-content:flex-end">
+        <button class="btn" id="ttn-close">Отмена</button>
+        <button class="btn primary" id="ttn-go">Создать ТТН</button>
+      </div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="cancel-modal">
     <div class="modal-box">
       <h2>Отменить заказ №<span id="cancel-id"></span></h2>
@@ -66,6 +96,7 @@
   </div>
 
   <script src="/static/common.js"></script>
+  <script src="/static/orders-np.js"></script>
   <script>
     const PAGE = 50;
     const view = { status: "", q: "", date_from: "", date_to: "", items: [], total: 0, seq: 0 };
@@ -144,6 +175,7 @@
           </div>
           <div>${items}</div>
         </div>
+        ${shipmentBlock(o)}
         ${actions ? `<div class="toolbar" style="margin:10px 0 0">${actions}</div>` : ""}
       </div>`;
     }
@@ -163,6 +195,7 @@
       if (seen) return busy(seen, () => markSeen([Number(seen.dataset.seen)]));
       const call = e.target.closest("[data-call]");
       if (call) { markSeen([Number(call.dataset.call)]); return; }
+      if (handleTtnClick(e)) return;
       const b = e.target.closest("[data-set]");
       if (b) busy(b, () => setStatus(Number(b.dataset.id), b.dataset.set));
     });

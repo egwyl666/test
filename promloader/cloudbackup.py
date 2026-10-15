@@ -23,7 +23,7 @@ log = logging.getLogger("promloader.cloudbackup")
 
 SECRET_SETTINGS = ("prom_token", "feed_key", "gemini_key", "anthropic_key", "github_token", "telegram_token",
                    "support_token", "r2_access_key_id", "r2_secret_access_key", "phone_password_hash", "phone_secret",
-                   "backup_password", "push_vapid_private")
+                   "backup_password", "push_vapid_private", "np_api_key")
 CLOUD_KEEP = 10
 REASONS = ("daily", "manual")  # перед обновлением и восстановлением — только на диске: они нужны «здесь и сейчас»
 

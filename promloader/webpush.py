@@ -31,7 +31,8 @@ log = logging.getLogger("promloader.webpush")
 SUBJECT = "mailto:promloader@localhost"  # push-сервисы требуют контакт отправителя; программа — у пользователя дома
 TTL = 24 * 3600
 URLS = {"order": "/orders", "chat": "/chat", "supplier_failed": "/suppliers", "sync_failed": "/",
-        "schedule_missed": "/", "sync_done": "/", "phone": "/settings"}
+        "schedule_missed": "/", "sync_done": "/", "phone": "/settings", "parcel_arrived": "/orders",
+        "parcel_waiting": "/orders", "parcel_refused": "/orders"}
 DEFAULT_EVENTS = ["order", "chat", "supplier_failed", "sync_failed"]
 
 

@@ -155,6 +155,23 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_date ON orders(date_created);
 
+-- посылки Новой Почты по заказам: и созданные программой, и созданные в кабинете Prom (номер — из заказа Prom)
+CREATE TABLE IF NOT EXISTS shipments (
+    order_id     INTEGER PRIMARY KEY,
+    ttn          TEXT NOT NULL,
+    ref          TEXT NOT NULL DEFAULT '',
+    own          INTEGER NOT NULL DEFAULT 0,
+    status_code  TEXT NOT NULL DEFAULT '',
+    status       TEXT NOT NULL DEFAULT '',
+    stage        TEXT NOT NULL DEFAULT '',
+    arrived_at   TEXT,
+    alerts       TEXT NOT NULL DEFAULT '[]',
+    cost         TEXT NOT NULL DEFAULT '',
+    prom_error   TEXT NOT NULL DEFAULT '',
+    checked_at   TEXT,
+    created_at   TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tg_recipients (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id     TEXT NOT NULL UNIQUE,

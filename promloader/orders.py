@@ -83,6 +83,10 @@ def view(row) -> dict:
         "payment": payment.get("name") if isinstance(payment, dict) else str(payment or ""),
         "notes": data.get("client_notes") or "", "source": data.get("source") or "",
         "items": items, "new": not row["seen"],
+        "nova_poshta": (data.get("delivery_provider_data") or {}).get("provider") == "nova_poshta"
+                       or "нова пошта" in str(delivery.get("name") if isinstance(delivery, dict) else delivery).lower()
+                       or "новая почта" in str(delivery.get("name") if isinstance(delivery, dict) else delivery).lower(),
+        "prom_ttn": str((data.get("delivery_provider_data") or {}).get("declaration_number") or ""),
         "actions": {k: SETTABLE[k] for k in TRANSITIONS.get(status, ())},
     }
 
@@ -136,7 +140,17 @@ def list_orders(flt: dict | None = None, limit: int = 50, offset: int = 0) -> di
     counts = {r["status"]: r["n"] for r in db.query(f"SELECT status, COUNT(*) AS n FROM orders {cwhere} GROUP BY status",
                                                     cargs)}
     unseen = db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"]
-    return {"items": [view(r) for r in rows], "total": total, "counts": counts, "unseen": unseen,
+    items = [view(r) for r in rows]
+    # посылки Новой Почты — одним запросом на страницу заказов
+    ships = {r["order_id"]: dict(r) for r in db.query(f"SELECT * FROM shipments WHERE order_id {db.IN_LIST}",
+                                                      (db.as_list([o["id"] for o in items]),))}
+    from . import novaposhta
+    for o in items:
+        s = ships.get(o["id"])
+        o["shipment"] = {"ttn": s["ttn"], "own": bool(s["own"]), "stage": s["stage"], "status": s["status"],
+                         "stage_label": novaposhta.STAGE_LABELS.get(s["stage"], s["status"]),
+                         "prom_error": s["prom_error"]} if s else None
+    return {"items": items, "total": total, "counts": counts, "unseen": unseen,
             "last_poll": db.get_setting("orders_last_poll"), "error": db.get_setting("orders_error"),
             "loading_all": bool(db.get_setting("orders_cursor"))}
 

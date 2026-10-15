@@ -126,6 +126,32 @@
         <b>Запускать Prom Loader вместе с Windows</b> <span class="muted">— чтобы расписание работало, даже если вы забыли открыть программу</span></label>
     </div>
 
+    <div class="panel" id="np">
+      <h2>🚚 Новая Почта</h2>
+      <p class="small muted" style="margin-top:-4px">ТТН из заказа в один клик (получатель и отделение — из заказа Prom), этикетка
+        100×100 и отслеживание посылок. Статусы посылок программа проверяет и без ключа — в том числе ТТН из кабинета Prom.</p>
+      <label class="field"><span>Ключ API Новой Почты <span class="muted" id="np-key-state"></span></span>
+        <input id="np-key" type="password" autocomplete="new-password" placeholder="кабинет Новой Почты → Налаштування → Безпека → Створити ключ"></label>
+      <div class="toolbar"><button class="btn" id="np-check">Проверить ключ</button><span class="small" id="np-sender"></span></div>
+      <div id="np-form" class="hidden">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="field" style="flex:1;min-width:180px"><span>Контактное лицо отправителя</span><select id="np-contact" translate="no"></select></label>
+          <label class="field" style="flex:1;min-width:160px"><span>Телефон отправителя</span><input id="np-phone" placeholder="380XXXXXXXXX" inputmode="tel"></label>
+        </div>
+        <label class="field"><span>Город отправки</span><input id="np-city" list="np-cities" autocomplete="off" translate="no"><datalist id="np-cities"></datalist></label>
+        <label class="field"><span>Отделение отправки</span><select id="np-warehouse" translate="no"></select></label>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="field" style="flex:1;min-width:110px"><span>Вес по умолчанию, кг</span><input id="np-weight" inputmode="decimal"></label>
+          <label class="field" style="flex:2;min-width:160px"><span>Что в посылке (по умолчанию)</span><input id="np-desc"></label>
+        </div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="field" style="flex:1;min-width:160px"><span>Доставку оплачивает</span><select id="np-payer"></select></label>
+          <label class="field" style="flex:1;min-width:160px"><span>Напомнить, если посылку не забирают, дней</span><input id="np-days" inputmode="numeric"></label>
+        </div>
+        <button class="btn primary" id="np-save">Сохранить</button>
+      </div>
+    </div>
+
     <div class="panel" id="telegram">
       <h2>📨 Уведомления в Telegram <span class="muted small">(по желанию)</span></h2>
       <ol class="small" style="margin-top:-4px;line-height:1.7">
@@ -910,5 +936,6 @@
   </script>
   <script src="/static/migration.js"></script>
   <script src="/static/app-install.js"></script>
+  <script src="/static/np-settings.js"></script>
 </body>
 </html>

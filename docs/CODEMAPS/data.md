@@ -22,6 +22,8 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `ai_jobs`, `ai_items` | Массовый ИИ и откат |
 | `ai_usage` | Каждый запрос к ИИ: `at`, `provider`, `model` (ответившая), `action`, `source` (`card`/`bulk`/`check`), `job_id`, `tokens_in`/`tokens_out` (мышление — в выходе), `cost_usd` (NULL — цена неизвестна), `ok`, `error` |
 | `orders` | Заказы Prom |
+| `shipments` | Посылки Новой Почты по заказам: ТТН, `own` (создана программой), этап и статус, `arrived_at`, отправленные уведомления (`alerts`), ошибка передачи номера в Prom |
+| `push_subscriptions` | Телефоны с push-уведомлениями: endpoint, ключи, события |
 | `tg_recipients` | Получатели Telegram и их события |
 | `tg_outbox` | Очередь уведомлений Telegram: `chat_id`, `text`, `next_at`, `attempts`, `last_error`, `sent_at`, `failed` (через 48 ч без доставки); отправленные хранятся 30 дней |
 | `support_tickets` | Обращения в поддержку |

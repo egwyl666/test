@@ -187,7 +187,7 @@ DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update", "phone_lan", "p
                    "phone_secret", "backup_cloud", "backup_cloud_prefix", "paused", "backup_password")
 # токены и ключи этого компьютера: если в восстановленной копии их нет (облачная копия — без секретов), остаются свои
 KEEP_IF_MISSING = ("prom_token", "feed_key", "gemini_key", "anthropic_key", "telegram_token", "support_token",
-                   "r2_access_key_id", "r2_secret_access_key", "push_vapid_private")
+                   "r2_access_key_id", "r2_secret_access_key", "push_vapid_private", "np_api_key")
 
 
 def _device_settings(data_dir: Path) -> dict:
