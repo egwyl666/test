@@ -231,6 +231,7 @@ def tunnel(monkeypatch):
 @pytest.fixture
 def no_wait(monkeypatch):
     monkeypatch.setattr(sync, "NOTHING_WAIT", __import__("datetime").timedelta(0))
+    monkeypatch.setattr(sync, "QUEUE_WAIT", __import__("datetime").timedelta(0))
 
 
 def test_success_with_zero_products_is_not_success(tunnel, no_wait):
@@ -464,3 +465,22 @@ def test_products_stuck_in_sending_are_released_on_start():
     assert sync.repair_stuck_sending() == 1
     assert products.get(stuck)["status"] == "ready" and "прервалась" in products.get(stuck)["last_error"]
     assert products.get(queued)["status"] == "sending"   # у этого выгрузка ещё идёт — не трогаем
+
+
+
+def test_queued_import_is_not_retried_too_early(tunnel, monkeypatch):
+    """«SUCCESS, total: 0» у файла с товарами — это очередь Prom, а не пустой файл: через 15 минут программа больше
+    не шлёт повторный импорт (он только вставал в ту же очередь), а ждёт до часа и пишет, что файл в очереди."""
+    from datetime import datetime, timedelta, timezone
+    pid = ready_product()
+    sync.enqueue([pid])
+    fake = FakeProm(statuses=[(200, {"status": "SUCCESS", "total": 0, "imported": 0, "created": 0, "errors": []})] * 5)
+    run(fake)
+    job = db.query_one("SELECT * FROM sync_jobs")
+    old = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat(timespec="seconds")
+    with db.tx() as c:
+        c.execute("UPDATE sync_jobs SET started_at = ?, next_run_at = ? WHERE id = ?", (old, db.now(), job["id"]))
+    run(fake)
+    job = db.query_one("SELECT * FROM sync_jobs")
+    assert job["status"] in ("pending", "waiting") and "очереди импорта Prom уже 20 мин" in job["last_error"]
+    assert json.loads(job["sent"]).get("method", "file") == "file"  # повторного импорта по ссылке не было

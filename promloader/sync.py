@@ -23,6 +23,10 @@ MAX_ATTEMPTS = len(BACKOFF_SECONDS) + 1
 POLL_SECONDS = 5
 MAX_WAIT = timedelta(hours=2)
 NOTHING_WAIT = timedelta(minutes=15)  # «SUCCESS, total: 0» столько времени подряд — в файле правда нет товаров
+# …но если в файле товары точно есть, «total: 0» — это «файл ещё в очереди Prom» (проверено 2026-10-14/15: очередь
+# импорта Prom иногда стоит от минут до часов). Повтор по ссылке через 15 минут лишь ставил в очередь второй импорт
+QUEUE_WAIT = timedelta(minutes=60)
+QUEUE_NOTE = timedelta(minutes=3)
 
 
 def _at(seconds: float) -> str:
@@ -175,10 +179,14 @@ NOTHING_FOUND = ("Prom принял файл, но не нашёл в нём т�
                  "(Імпорт → Завантажити файл з комп'ютера): кабинет покажет, что ему не нравится. Пришлите это в «Поддержку»")
 
 
-def _progress(result: dict) -> str:
+def _progress(result: dict, waited: timedelta | None = None) -> str:
     total = result.get("total") if isinstance(result, dict) else None
     if isinstance(total, int) and total:
         return f"Prom принял файл (товаров: {total}) и обрабатывает их — обычно 1–3 минуты"
+    if waited is not None and waited > QUEUE_NOTE:
+        minutes = int(waited.total_seconds() // 60)
+        return (f"Файл ждёт в очереди импорта Prom уже {minutes} мин — у Prom так бывает, программа ждёт сама. "
+                "Ход видно в кабинете Prom: «Товари» → «Імпорт»")
     return "Prom принял файл и разбирает его"
 
 
@@ -515,13 +523,14 @@ async def _poll(job: dict, client: PromClient) -> None:
     if state == "running":
         started = datetime.fromisoformat(job.get("started_at") or job["created_at"])
         waited = datetime.now(timezone.utc) - started
-        if _found_nothing(result) and waited > NOTHING_WAIT:
+        offers = json.loads(job.get("sent") or "{}").get("offers") or 0
+        if _found_nothing(result) and waited > (QUEUE_WAIT if offers else NOTHING_WAIT):
             state = "ok"  # Prom так и не нашёл товаров в файле — разбираемся ниже
         elif waited > MAX_WAIT:
             raise PromError("Prom слишком долго обрабатывает импорт — проверьте раздел «Импорт» в кабинете")
         if state == "running":
             _update_job(job["id"], result=json.dumps(result, ensure_ascii=False), next_run_at=_at(POLL_SECONDS),
-                        attempts=0, last_error=_progress(result))
+                        attempts=0, last_error=_progress(result, waited))
             return
     ok = state == "ok"
     message = "" if ok else "Prom не принял импорт: " + json.dumps(result, ensure_ascii=False)[:500]
