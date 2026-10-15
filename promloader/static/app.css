@@ -637,3 +637,33 @@ table.list.compact td { padding: 6px 8px; }
 @media (max-width: 640px) {
   .cat-label { min-width: 0; width: 100%; }
 }
+
+/* ---------- отчёты ---------- */
+.report-period { flex-wrap: wrap; gap: 8px; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 6px 0 14px; overflow-x: auto; }
+.tab { border: none; background: none; padding: 8px 14px; font: inherit; color: var(--muted); cursor: pointer;
+  border-bottom: 2px solid transparent; white-space: nowrap; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin: 0 0 14px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; }
+.kpi-label { font-size: 12px; color: var(--muted); }
+.kpi-value { font-size: 20px; font-weight: 600; margin-top: 2px; }
+.kpi-note { font-size: 12px; color: var(--muted); margin-top: 2px; }
+a.kpi-link { color: inherit; text-decoration: none; }
+a.kpi-link:hover { border-color: var(--accent); }
+.approx { color: var(--warn); font-weight: 600; cursor: help; }
+.report-table th[data-sort] { cursor: pointer; user-select: none; }
+.report-table .num { text-align: right; }
+.chart-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; margin: 0 0 14px; }
+.chart { width: 100%; height: auto; display: block; }
+.chart text { font-size: 11px; fill: var(--muted); }
+.chart .grid { stroke: var(--line); }
+.chart .bar { fill: var(--accent); opacity: .75; }
+.chart .profit-line { fill: none; stroke: var(--ok); stroke-width: 2; }
+.legend { display: inline-block; width: 12px; height: 10px; vertical-align: middle; border-radius: 2px; }
+.legend.bar-l { background: var(--accent); opacity: .75; }
+.legend.line-l { height: 2px; background: var(--ok); }
+@media (max-width: 640px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .kpi-value { font-size: 17px; }
+}

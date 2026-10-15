@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Отчёты — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav></nav>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <h1 style="margin:0">Отчёты</h1>
+      <span class="spacer"></span>
+      <a class="btn" id="xlsx" href="#">⬇ Excel</a>
+    </div>
+    <div class="toolbar report-period">
+      <div class="chips" id="periods">
+        <button class="chip" data-period="today">Сегодня</button>
+        <button class="chip" data-period="7d">7 дней</button>
+        <button class="chip" data-period="30d">30 дней</button>
+        <button class="chip" data-period="month">Этот месяц</button>
+        <button class="chip" data-period="custom">Свой период</button>
+      </div>
+      <span id="custom-range" class="hidden">
+        <label class="small muted">с <input type="date" id="date-from"></label>
+        <label class="small muted">по <input type="date" id="date-to"></label>
+      </span>
+    </div>
+    <div class="tabs" id="tabs">
+      <button class="tab" data-tab="sales">Продажи</button>
+      <button class="tab" data-tab="products">Товары</button>
+      <button class="tab" data-tab="suppliers">Поставщики и группы</button>
+      <button class="tab" data-tab="store">Магазин</button>
+    </div>
+    <div class="err-text" id="error"></div>
+    <div id="report"><p class="muted">Считаю…</p></div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/reports.js"></script>
+</body>
+</html>

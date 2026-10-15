@@ -30,6 +30,7 @@ PY_SKIP_NAMES = {
     "EXPORT_COLUMNS",                    # products.py — заголовки файла Excel
     "SCHEMA",                            # db.py — схема базы
     "task",                              # ai.py — просьба пользователя для модели
+    "XLSX_TABLES", "QUALITY_LABELS",     # reports.py — заголовки листов Excel
 }
 PY_SKIP_RETURNS = {"build_prompt"}     # ai.py — что возвращается, уходит модели
 PY_SKIP_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "send", "notify", "_tg",

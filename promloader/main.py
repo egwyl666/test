@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import (ai, aibulk, aiprice, autostart, backup, categories, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
-               promcatalog, promdelete, runtime, schedule, suppliers, support, sync, updater)
+               promcatalog, promdelete, reports, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 STATIC = Path(__file__).parent / "static"
@@ -28,7 +28,7 @@ PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
     "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
-    "/categories": "categories.html",
+    "/categories": "categories.html", "/reports": "reports.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -1561,6 +1561,29 @@ async def _catalog_bg() -> None:
     except Exception as exc:
         log.exception("Сбой загрузки каталога Prom")
         promcatalog._set_state(running=False, error=f"Внутренняя ошибка: {exc}")
+
+
+# ---------- отчёты ----------
+
+def _report(tab: str, period: str, date_from: str, date_to: str, dead_days: int) -> dict:
+    try:
+        return reports.build(tab, period, date_from, date_to, max(1, min(int(dead_days), 3650)))
+    except reports.ReportError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# .xlsx — раньше общего маршрута: иначе «sales.xlsx» попал бы в {tab}
+@app.get("/api/reports/{tab}.xlsx")
+def report_xlsx(tab: str, period: str = "30d", date_from: str = "", date_to: str = "", dead_days: int = 30):
+    report = _report(tab, period, date_from, date_to, dead_days)
+    name = f"otchet-{tab}-{report['from']}-{report['to']}.xlsx"
+    return Response(reports.xlsx(report), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/reports/{tab}")
+def report(tab: str, period: str = "30d", date_from: str = "", date_to: str = "", dead_days: int = 30):
+    return _report(tab, period, date_from, date_to, dead_days)
 
 
 # ---------- категории Prom ----------

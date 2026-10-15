@@ -338,6 +338,7 @@ function descriptionHtml(text) {
 const NAV = [
   ["/", "Товары", ["/product"]],
   ["/orders", "Заказы"],
+  ["/reports", "Отчёты"],
   ["/suppliers", "Поставщики", ["/supplier"]],
   ["/pricing", "Наценка"],
   ["/categories", "Категории"],
