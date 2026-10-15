@@ -44,6 +44,8 @@ async function loadMeta() {
   showMissedSchedules();
   const link = document.querySelector('.topbar nav a[href="/orders"]');
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
+  const chatLink = document.querySelector('.topbar nav a[href="/chat"]');
+  if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
   return META;
 }
 
@@ -338,6 +340,7 @@ function descriptionHtml(text) {
 const NAV = [
   ["/", "Товары", ["/product"]],
   ["/orders", "Заказы"],
+  ["/chat", "Чат"],
   ["/reports", "Отчёты"],
   ["/suppliers", "Поставщики", ["/supplier"]],
   ["/pricing", "Наценка"],

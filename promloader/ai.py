@@ -261,6 +261,30 @@ def run_detailed(p: dict, action: str, instruction: str = "", transport=None) ->
     return changes, used
 
 
+CHAT_SYSTEM = """Ты помогаешь продавцу интернет-магазина на Prom.ua отвечать покупателям в чате.
+Пиши вежливо, коротко (2–4 предложения), по делу, на языке покупателя (украинский или русский).
+Опирайся только на данные товара и переписку: цену, наличие и характеристики не придумывай. Если ответа в данных нет —
+напиши, что продавец уточнит и ответит. Не обещай скидок и сроков, которых нет в данных.
+Верни JSON с одним полем reply — текст ответа."""
+
+
+def chat_reply(context: str, transport=None) -> tuple[str, dict]:
+    """Черновик ответа покупателю (не отправляется — его правит и отправляет человек). Расход пишется в ai_usage."""
+    s = settings()
+    if not s["provider"]:
+        raise AIError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
+    if not s["key"]:
+        raise AIError("Не указан API-ключ ИИ (Настройки)")
+    call = _gemini if s["provider"] == "gemini" else _claude if s["provider"] == "claude" else None
+    if call is None:
+        raise AIError("Неизвестный провайдер ИИ")
+    result, used = call(s, context, transport, "chat_reply", system=CHAT_SYSTEM, fields=("reply",))
+    reply = str(result.get("reply") or "").strip()
+    if not reply:
+        raise AIError("ИИ не предложил ответа — попробуйте ещё раз")
+    return reply, used
+
+
 # ---------- Gemini (REST) ----------
 
 def _gemini_quota(body: dict, model: str = "") -> dict | None:
@@ -415,17 +439,19 @@ def _model_quota(error: AIError) -> bool:
 AUTO_TRIES, AUTO_OVERLOADED = 8, 3  # сколько моделей пробовать: с исчерпанным лимитом / перегруженных
 
 
-def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool = True) -> tuple[dict, dict]:
-    """switch=False — только эта модель, без перехода на другие (проверка моделей не должна менять выбор)."""
+def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool = True,
+            system: str = SYSTEM, fields: tuple = FIELDS) -> tuple[dict, dict]:
+    """switch=False — только эта модель, без перехода на другие (проверка моделей не должна менять выбор).
+    system и fields — задание и поля ответа: по умолчанию карточка товара, для чата — черновик ответа."""
     body = {
-        "systemInstruction": {"parts": [{"text": SYSTEM}]},
+        "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseSchema": {
                 "type": "OBJECT",
-                "properties": {f: {"type": "STRING"} for f in FIELDS},
-                "required": list(FIELDS),
+                "properties": {f: {"type": "STRING"} for f in fields},
+                "required": list(fields),
             },
         },
     }
@@ -562,7 +588,8 @@ def _claude_limit_text(info: dict) -> str:
     return text + ", попробуйте через минуту"
 
 
-def _claude(s: dict, prompt: str, transport=None, action: str = "") -> tuple[dict, dict]:
+def _claude(s: dict, prompt: str, transport=None, action: str = "",
+            system: str = SYSTEM, fields: tuple = FIELDS) -> tuple[dict, dict]:
     import anthropic
 
     client = _claude_client(s["key"], transport)
@@ -570,15 +597,15 @@ def _claude(s: dict, prompt: str, transport=None, action: str = "") -> tuple[dic
     params = dict(
         model=model,
         max_tokens=16000,
-        system=SYSTEM,
+        system=system,
         messages=[{"role": "user", "content": prompt}],
         output_config={
             "format": {
                 "type": "json_schema",
                 "schema": {
                     "type": "object",
-                    "properties": {f: {"type": "string"} for f in FIELDS},
-                    "required": list(FIELDS),
+                    "properties": {f: {"type": "string"} for f in fields},
+                    "required": list(fields),
                     "additionalProperties": False,
                 },
             },

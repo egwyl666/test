@@ -251,6 +251,39 @@ CREATE TABLE IF NOT EXISTS prom_categories (
     updated_at  TEXT NOT NULL
 );
 
+-- Чат с покупателями Prom: комнаты и сообщения (копия, чтобы список открывался сразу и без интернета)
+CREATE TABLE IF NOT EXISTS chat_rooms (
+    room_ident      TEXT PRIMARY KEY,
+    room_id         TEXT NOT NULL DEFAULT '',
+    project         TEXT NOT NULL DEFAULT 'promua',
+    buyer_name      TEXT NOT NULL DEFAULT '',
+    buyer_phone     TEXT NOT NULL DEFAULT '',
+    last_message    TEXT NOT NULL DEFAULT '',
+    last_at         TEXT NOT NULL DEFAULT '',
+    last_message_id INTEGER,
+    unread          INTEGER NOT NULL DEFAULT 0,
+    product_id      INTEGER,
+    prom_product_id INTEGER,
+    order_id        INTEGER,
+    data            TEXT NOT NULL DEFAULT '{}',
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chat_rooms_unread ON chat_rooms(unread);
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id           INTEGER PRIMARY KEY,
+    room_ident   TEXT NOT NULL,
+    sender       TEXT NOT NULL DEFAULT '',
+    body         TEXT NOT NULL DEFAULT '',
+    is_my        INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL DEFAULT '',
+    type         TEXT NOT NULL DEFAULT 'message',
+    status       TEXT NOT NULL DEFAULT '',
+    product_id   INTEGER,
+    attachments  TEXT NOT NULL DEFAULT '[]',
+    data         TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS chat_messages_room ON chat_messages(room_ident, created_at);
+
 -- Правило «группа магазина → категория Prom»: применяется к товарам группы, у которых категория не закреплена
 CREATE TABLE IF NOT EXISTS group_categories (
     group_name   TEXT PRIMARY KEY,

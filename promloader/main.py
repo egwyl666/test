@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import (ai, aibulk, aiprice, autostart, backup, categories, changes, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
+from . import (ai, aibulk, aiprice, autostart, backup, categories, changes, chat, config, db, diagnose, excel, feed, housekeeping, rates, notify, orders, phototunnel, pricing, products, r2,
                promcatalog, promdelete, reports, runtime, schedule, suppliers, support, sync, updater)
 from .prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
@@ -28,7 +28,7 @@ PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
     "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
-    "/categories": "categories.html", "/reports": "reports.html",
+    "/categories": "categories.html", "/reports": "reports.html", "/chat": "chat.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -89,7 +89,8 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(maintenance_worker(stop)), asyncio.create_task(schedule_worker(stop)),
                  asyncio.create_task(ai_worker(stop)), asyncio.create_task(orders_worker(stop)),
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
-                 asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop))]
+                 asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop)),
+                 asyncio.create_task(chat_worker(stop))]
     try:
         yield
     finally:
@@ -159,6 +160,23 @@ async def notify_worker(stop: asyncio.Event) -> None:
             log.exception("Сбой отправки уведомлений Telegram")
         try:
             await asyncio.wait_for(stop.wait(), timeout=60)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def chat_worker(stop: asyncio.Event) -> None:
+    """Раз в минуту — новые сообщения покупателей в чате Prom (если указан токен)."""
+    while not stop.is_set():
+        try:
+            if chat.enabled():
+                async with sync.make_client() as client:
+                    await chat.poll(client)
+        except PromError:
+            pass  # ошибка сохранена (chat_error) и видна на странице чата
+        except Exception:
+            log.exception("Сбой опроса чата")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=chat.POLL_SECONDS)
         except asyncio.TimeoutError:
             pass
 
@@ -470,6 +488,7 @@ def meta():
         "update_available": db.get_setting("update_latest"),
         "missed_schedules": schedule.missed(),
         "orders_unseen": db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"],
+        "chat_unseen": chat.unseen(),
         "ai": _ai_meta(),
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
             "SELECT id, name FROM suppliers ORDER BY name COLLATE NOCASE")],
@@ -1561,6 +1580,62 @@ async def _catalog_bg() -> None:
     except Exception as exc:
         log.exception("Сбой загрузки каталога Prom")
         promcatalog._set_state(running=False, error=f"Внутренняя ошибка: {exc}")
+
+
+# ---------- чат с покупателями ----------
+
+@app.get("/api/chat/rooms")
+def chat_rooms(q: str = "", unread: bool = False):
+    return {"rooms": chat.rooms(q, unread), "unseen": chat.unseen(), "enabled": chat.enabled(),
+            "error": db.get_setting("chat_error") or "", "last_poll": db.get_setting("chat_last_poll") or ""}
+
+
+@app.get("/api/chat/rooms/{room_ident}/messages")
+def chat_messages(room_ident: str):
+    return chat.messages(room_ident)
+
+
+@app.post("/api/chat/rooms/{room_ident}/send")
+async def chat_send(room_ident: str, text: str = Body(..., embed=True)):
+    try:
+        async with sync.make_client() as client:
+            result = await chat.send(client, room_ident, text)
+    except chat.ChatError as exc:
+        raise HTTPException(400, str(exc))
+    except PromError as exc:
+        raise HTTPException(502, f"Prom не принял сообщение: {exc}")
+    return {**result, **await asyncio.to_thread(chat.messages, room_ident)}
+
+
+@app.post("/api/chat/rooms/{room_ident}/read")
+async def chat_read(room_ident: str):
+    try:
+        async with sync.make_client() as client:
+            n = await chat.mark_read(client, room_ident)
+    except PromError as exc:
+        raise HTTPException(502, str(exc))
+    return {"read": n, "unseen": await asyncio.to_thread(chat.unseen)}
+
+
+@app.post("/api/chat/rooms/{room_ident}/ai-draft")
+def chat_ai_draft(room_ident: str):
+    try:
+        with ai.usage_source("chat"):
+            return chat.ai_draft(room_ident)
+    except ai.AIError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/api/chat/refresh")
+async def chat_refresh():
+    if not chat.enabled():
+        raise HTTPException(400, "Сначала укажите API-токен Prom в «Настройках»")
+    try:
+        async with sync.make_client() as client:
+            new = await chat.poll(client)
+    except PromError as exc:
+        raise HTTPException(502, str(exc))
+    return {"new": new, "unseen": await asyncio.to_thread(chat.unseen)}
 
 
 # ---------- отчёты ----------

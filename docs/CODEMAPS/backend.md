@@ -1,6 +1,6 @@
 # Бэкенд (`promloader/*.py`)
 
-_Обновлено: 2026-10-11 · версия 2.8.0_
+_Обновлено: 2026-10-11 · версия 2.9.0_
 
 ## Модули
 
@@ -38,6 +38,7 @@ _Обновлено: 2026-10-11 · версия 2.8.0_
 | `i18n_extract.py` | 269 | Русские строки интерфейса для украинского словаря: `collect()` (HTML, JS, сообщения Python; без логов, заданий ИИ, регулярок, SQL, проверок `in`/`==`), `dictionary()` (`static/i18n-uk.js`), `missing()`; `python -m promloader.i18n_extract` — что не переведено |
 | `categories.py` | 290 | Категории каталога Prom: справочник `prom_categories` (`remember`, `info`, `label`), `for_product`, `overview` (по группам: категории на Prom, расхождения), `set_group`/`preview_group` (правило группы → товары без 🔒 через `_touch`), `from_catalog` (из `/products/list`), `refresh`, `suggest` (поиск prom.ua: `topHitsCategory`), `from_url` (`categoryId` на странице категории) |
 | `reports.py` | 420 | Отчёты: `period_bounds`, `_load_orders` (заказы → позиции, комиссия `cpa_commission`, причина отмены), `_link_products` (по `prom_id`, затем артикулу — одним запросом), `_cost_history`/`_cost_at` (закупка на дату заказа по журналу, иначе текущая и «≈»), `sales`, `products_report` (ABC, `dead_stock`), `suppliers_report`, `store_report`, `build`, `xlsx` |
+| `chat.py` | 270 | Чат с покупателями Prom: `poll` (комнаты → история только изменившихся, `_store`, уведомление «chat» о новых сообщениях покупателя, при первом опросе — без уведомлений), `rooms`, `messages`, `unseen`, `send` (`user_id` из `room_ident`), `mark_read`, `ai_draft` (`ai.chat_reply`) |
 | `autostart.py`, `runtime.py` | 48, 38 | Автозапуск Windows; перезапуск из веб-сервера |
 
 ## API (`main.py`)
@@ -111,3 +112,7 @@ _Обновлено: 2026-10-11 · версия 2.8.0_
   `feed.CATEGORY_TAG` задан (способ передачи проверяется на живом Prom; до этого `None`).
 - Отчёты: отменённые заказы не входят в выручку и прибыль. Прибыль = позиции − закупка (грн, на дату заказа) −
   комиссия Prom. Товар заказа ищется по `products.prom_id`: внешний ID в заказах Prom обычно пустой.
+- Чат Prom: история — только по `room_ident` (`room_id` Prom не принимает), ответ — `/chat/send_message` с `user_id`
+  (первая часть `room_ident`), `body`, `project`; «прочитано» — `room_id` + `message_id`. Prom отвечает 200 со
+  `status: error` — это ошибка (`PromClient._chat`). Порядок сообщений — по номеру (время Prom без пояса).
+  `chat_worker` — раз в минуту.

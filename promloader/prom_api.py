@@ -105,6 +105,29 @@ class PromClient:
             params["last_id"] = last_id
         return await self._request("GET", "/products/list", params=params)
 
+    # ---------- чат с покупателями ----------
+    # Prom отвечает 200 и {"status": "error", "message": …}, если что-то не так в запросе — это тоже ошибка
+    async def _chat(self, method: str, path: str, **kwargs) -> dict:
+        body = await self._request(method, path, **kwargs)
+        if isinstance(body, dict) and body.get("status") == "error":
+            raise PromError(f"Prom: {json.dumps(body.get('message'), ensure_ascii=False)[:300]}")
+        return (body.get("data") or {}) if isinstance(body, dict) else {}
+
+    async def chat_rooms(self, limit: int = 50) -> list[dict]:
+        return (await self._chat("GET", "/chat/rooms", params={"limit": limit})).get("rooms") or []
+
+    async def chat_messages(self, room_ident: str, limit: int = 100) -> list[dict]:
+        # room_id (uuid) Prom здесь не принимает — только room_ident
+        data = await self._chat("GET", "/chat/messages_history", params={"room_ident": room_ident, "limit": limit})
+        return data.get("messages") or []
+
+    async def chat_send(self, user_id: str, body: str, project: str = "promua") -> dict:
+        """Ответ покупателю. user_id — первая часть room_ident ({user_id}_{company_id}_buyer)."""
+        return await self._chat("POST", "/chat/send_message", json={"user_id": user_id, "body": body, "project": project})
+
+    async def chat_mark_read(self, room_id: str, message_id: int) -> dict:
+        return await self._chat("POST", "/chat/mark_message_read", json={"room_id": room_id, "message_id": int(message_id)})
+
     async def list_orders(self, limit: int = 100, last_id: int | None = None, **params) -> dict:
         query = {"limit": limit, **{k: v for k, v in params.items() if v not in (None, "")}}
         if last_id:

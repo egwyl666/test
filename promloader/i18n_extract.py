@@ -24,7 +24,7 @@ SQL = re.compile(r"\s*(SELECT|UPDATE|INSERT|DELETE|CREATE|ALTER|WITH)\s", re.I)
 # не интерфейс: служебные модули и куски, которые пользователь не видит как текст программы
 PY_SKIP_MODULES = {"i18n_extract.py", "tray.py", "launcher.py", "__main__.py"}
 PY_SKIP_NAMES = {
-    "SYSTEM", "CHECK_PROMPT",            # ai.py — задания для модели
+    "SYSTEM", "CHECK_PROMPT", "CHAT_SYSTEM",  # ai.py — задания для модели
     "HINTS", "VIDEO_HINT",               # excel.py — распознавание заголовков колонок
     "_presence_words", "CURRENCY_CODES",  # products.py — распознавание значений из прайсов
     "EXPORT_COLUMNS",                    # products.py — заголовки файла Excel
@@ -33,6 +33,7 @@ PY_SKIP_NAMES = {
     "XLSX_TABLES", "QUALITY_LABELS",     # reports.py — заголовки листов Excel
 }
 PY_SKIP_RETURNS = {"build_prompt"}     # ai.py — что возвращается, уходит модели
+PY_SKIP_FUNCS = {"ai_draft"}           # chat.py — текст для модели, а не для экрана
 PY_SKIP_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "send", "notify", "_tg",
                  # регулярные выражения
                  "compile", "search", "match", "fullmatch", "sub", "split", "findall", "finditer",
@@ -182,6 +183,8 @@ def py_strings(src: str) -> set[str]:
             first = node.body[0]
             if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
                 skip.add(id(first.value))
+        if isinstance(node, ast.FunctionDef) and node.name in PY_SKIP_FUNCS:
+            skip |= {id(x) for x in ast.walk(node) if x is not node}
         if isinstance(node, ast.FunctionDef) and node.name in PY_SKIP_RETURNS:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Return):
