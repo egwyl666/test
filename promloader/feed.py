@@ -43,7 +43,7 @@ def with_videos(description: str, videos: list[str]) -> str:
 
 
 # Как передать категорию каталога Prom (не группу магазина). None — способ не найден, категорию решает Prom.
-# Проверяется на живом кабинете перед выпуском (scratchpad: PLTEST-CAT-*).
+# Проверено 2026-10-15: ни portal_id, ни <portal_category_id>, ни <portal_category_url>, ни /products/edit Prom не принимает.
 CATEGORY_TAG: str | None = None
 
 
