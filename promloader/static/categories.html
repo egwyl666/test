@@ -33,12 +33,14 @@
         <b>Не та категория на Prom: <span id="mismatch-n"></span></b>
         <a class="small" href="/?cat_mismatch=1">показать в списке</a>
         <span class="spacer"></span>
+        <button class="btn primary" id="fix-btn">Исправить категории на Prom</button>
         <a class="btn" id="mismatch-xlsx" href="/api/categories/mismatch.xlsx">⬇ Excel для кабинета Prom (несовпадающие)</a>
       </div>
-      <p class="small muted" style="margin:8px 0 0" id="mismatch-help">В файле — номер товара на Prom, нужная категория и ссылка
-        «Изменить в кабинете»: откройте её, выберите категорию и сохраните. Если загружаете файл импортом в кабинете —
-        обновляйте только категорию, иначе импорт может стереть цены и наличие.</p>
+      <p class="small muted" style="margin:8px 0 0" id="mismatch-help">«Исправить категории на Prom» — программа сама отправит Prom файл импорта:
+        сначала 2 товара с проверкой, потом остальные. Меняется только категория — цену, наличие и названия программа сверяет
+        после импорта. Excel — тот же список со ссылками «Изменить в кабинете», если удобнее вручную.</p>
     </div>
+    <div id="fix-state" class="small"></div>
     <div class="err-text" id="error"></div>
     <div id="groups"></div>
     <div id="empty" class="panel empty-state hidden">Товаров пока нет.</div>

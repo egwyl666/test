@@ -31,7 +31,7 @@ PY_SKIP_NAMES = {
     "SCHEMA",                            # db.py — схема базы
     "task",                              # ai.py — просьба пользователя для модели
     "XLSX_TABLES", "QUALITY_LABELS",     # reports.py — заголовки листов Excel
-    "MISMATCH_HEADERS",                  # categories.py — колонки файла для кабинета Prom
+    "MISMATCH_HEADERS", "CAT_HEADERS",                  # categories.py — колонки файла для кабинета Prom
 }
 PY_SKIP_RETURNS = {"build_prompt"}     # ai.py — что возвращается, уходит модели
 PY_SKIP_FUNCS = {"ai_draft"}           # chat.py — текст для модели, а не для экрана

@@ -209,3 +209,43 @@ def test_mismatch_file_empty_has_headers():
     import openpyxl
     rows = list(openpyxl.load_workbook(io.BytesIO(categories.mismatch_xlsx())).active.values)
     assert rows == [tuple(categories.MISMATCH_HEADERS)]
+
+
+def test_fix_categories_trial_then_rest(monkeypatch):
+    import asyncio
+    import io
+
+    import openpyxl
+
+    ids = []
+    for i in range(3):
+        pid = products.create({"name": f"Инвертор {i}", "price": 100, "external_id": f"INV-{i}"})
+        with db.tx() as c:
+            c.execute("UPDATE products SET prom_id = ?, prom_category_id = ?, target_category_id = ? WHERE id = ?",
+                      (700 + i, POWERBANK, INVERT, pid))
+        ids.append(pid)
+    live = {700 + i: {"id": 700 + i, "name": f"Инвертор {i}", "sku": f"S{i}", "external_id": f"INV-{i}", "price": 100,
+                      "presence": "available", "status": "on_display", "category": {"id": POWERBANK}} for i in range(3)}
+    files = []
+
+    class Fake:
+        async def list_products(self, limit=100, last_id=None):
+            return {"products": [] if last_id else [dict(p, category=dict(p["category"])) for p in live.values()]}
+
+        async def import_file(self, content, settings, name, ctype):
+            rows = list(openpyxl.load_workbook(io.BytesIO(content)).active.values)
+            files.append(rows)
+            assert settings == promcatalog.EXT_IMPORT_SETTINGS
+            for r in rows[1:]:
+                live[int(r[0])]["category"] = {"id": int(r[4])}  # Prom меняет только категорию
+            return "imp"
+
+        async def import_status(self, iid):
+            return {"status": "SUCCESS", "total": 1, "imported": 1, "updated": 1}
+
+    result = asyncio.run(promcatalog.fix_categories(Fake()))
+    assert result == {"done": 3, "skipped": 0}
+    assert [len(f) - 1 for f in files] == [2, 1]  # проба на 2, потом остальные
+    assert files[0][0] == tuple(promcatalog.CAT_HEADERS) and files[0][1] == ("700", "Инвертор 0", "S0", "INV-0", str(INVERT))
+    assert all(row(pid)["prom_category_id"] == INVERT for pid in ids)
+    assert categories.mismatch_rows() == []

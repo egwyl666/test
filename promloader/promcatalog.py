@@ -36,6 +36,9 @@ def _set_state(**fields) -> None:
 def recover() -> bool:
     """При запуске: загрузка каталога (или запись ID), прерванная выключением, не должна «идти» вечно.
     True — была прервана."""
+    if state().get("cat_running"):
+        _set_state(cat_running=False, cat_error="Исправление категорий прервано: программа была выключена. Запустите его снова",
+                   cat_finished_at=db.now())
     if state().get("ext_running"):
         _set_state(ext_running=False, ext_error="Запись ID прервана: программа была выключена. Запустите её снова",
                    ext_finished_at=db.now())
@@ -208,7 +211,7 @@ async def _live_catalog(client) -> dict[int, dict]:
         last_id = next_id
 
 
-async def _import_and_wait(client, content: bytes) -> dict:
+async def _import_and_wait(client, content: bytes, what: str = "с ID") -> dict:
     from .prom_api import error_positions, import_state
 
     try:
@@ -223,7 +226,7 @@ async def _import_and_wait(client, content: bytes) -> dict:
         result = await client.import_status(import_id)
         state = import_state(result)
         if state == "failed":
-            raise PromError("Prom не принял файл с ID: " + json.dumps(result, ensure_ascii=False)[:300])
+            raise PromError(f"Prom не принял файл {what}: " + json.dumps(result, ensure_ascii=False)[:300])
         if state == "ok":
             errors = error_positions(result)
             if errors:
@@ -232,7 +235,7 @@ async def _import_and_wait(client, content: bytes) -> dict:
                 raise PromError(f"Prom нашёл ошибки в {len(errors)} строках ({first}). {CABINET_HINT}")
             return result
         if waited >= EXT_WAIT_SECONDS:
-            raise PromError("Prom слишком долго обрабатывает файл с ID — проверьте «Товари» → «Імпорт» в кабинете")
+            raise PromError(f"Prom слишком долго обрабатывает файл {what} — проверьте «Товари» → «Імпорт» в кабинете")
         await _sleep(EXT_POLL_SECONDS)
         waited += EXT_POLL_SECONDS
 
@@ -301,6 +304,102 @@ async def run_ext_ids(client_factory) -> dict:
         return counts
     except PromError as exc:
         _ext_state(running=False, error=str(exc), finished_at=db.now())
+        raise
+    finally:
+        _lock.release()
+
+
+# ---------- категория каталога Prom ----------
+# Prom меняет категорию только импортом Excel с «Ідентифікатор_підрозділу» (проверено 2026-10-15 на своём тестовом
+# товаре: категория сменилась, цена и наличие — нет; YML, /products/edit и updated_fields её не меняют). В файле —
+# текущие название, код и ID с Prom: «Ідентифікатор_товару» Prom пишет всегда, а без кода стёр бы артикул.
+
+CAT_HEADERS = ["Унікальний_ідентифікатор", "Назва_позиції", "Код_товару", "Ідентифікатор_товару", "Ідентифікатор_підрозділу"]
+
+
+def _cat_state(**fields) -> None:
+    _set_state(**{f"cat_{k}": v for k, v in fields.items()})
+
+
+def _cat_xlsx(items: list[tuple[dict, dict]]) -> bytes:
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = EXT_SHEET
+    ws.append(CAT_HEADERS)
+    for row, live in items:
+        ws.append([str(row["prom_id"]), _text(live.get("name")), _text(live.get("sku")) or None,
+                   _text(live.get("external_id")) or None, str(row["target_category_id"])])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def _cat_confirm(done: dict[int, int]) -> None:
+    if not done:
+        return
+    with db.tx() as c:
+        for prom_id, cat_id in done.items():
+            c.execute("UPDATE products SET prom_category_id = ? WHERE prom_id = ?", (cat_id, prom_id))
+
+
+async def fix_categories(client) -> dict:
+    """Ставит на Prom нужную категорию товарам, у которых она не та: сначала 2 товара с проверкой, потом остальные."""
+    from . import categories
+
+    rows = categories.mismatch_rows()
+    live = await _live_catalog(client)
+    todo, done, skipped = [], {}, 0
+    for r in rows:
+        p = live.get(int(r["prom_id"]))
+        current = int(((p or {}).get("category") or {}).get("id") or 0)
+        if p is None:
+            skipped += 1
+        elif current == int(r["target_category_id"]):
+            done[int(r["prom_id"])] = current  # уже исправили в кабинете
+        else:
+            todo.append((r, p))
+    _cat_confirm(done)
+    _cat_state(total=len(todo) + len(done), done=len(done), skipped=skipped)
+    for stage, items in (("проба на 2 товарах", todo[:EXT_TRIAL]), ("остальные товары", todo[EXT_TRIAL:])):
+        if not items:
+            continue
+        _cat_state(stage=f"{stage}: Prom обрабатывает файл ({len(items)})")
+        await _import_and_wait(client, _cat_xlsx(items), "с категориями")
+        after = await _live_catalog(client)
+        ok = {}
+        for row, before in items:
+            now = after.get(int(row["prom_id"])) or {}
+            for field in ("price", "presence", "name", "sku"):
+                if str(now.get(field)) != str(before.get(field)):
+                    _cat_confirm(ok)
+                    raise PromError(f"Prom изменил «{field}» у товара «{_text(before.get('name'))}» (было "
+                                    f"{before.get(field)}, стало {now.get(field)}) — остановлено, проверьте товар в кабинете")
+            if int((now.get("category") or {}).get("id") or 0) == int(row["target_category_id"]):
+                ok[int(row["prom_id"])] = int(row["target_category_id"])
+        _cat_confirm(ok)
+        done.update(ok)
+        _cat_state(done=len(done))
+        if len(ok) < len(items):
+            raise PromError(f"Prom поменял категорию только у {len(ok)} из {len(items)} товаров ({stage}) — дальше не "
+                            "продолжаю. Проверьте эти товары в кабинете")
+    return {"done": len(done), "skipped": skipped}
+
+
+async def run_fix_categories(client_factory) -> dict:
+    if not _lock.acquire(blocking=False):
+        raise PromError("Программа уже работает с каталогом Prom — подождите, пока закончит")
+    try:
+        _cat_state(running=True, error="", stage="читаю каталог Prom", done=0, total=0, skipped=0, finished_at=None)
+        async with client_factory() as client:
+            counts = await fix_categories(client)
+        _cat_state(running=False, stage="", finished_at=db.now())
+        return counts
+    except PromError as exc:
+        _cat_state(running=False, error=str(exc), finished_at=db.now())
         raise
     finally:
         _lock.release()

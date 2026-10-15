@@ -24,6 +24,7 @@ function render() {
   $("#no-send").classList.toggle("hidden", data.send);
   $("#mismatch-box").classList.toggle("hidden", !data.mismatch_total);
   $("#mismatch-n").textContent = data.mismatch_total;
+  renderFix(data.fix || {});
   $("#empty").classList.toggle("hidden", groups.length > 0);
   $("#groups").innerHTML = groups.map((g) => {
     const prom = g.prom.length
@@ -143,3 +144,23 @@ $("#refresh").onclick = () => busy($("#refresh"), async () => {
 
 loadMeta().catch(() => {});
 load();
+
+// «Исправить категории на Prom»: импорт идёт в фоне несколько минут — показываем ход и обновляем страницу в конце
+let fixTimer = null;
+function renderFix(st) {
+  $("#fix-btn").disabled = !!st.running;
+  $("#fix-state").innerHTML = st.running
+    ? `<span class="badge sending">${esc(I18N.tr("Исправляю категории на Prom"))}</span> ${esc(st.stage || "")} · ${esc(I18N.tr("готово"))} ${st.done || 0} / ${st.total || "…"}`
+    : st.error ? `<span class="err-text">${esc(`Категории исправлены не все: ${st.error}`)}</span>`
+    : st.finished_at ? `<span style="color:var(--ok)">${esc(`✓ Категории на Prom исправлены: ${st.done || 0}`)}</span>` : "";
+  clearTimeout(fixTimer);
+  if (st.running) fixTimer = setTimeout(load, 5000);
+}
+
+$("#fix-btn").onclick = () => busy($("#fix-btn"), async () => {
+  if (!confirm(`Исправить категорию на Prom у товаров: ${data.mismatch_total}? Prom обработает файл за несколько минут.`)) return;
+  try {
+    await api("/api/categories/fix", { method: "POST" });
+    await load();
+  } catch (err) { toast(err.message, "error"); }
+});
