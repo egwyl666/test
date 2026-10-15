@@ -28,6 +28,17 @@
       Prom пока не принимает категорию при импорте из программы — нужную категорию программа запоминает и показывает
       расхождения, а поменять её на Prom можно в кабинете («Товари» → товар → «Категорія»).
     </div>
+    <div class="panel hidden" id="mismatch-box">
+      <div class="toolbar" style="margin:0">
+        <b>Не та категория на Prom: <span id="mismatch-n"></span></b>
+        <a class="small" href="/?cat_mismatch=1">показать в списке</a>
+        <span class="spacer"></span>
+        <a class="btn" id="mismatch-xlsx" href="/api/categories/mismatch.xlsx">⬇ Excel для кабинета Prom (несовпадающие)</a>
+      </div>
+      <p class="small muted" style="margin:8px 0 0" id="mismatch-help">В файле — номер товара на Prom, нужная категория и ссылка
+        «Изменить в кабинете»: откройте её, выберите категорию и сохраните. Загружать этот файл импортом в кабинет не нужно —
+        Prom не меняет категорию импортом (проверено), а без лишних настроек импорт может стереть цены и наличие.</p>
+    </div>
     <div class="err-text" id="error"></div>
     <div id="groups"></div>
     <div id="empty" class="panel empty-state hidden">Товаров пока нет.</div>

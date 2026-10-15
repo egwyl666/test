@@ -168,3 +168,44 @@ def test_api_group_rule_and_page(client):
     assert client.get("/categories").status_code == 200
     assert client.get(f"/api/products/{pid}").json()["categories"]["target"]["id"] == INVERT
     assert any(c["id"] == INVERT for c in client.get("/api/meta").json()["prom_categories"])
+
+
+def test_mismatch_file_for_prom_cabinet(client):
+    def make(name, prom_id, prom_cat, target, status=None):
+        pid = products.create({"name": name, "price": 100, "external_id": f"EXT-{prom_id or name}"})
+        with db.tx() as c:
+            c.execute("UPDATE products SET prom_id = ?, prom_category_id = ?, target_category_id = ? WHERE id = ?",
+                      (prom_id, prom_cat, target, pid))
+            if status:
+                c.execute("UPDATE products SET status = ? WHERE id = ?", (status, pid))
+            categories.remember(c, INVERT, "Инверторы", url="https://prom.ua/ua/Invertory")
+            categories.remember(c, POWERBANK, "Повербанки")
+        return pid
+
+    make("Инвертор не там", 501, POWERBANK, INVERT)      # попадает
+    make("Повербанк не там", 502, INVERT, POWERBANK)     # попадает; ссылки на категорию не знаем — пусто
+    make("Инвертор на месте", 503, INVERT, INVERT)       # совпадает
+    make("Нет на Prom", None, POWERBANK, INVERT)         # без номера Prom
+    make("Удаляется", 505, POWERBANK, INVERT, status="deleting")
+    make("Prom ещё не сказал", 506, None, INVERT)
+
+    assert client.get("/api/categories").json()["mismatch_total"] == 2
+    r = client.get("/api/categories/mismatch.xlsx")
+    assert r.status_code == 200 and "kategorii-dlya-kabineta-" in r.headers["content-disposition"]
+    import io
+
+    import openpyxl
+    rows = list(openpyxl.load_workbook(io.BytesIO(r.content)).active.values)
+    assert list(rows[0]) == categories.MISMATCH_HEADERS
+    assert rows[1] == ("501", "EXT-501", "Инвертор не там", str(INVERT), "https://prom.ua/ua/Invertory",
+                       f"Инверторы [{INVERT}]", f"Повербанки [{POWERBANK}]", "https://my.prom.ua/cms/product/edit/501")
+    assert rows[2][0] == "502" and rows[2][4] is None
+    assert len(rows) == 3
+
+
+def test_mismatch_file_empty_has_headers():
+    import io
+
+    import openpyxl
+    rows = list(openpyxl.load_workbook(io.BytesIO(categories.mismatch_xlsx())).active.values)
+    assert rows == [tuple(categories.MISMATCH_HEADERS)]

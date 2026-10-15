@@ -1761,7 +1761,15 @@ def report(tab: str, period: str = "30d", date_from: str = "", date_to: str = ""
 
 @app.get("/api/categories")
 def categories_overview():
-    return {"groups": categories.overview(), "known": categories.listing(), "send": feed.CATEGORY_TAG is not None}
+    return {"groups": categories.overview(), "known": categories.listing(), "send": feed.CATEGORY_TAG is not None,
+            "mismatch_total": len(categories.mismatch_rows())}
+
+
+@app.get("/api/categories/mismatch.xlsx")
+def categories_mismatch_xlsx():
+    name = f"kategorii-dlya-kabineta-{datetime.now().strftime('%Y-%m-%d')}.xlsx"
+    return Response(categories.mismatch_xlsx(), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.post("/api/categories/group")

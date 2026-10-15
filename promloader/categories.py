@@ -122,6 +122,52 @@ def overview() -> list[dict]:
     return out
 
 
+# ---------- несовпадающие: файл для кабинета Prom ----------
+# Prom не принимает категорию ни из выгрузки, ни через API (проверено на живом магазине, 2026-10-15) — исправлять
+# приходится в кабинете. Файл — список таких товаров в колонках импорта Prom плюс справочные колонки.
+
+MISMATCH_SHEET = "Export Products Sheet"
+MISMATCH_HEADERS = ["Унікальний_ідентифікатор", "Ідентифікатор_товару", "Назва_позиції", "Ідентифікатор_підрозділу",
+                    "Посилання_підрозділу", "Нужная категория", "Сейчас на Prom", "Изменить в кабинете"]
+CABINET_EDIT = "https://my.prom.ua/cms/product/edit/{}"
+
+
+def mismatch_rows() -> list[dict]:
+    """Товары на Prom, у которых категория не та, что нужна. Одним запросом, вместе с названиями категорий."""
+    rows = db.query("""SELECT p.id, p.name, p.external_id, p.prom_id, p.group_name, p.prom_category_id,
+                              p.target_category_id, t.caption AS target_caption, t.url AS target_url,
+                              n.caption AS prom_caption
+                       FROM products p
+                       LEFT JOIN prom_categories t ON t.id = p.target_category_id
+                       LEFT JOIN prom_categories n ON n.id = p.prom_category_id
+                       WHERE p.prom_id IS NOT NULL AND p.status != 'deleting'
+                         AND p.target_category_id IS NOT NULL AND p.prom_category_id IS NOT NULL
+                         AND p.target_category_id != p.prom_category_id
+                       ORDER BY lower_u(p.group_name), lower_u(p.name), p.id""")
+    return [dict(r) for r in rows]
+
+
+def mismatch_xlsx() -> bytes:
+    import io
+
+    from openpyxl import Workbook
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(MISMATCH_SHEET)
+    ws.append(MISMATCH_HEADERS)
+    for r in mismatch_rows():
+        target = r["target_category_id"]
+        ws.append([str(r["prom_id"]), r["external_id"] or None, r["name"], str(target),
+                   # ссылку знаем, только если категорию брали со страницы prom.ua: адреса «по номеру» у Prom нет
+                   r["target_url"] or None,
+                   f"{r['target_caption'] or 'Категория'} [{target}]",
+                   f"{r['prom_caption'] or 'Категория'} [{r['prom_category_id']}]",
+                   CABINET_EDIT.format(r["prom_id"])])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
 def set_group(group: str, category_id: int | None) -> int:
     """Правило «группа → категория» и сразу его применение к товарам группы без своей (🔒) категории.
 

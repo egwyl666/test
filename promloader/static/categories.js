@@ -22,6 +22,8 @@ function listLink(group, params) {
 function render() {
   const groups = data.groups;
   $("#no-send").classList.toggle("hidden", data.send);
+  $("#mismatch-box").classList.toggle("hidden", !data.mismatch_total);
+  $("#mismatch-n").textContent = data.mismatch_total;
   $("#empty").classList.toggle("hidden", groups.length > 0);
   $("#groups").innerHTML = groups.map((g) => {
     const prom = g.prom.length
