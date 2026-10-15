@@ -238,7 +238,9 @@ def lan_addresses() -> list[str]:
             continue
         if addr.is_private and not addr.is_loopback and not addr.is_link_local and ip not in result:
             result.append(ip)
-    return result
+    # домашний роутер почти всегда 192.168.*; 172.16–31.* чаще у VPN, Hyper-V и WSL — их ниже
+    order = {"192": 0, "10.": 1}
+    return sorted(result, key=lambda ip: order.get(ip[:3], 2))
 
 
 def lan_urls() -> list[str]:

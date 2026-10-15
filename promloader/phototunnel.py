@@ -211,19 +211,26 @@ class Tunnel:
                 pass
             found = threading.Event()
 
+            registered = threading.Event()
+
             def read():
                 for line in self.proc.stdout:
                     m = URL_RE.search(line)
                     if m and not found.is_set():
                         self.url = m.group(0)
                         found.set()
+                    if "Registered tunnel connection" in line:
+                        registered.set()  # cloudflared сам сообщил: соединение с Cloudflare есть
 
             threading.Thread(target=read, daemon=True).start()
             if not found.wait(START_TIMEOUT):
                 self._stop_proc()
                 self.error = "Cloudflare не выдал адрес вовремя"
                 raise TunnelError(self.start_error)
-            self.reachable = self._wait_reachable(self.reach_timeout)
+            # Готовность — по сообщению cloudflared, а не запросом из этого компьютера: новый адрес появляется в DNS
+            # с задержкой, а Windows запоминает ответ «такого адреса нет» на минуты — проверка через интернет
+            # «не открывалась», и адрес пересоздавался по кругу
+            self.reachable = registered.wait(self.reach_timeout) or self._wait_reachable(5)
             self.error = ""
             log.info("%s по адресу %s", self.label, self.url)
             return self.url
@@ -233,8 +240,9 @@ class Tunnel:
         try:
             r = httpx.head(self.url + self.probe[0], timeout=15)
         except httpx.HTTPError:
-            return False
-        return r.status_code == self.probe[1]
+            return True  # нет связи или DNS этого компьютера — о туннеле это ничего не говорит, не пересоздаём
+        # ответил сам Cloudflare ошибкой туннеля (1033 и т. п. — коды 52x/530) — туннель потерял связь
+        return not (r.status_code in (502, 530) or 520 <= r.status_code <= 527)
 
     def _wait_reachable(self, seconds: int = 30) -> bool:
         """Новому адресу Cloudflare нужно несколько секунд, чтобы заработать."""
