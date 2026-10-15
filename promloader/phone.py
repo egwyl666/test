@@ -275,7 +275,9 @@ class PhoneTunnel(phototunnel.Tunnel):
 
 tunnel = PhoneTunnel()
 RETRY_SECONDS = 120
-_state = {"next_try": 0.0, "notified": ""}
+HEALTH_SECONDS = 180   # как часто проверять, что адрес Cloudflare действительно открывается
+HEALTH_FAILS = 2       # столько неудачных проверок подряд — и адрес пересоздаётся
+_state = {"next_try": 0.0, "notified": "", "checked": float("-inf"), "fails": 0}
 
 
 def remote_host() -> str:
@@ -295,7 +297,20 @@ def keep_tunnel() -> str:
             tunnel.close()
         return ""
     if tunnel.status()["active"]:
-        return tunnel.url
+        # cloudflared может жить, но потерять связь с Cloudflare (сон компьютера, смена сети) — тогда по адресу
+        # «Ошибка 1033». Процесс при этом не падает, и без проверки программа считала бы адрес рабочим вечно
+        if time.monotonic() - _state["checked"] < HEALTH_SECONDS:
+            return tunnel.url
+        _state["checked"] = time.monotonic()
+        if tunnel.check_reachable():
+            _state["fails"] = 0
+            return tunnel.url
+        _state["fails"] += 1
+        if _state["fails"] < HEALTH_FAILS:
+            return tunnel.url
+        log.warning("Адрес для телефона %s больше не открывается — создаю новый", tunnel.url)
+        _state["fails"] = 0
+        tunnel.close()
     if time.monotonic() < _state["next_try"]:
         return ""
     try:

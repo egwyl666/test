@@ -188,6 +188,14 @@ class Tunnel:
             log.info("%s по адресу %s", self.label, self.url)
             return self.url
 
+    def check_reachable(self) -> bool:
+        """Одна проверка: отвечает ли наш сервер по публичному адресу (а не страница ошибки Cloudflare)."""
+        try:
+            r = httpx.head(self.url + self.probe[0], timeout=15)
+        except httpx.HTTPError:
+            return False
+        return r.status_code == self.probe[1]
+
     def _wait_reachable(self, seconds: int = 30) -> bool:
         """Новому адресу Cloudflare нужно несколько секунд, чтобы заработать."""
         deadline = time.monotonic() + seconds

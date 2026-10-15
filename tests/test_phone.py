@@ -189,3 +189,32 @@ def test_unreachable_address_is_not_sent(monkeypatch):
     assert "не открывается" in phone.status()["remote_error"]
     assert phone.keep_tunnel() == "" and closed == [1]  # следующая попытка — через пару минут, не сразу
     phone.tunnel.error = ""
+
+
+def test_dead_tunnel_is_recreated_with_new_address(monkeypatch):
+    """Ошибка 1033: cloudflared жив, но адрес не открывается — после двух проверок адрес пересоздаётся,
+    новый уходит в Telegram."""
+    sent, closed = [], []
+    state = {"url": "https://old-one.trycloudflare.com", "active": True, "reachable": False}
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append(text))
+    monkeypatch.setattr(phone.tunnel, "status", lambda: {"active": state["active"], "url": state["url"], "error": ""})
+    monkeypatch.setattr(phone.tunnel, "check_reachable", lambda: state["reachable"])
+    monkeypatch.setattr(phone.tunnel, "close", lambda: (closed.append(1), state.update(active=False)))
+
+    def ensure():
+        state.update(url="https://new-one.trycloudflare.com", active=True)
+        phone.tunnel.url, phone.tunnel.reachable = state["url"], True
+        return state["url"]
+    monkeypatch.setattr(phone.tunnel, "ensure_url", ensure)
+    for k, v in {"checked": float("-inf"), "fails": 0, "notified": "https://old-one.trycloudflare.com", "next_try": 0.0}.items():
+        monkeypatch.setitem(phone._state, k, v)
+    phone.update({"password": PASSWORD, "remote": True})
+
+    phone.tunnel.url = state["url"]
+    assert phone.keep_tunnel() == "https://old-one.trycloudflare.com" and closed == []  # первая неудача — ждём
+    phone._state["checked"] = float("-inf")
+    assert phone.keep_tunnel() == "https://new-one.trycloudflare.com" and closed == [1]
+    assert len(sent) == 1 and "new-one" in sent[0]
+    # пока проверка не подошла по времени — адрес не трогаем
+    state["reachable"] = False
+    assert phone.keep_tunnel() == "https://new-one.trycloudflare.com" and closed == [1]
