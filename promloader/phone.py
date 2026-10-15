@@ -195,12 +195,11 @@ def client_kind(request, allowed_hosts: set[str]) -> str | None:
     loopback = ip in LOOPBACK or ip.startswith("127.")
     if loopback and "cf-connecting-ip" not in request.headers:
         return "local" if host in allowed_hosts else None
-    if loopback:  # пришло через cloudflared: только наш туннель для телефона и только когда он включён
-        tunnel_host = remote_host()
-        if not remote_enabled() or not tunnel_host:
-            return None
-        # cloudflared передаёт адрес, по которому открыли туннель; если он его заменит адресом программы — тоже наш
-        return "phone" if host in (tunnel_host, "localhost", "127.0.0.1") else None
+    if loopback:  # пришло через cloudflared: только когда доступ из интернета включён, и всегда — с паролем
+        # Адрес не сверяем с текущим: ссылка из Telegram могла остаться от прошлого запуска, а её cloudflared — ещё
+        # жить (Windows не закрывает его вместе с программой). Раньше такой запрос получал непонятный отказ;
+        # вход по паролю защищает одинаково при любом адресе
+        return "phone" if remote_enabled() else None
     if runtime.lan_bound:  # программа слушает домашнюю сеть: заголовку Host здесь верить нельзя
         return "phone" if lan_enabled() else None
     # программа запущена не через START.bat (Docker, свой uvicorn): как раньше, по адресу в Host
@@ -264,6 +263,7 @@ def qr_svg(text: str) -> str:
 class PhoneTunnel(phototunnel.Tunnel):
     """Тот же cloudflared, что и для фото, но к самой программе и без закрытия по простою."""
     label = "Программа доступна с телефона"
+    pid_name = "phone-tunnel"
     start_error = "Cloudflare не выдал адрес для телефона. Программа попробует ещё раз через пару минут"
     probe = ("/static/icon.png", 200)
 

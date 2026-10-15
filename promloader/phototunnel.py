@@ -99,9 +99,44 @@ class _PhotoHandler(BaseHTTPRequestHandler):
         pass
 
 
+def _pid_alive_cloudflared(pid: int) -> bool:
+    """Процесс с этим номером жив и это именно cloudflared (номер мог достаться другой программе)."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True,
+                                 text=True, timeout=10, creationflags=NO_WINDOW).stdout
+            return "cloudflared" in out.lower()
+        return "cloudflared" in Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def kill_stale(name: str) -> bool:
+    """cloudflared, оставшийся от прошлого запуска программы (окно закрыли — Windows не закрывает дочерние процессы):
+    он продолжал бы держать старый адрес. Номер процесса программа записывает в data/tools/<name>.pid."""
+    path = db.data_dir() / "tools" / f"{name}.pid"
+    try:
+        pid = int(path.read_text())
+    except (OSError, ValueError):
+        return False
+    path.unlink(missing_ok=True)
+    if pid == os.getpid() or not _pid_alive_cloudflared(pid):
+        return False
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=10, creationflags=NO_WINDOW)
+        else:
+            os.kill(pid, 15)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    log.info("Закрыт cloudflared от прошлого запуска (%s)", name)
+    return True
+
+
 class Tunnel:
     # подклассы (доступ с телефона, phone.py) пускают через тот же cloudflared другой локальный сервер
     label = "Фото доступны Prom"
+    pid_name = "photo-tunnel"
     start_error = "Не удалось открыть временный доступ к фото (Cloudflare не ответил). Повторим позже"
     probe = (f"/media/{'0' * 32}.jpg", 404)  # что отвечает наш сервер, когда туннель уже работает
 
@@ -159,6 +194,7 @@ class Tunnel:
             if self._alive():
                 return self.url
             self._stop_proc()
+            kill_stale(self.pid_name)
             port = self._ensure_server()
             binary = self._binary(transport)
             try:
@@ -169,6 +205,10 @@ class Tunnel:
                 )
             except OSError as exc:
                 raise TunnelError(f"Не удалось запустить cloudflared: {exc}")
+            try:
+                (db.data_dir() / "tools" / f"{self.pid_name}.pid").write_text(str(self.proc.pid))
+            except OSError:
+                pass
             found = threading.Event()
 
             def read():
@@ -219,6 +259,11 @@ class Tunnel:
                 self.proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        if self.proc is not None:
+            try:
+                (db.data_dir() / "tools" / f"{self.pid_name}.pid").unlink(missing_ok=True)
+            except (OSError, AssertionError):
+                pass
         self.proc = None
         self.url = ""
 
