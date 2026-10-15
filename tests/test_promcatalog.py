@@ -295,3 +295,16 @@ def test_write_endpoint_needs_token(client):
     db.set_setting("prom_token", "")
     r = client.post("/api/prom/external-ids/write")
     assert r.status_code == 400 and "токен" in r.json()["detail"]
+
+
+def test_missing_on_prom_is_counted_now_not_remembered(client):
+    """Число «нет на Prom» — по товарам, которые есть сейчас: после их удаления сообщение не висит вечно."""
+    from promloader import products, promcatalog
+    promcatalog._set_state(finished_at=db.now(), missing_on_prom=199, ext_error="Нет связи с Prom: All connection attempts failed")
+    assert client.get("/api/prom/catalog").json()["missing_on_prom"] == 0
+    pid = products.create({"name": "Пропал", "price": 1})
+    with db.tx() as c:
+        c.execute("UPDATE products SET status = 'error', last_error = ? WHERE id = ?", (promcatalog.MISSING, pid))
+    assert client.get("/api/prom/catalog").json()["missing_on_prom"] == 1
+    r = client.post("/api/prom/external-ids/dismiss").json()
+    assert r["ext_error"] == ""

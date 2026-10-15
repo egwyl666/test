@@ -511,7 +511,8 @@ async function showCatalogState(state) {
       ? `<div><span class="badge sending">Записываю ID на Prom</span> ${esc(state.ext_stage || "")} · готово ${state.ext_done || 0}
          из ${state.ext_total || "…"}</div>`
       : state.ext_error ? `<div class="err-text">ID на Prom записаны не все: ${esc(state.ext_error)}
-         <button class="btn small" id="ext-fix">Попробовать снова</button></div>`
+         <button class="btn small" id="ext-fix">Попробовать снова</button>
+         <button class="btn small" id="ext-dismiss">Скрыть</button></div>`
       : state.ext_finished_at && !state.no_external_id ? `<div class="small" style="color:var(--ok)">✓ ID записаны на Prom
          (${state.ext_done || 0})${state.ext_skipped ? ` · пропущено ${state.ext_skipped}: на Prom уже другой ID или товара нет` : ""}</div>` : "";
     const warn = state.no_external_id && !state.ext_running && !state.ext_error
@@ -521,7 +522,9 @@ async function showCatalogState(state) {
       новых ${state.created}, обновлено ${state.updated}${state.skipped ? `, пропущено (удалённые) ${state.skipped}` : ""}${
         state.kept_local ? `, оставлены ваши неотправленные правки: ${state.kept_local}` : ""}${ext}${warn}${
         state.missing_on_prom ? `<div class="err-text">${state.missing_on_prom} товаров считались выгруженными, но на Prom их нет —
-          они в фильтре «Ошибка»: отправьте заново или удалите из программы.</div>` : ""}`;
+          <a href="/?status=error">показать их</a>: отправьте заново или удалите из программы.</div>` : ""}`;
+    const dismiss = $("#ext-dismiss");
+    if (dismiss) dismiss.onclick = () => busy(dismiss, async () => showCatalogState(await api("/api/prom/external-ids/dismiss", { method: "POST" })));
     const fix = $("#ext-fix");
     if (fix) fix.onclick = () => busy(fix, openExtIds);
     if (state.ext_running) {

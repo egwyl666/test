@@ -27,6 +27,15 @@ def state() -> dict:
     return json.loads(raw) if raw else {"running": False}
 
 
+def live_state() -> dict:
+    """Состояние для страницы. «Нет на Prom» — сколько таких товаров в программе СЕЙЧАС, а не число из прошлой загрузки
+    каталога: иначе после удаления этих товаров сообщение про «199 товаров в фильтре «Ошибка»» висело бы вечно."""
+    st = state()
+    st["missing_on_prom"] = db.query_one("SELECT COUNT(*) AS n FROM products WHERE status = 'error' AND last_error = ?",
+                                         (MISSING,))["n"]
+    return st
+
+
 def _set_state(**fields) -> None:
     current = state()
     current.update(fields)
