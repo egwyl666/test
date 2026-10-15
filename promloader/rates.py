@@ -1,0 +1,259 @@
+"""Курсы валют: закупка в $/€ -> розничная цена в гривнах.
+
+Закупка хранится в своей валюте (2.50 $), розничная цена считается в гривнах по текущему курсу. Поэтому когда
+курс меняется, программа пересчитывает цены сама (см. main.rates_worker) и, если включено, отправляет новые
+цены на Prom быстрым обновлением.
+
+Курс — один на всю программу («Наценка» → «Курс валют»): по НБУ (раз в день, плюс надбавка в %) или свой.
+У поставщика можно задать его собственный курс («по курсу 41.8»). Если НБУ недоступен — берётся последний
+известный курс, чтобы цены не останавливались из-за сайта банка.
+"""
+
+import json
+import logging
+import math
+import time
+from datetime import date
+
+import httpx
+
+from . import db
+
+log = logging.getLogger("promloader.rates")
+
+NBU_URL = "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange"
+CURRENCIES = ("USD", "EUR", "PLN", "GBP")
+SIGN = {"USD": "$", "EUR": "€", "PLN": "zł", "GBP": "£", "UAH": "грн"}
+LOCAL = ("UAH", "ГРН", "")
+
+
+FAIL_PAUSE = 600  # НБУ не ответил — не спрашиваем снова 10 минут (иначе каждый товар в валюте ждал бы до 20 с)
+_failed: dict[str, tuple[float, str]] = {}
+
+
+class RateError(Exception):
+    pass
+
+
+# ---------- курс НБУ ----------
+
+def _cached(code: str) -> dict | None:
+    raw = db.get_setting(f"nbu_rate_{code}")
+    return json.loads(raw) if raw else None
+
+
+def nbu(code: str, transport=None) -> dict:
+    """{"rate": 41.23, "date": "2026-10-04", "stale": False} — курс НБУ гривны за 1 единицу валюты."""
+    code = code.upper()
+    cached = _cached(code)
+    today = date.today().isoformat()
+    if cached and cached["date"] == today:
+        return {**cached, "stale": False}
+    failed = _failed.get(code)
+    if failed and time.monotonic() - failed[0] < FAIL_PAUSE and transport is None:
+        if cached:
+            return {**cached, "stale": True}
+        raise RateError(failed[1])
+    try:
+        with httpx.Client(timeout=20, transport=transport) as client:
+            r = client.get(NBU_URL, params={"valcode": code, "json": ""})
+            r.raise_for_status()
+            rate = float(r.json()[0]["rate"])
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
+        message = f"Не удалось получить курс {code} НБУ ({exc}). Укажите свой курс на странице «Наценка»"
+        _failed[code] = (time.monotonic(), message)
+        if cached:
+            log.warning("НБУ недоступен (%s) — беру курс %s за %s", exc, code, cached["date"])
+            return {**cached, "stale": True}
+        raise RateError(message)
+    _failed.pop(code, None)
+    value = {"rate": rate, "date": today}
+    db.set_setting(f"nbu_rate_{code}", json.dumps(value))
+    return {**value, "stale": False}
+
+
+# ---------- настройки ----------
+
+def settings() -> dict:
+    manual = json.loads(db.get_setting("rate_manual") or "{}")
+    return {
+        "mode": db.get_setting("rate_mode") or "nbu",                     # nbu | manual
+        "add": float(db.get_setting("rate_add") or 0),                    # надбавка к курсу НБУ, %
+        "manual": {k: float(v) for k, v in manual.items() if v},          # свой курс по валютам
+        "auto_send": db.get_setting("rate_auto_send") != "0",             # новые цены сразу на Prom
+    }
+
+
+def _number(value, what: str) -> float:
+    try:
+        number = float(str(value if value is not None else 0).replace(",", ".").strip() or 0)
+    except ValueError:
+        raise RateError(f"{what}: нужно число, например 41.5")
+    if not math.isfinite(number) or abs(number) > 1e6:
+        raise RateError(f"{what}: нужно обычное число, например 41.5")
+    return number
+
+
+def save_settings(data: dict) -> dict:
+    """Всё или ничего: неверная надбавка не оставляет сохранённым уже записанный режим."""
+    with db.tx():
+        if "mode" in data:
+            if data["mode"] not in ("nbu", "manual"):
+                raise RateError("Курс: по НБУ или свой")
+            db.set_setting("rate_mode", data["mode"])
+        if "add" in data:
+            add = _number(data["add"], "Надбавка к курсу")
+            if not -50 <= add <= 100:
+                raise RateError("Надбавка к курсу — от -50 до 100%")
+            db.set_setting("rate_add", str(add))
+        if "manual" in data:
+            manual = {}
+            for code, value in (data["manual"] or {}).items():
+                if code.upper() not in CURRENCIES:
+                    raise RateError(f"Неизвестная валюта {code}")
+                value = _number(value, f"Курс {code}")
+                if value < 0:
+                    raise RateError("Курс не может быть отрицательным")
+                if value:
+                    manual[code.upper()] = value
+            db.set_setting("rate_manual", json.dumps(manual))
+        if "auto_send" in data:
+            db.set_setting("rate_auto_send", "1" if data["auto_send"] else "0")
+    return settings()
+
+
+# ---------- курс для расчёта цен ----------
+
+class Table:
+    """Курсы на один пересчёт: НБУ спрашиваем не чаще раза на валюту, свой курс поставщика — из его настроек."""
+
+    def __init__(self, transport=None):
+        self.cfg = settings()
+        self.transport = transport
+        self.cache: dict[str, float] = {}
+        self.errors: dict[str, str] = {}
+        self.suppliers = {r["id"]: dict(r) for r in db.query(
+            "SELECT id, rate_currency, rate_value, rate_add FROM suppliers WHERE rate_mode = 'manual' AND rate_value > 0")}
+
+    def general(self, code: str) -> float:
+        """Общий курс программы (с надбавкой). RateError — курса нет."""
+        code = code.upper()
+        if code in self.errors:
+            raise RateError(self.errors[code])
+        if code not in self.cache:
+            try:
+                if self.cfg["mode"] == "manual":
+                    base = self.cfg["manual"].get(code)
+                    if not base:
+                        raise RateError(f"Не задан свой курс {code} — укажите его на странице «Наценка»")
+                    self.cache[code] = base
+                else:
+                    self.cache[code] = nbu(code, self.transport)["rate"] * (1 + self.cfg["add"] / 100)
+            except RateError as exc:
+                self.errors[code] = str(exc)
+                raise
+        return self.cache[code]
+
+    def rate(self, code: str | None, supplier_id: int | None = None) -> float | None:
+        """Гривен за 1 единицу валюты. None — валюта уже гривна."""
+        code = (code or "UAH").upper()
+        if code in LOCAL:
+            return None
+        own = self.suppliers.get(supplier_id)
+        # свой курс поставщика — только для его валюты; евро в долларовом прайсе считаем по общему курсу
+        if own and (own["rate_currency"] or "USD").upper() == code:
+            return own["rate_value"] * (1 + (own["rate_add"] or 0) / 100)
+        return self.general(code)
+
+
+def prefetch(force: bool = False) -> None:
+    """Запросить курсы НБУ заранее — до записи в базу. Иначе запрос в интернет (до 20 с) шёл бы внутри записи,
+    и всё остальное в программе ждало бы его. Ошибки не страшны: пересчёт потом сообщит о них сам."""
+    if settings()["mode"] != "nbu" and not force:  # force — для предпросмотра, где режим ещё не сохранён
+        return
+    codes = {r["c"].upper() for r in db.query("SELECT DISTINCT cost_currency AS c FROM products WHERE cost_currency != ''")}
+    codes |= {r["c"].upper() for r in db.query("SELECT DISTINCT rate_currency AS c FROM suppliers")}
+    for code in sorted(codes - set(LOCAL)):
+        if code in CURRENCIES:
+            try:
+                nbu(code)
+            except RateError:
+                pass
+
+
+def current(transport=None) -> dict:
+    """Для страницы «Наценка»: действующий курс по валютам, которые есть у товаров (и всегда USD)."""
+    used = {r["c"] for r in db.query("SELECT DISTINCT cost_currency AS c FROM products WHERE cost_currency != ''")}
+    table, out = Table(transport), {}
+    for code in sorted((used | {"USD"}) - set(LOCAL)):
+        info = {"code": code, "sign": SIGN.get(code, code)}
+        try:
+            info["rate"] = round(table.general(code), 4)
+            if table.cfg["mode"] == "nbu":
+                n = nbu(code, transport)
+                info.update(nbu=n["rate"], date=n["date"], stale=n["stale"])
+        except RateError as exc:
+            info["error"] = str(exc)
+        out[code] = info
+    return out
+
+
+def coverage() -> dict:
+    """На какие товары курс действует, а на какие нет — чтобы «Цен изменено: 0» было понятно почему."""
+    local = ",".join(f"'{c}'" for c in LOCAL)
+    has_cost = "(cost_price IS NOT NULL OR rrp IS NOT NULL)"
+    locked = "locked_fields LIKE '%\"price\"%'"
+    row = db.query_one(f"""
+        SELECT COUNT(*) AS total,
+          SUM({has_cost} AND UPPER(cost_currency) NOT IN ({local})) AS foreign_cost,
+          SUM({has_cost} AND UPPER(cost_currency) NOT IN ({local}) AND {locked}) AS foreign_locked,
+          SUM({has_cost} AND UPPER(cost_currency) IN ({local})) AS uah_cost,
+          SUM(NOT {has_cost}) AS no_cost,
+          SUM(NOT {has_cost} AND UPPER(currency) NOT IN ({local})) AS no_cost_foreign
+        FROM products""")
+    return {k: int(row[k] or 0) for k in row.keys()}
+
+
+def check_changed(transport=None) -> dict | None:
+    """Курс изменился с прошлого пересчёта? Тогда пересчитать цены. Вызывается фоновой задачей раз в час."""
+    from . import suppliers
+
+    used = {r["c"] for r in db.query("SELECT DISTINCT cost_currency AS c FROM products WHERE cost_currency != ''")}
+    used -= set(LOCAL)
+    if not used:
+        return None
+    table = Table(transport)
+    now = {}
+    for code in used:
+        try:
+            now[code] = round(table.general(code), 4)
+        except RateError as exc:
+            log.warning("Курс %s недоступен: %s", code, exc)
+    raw = db.get_setting("rate_applied")
+    if not raw:
+        # первый запуск после обновления: запоминаем курс как исходный, цены сами не трогаем
+        db.set_setting("rate_applied", json.dumps(now))
+        return None
+    applied = json.loads(raw)
+    if not now or all(applied.get(k) == v for k, v in now.items()):
+        return None
+    from . import changes
+
+    label = ", ".join(f"1 {SIGN.get(k, k)} = {v:.2f} грн" for k, v in sorted(now.items()))
+    with changes.source(f"Курс валют ({label})"):
+        result = suppliers.recalc_prices()
+    db.set_setting("rate_applied", json.dumps({**applied, **now}))
+    log.info("Курс изменился (%s) — пересчитано цен: %s, отправлено на Prom: %s", now, result["changed"], result["queued"])
+    return {"rates": now, **result}
+
+
+def mark_applied(transport=None) -> None:
+    """После ручного пересчёта: запомнить курс, по которому посчитаны цены."""
+    table, now = Table(transport), {}
+    for r in db.query("SELECT DISTINCT cost_currency AS c FROM products WHERE cost_currency != ''"):
+        if r["c"].upper() not in LOCAL:
+            try:
+                now[r["c"].upper()] = round(table.general(r["c"]), 4)
+            except RateError:
+                pass
+    db.set_setting("rate_applied", json.dumps(now))

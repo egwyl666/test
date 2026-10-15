@@ -77,11 +77,14 @@ def diagnostics(client: dict | None = None) -> dict:
     def count(sql):
         return db.query_one(sql)["n"]
 
-    log_file = db.data_dir() / "logs" / "promloader.log"
-    try:
-        lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_TAIL:]
-    except OSError:
-        lines = []
+    lines = []
+    # журнал программы и вывод при запуске (там — ошибки, из-за которых программа не стартовала)
+    for name in ("console.log", "promloader.log"):
+        try:
+            tail = (db.data_dir() / "logs" / name).read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_TAIL:]
+        except OSError:
+            continue
+        lines += [f"--- {name} ---"] + tail
     return {
         "version": updater.current_version(),
         "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
@@ -98,6 +101,8 @@ def diagnostics(client: dict | None = None) -> dict:
             "auto_update": config.get("auto_update") != "0",
             "quick_updates": db.get_setting("quick_updates") != "0",
             "telegram_recipients": len(notify.recipients()),
+            "phone_lan": db.get_setting("phone_lan") == "1",
+            "phone_remote": db.get_setting("phone_remote") == "1",
         },
         "recent_sync_errors": [r["last_error"] for r in db.query(
             "SELECT last_error FROM sync_jobs WHERE last_error != '' ORDER BY id DESC LIMIT 5")],

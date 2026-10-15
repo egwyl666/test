@@ -28,6 +28,7 @@ log = logging.getLogger("promloader.phototunnel")
 IDLE_MINUTES = 30
 START_TIMEOUT = 60
 FILE_RE = re.compile(r"^/media/([0-9a-f]{32}\.(?:jpg|png|gif))$")
+FEED_RE = re.compile(r"^/feed/([0-9a-f]{32}\.xml)$")  # файл выгрузки для импорта Prom по ссылке
 URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 DOWNLOADS = {
@@ -38,7 +39,7 @@ DOWNLOADS = {
     ("Linux", "aarch64"): "cloudflared-linux-arm64",
 }
 RELEASE = "https://github.com/cloudflare/cloudflared/releases/latest/download/"
-CONTENT_TYPES = {"jpg": "image/jpeg", "png": "image/png", "gif": "image/gif"}
+CONTENT_TYPES = {"jpg": "image/jpeg", "png": "image/png", "gif": "image/gif", "xml": "text/xml; charset=utf-8"}
 
 
 class TunnelError(Exception):
@@ -52,16 +53,26 @@ def enabled() -> bool:
     return not r2.active() and not config.public_base_url() and config.get("photo_tunnel") != "0"
 
 
-# ---------- сервер только для фото ----------
+def feeds_dir() -> Path:
+    path = db.data_dir() / "feeds"
+    path.mkdir(exist_ok=True)
+    return path
+
+
+# ---------- сервер только для фото (и файлов выгрузки) ----------
 
 class _PhotoHandler(BaseHTTPRequestHandler):
     uploads: Path = Path(".")
+    feeds: Path = Path(".")
 
     def _file(self) -> Path | None:
-        m = FILE_RE.match(self.path.split("?")[0])
+        url = self.path.split("?")[0]
+        m, folder = FILE_RE.match(url), self.uploads
+        if not m:
+            m, folder = FEED_RE.match(url), self.feeds
         if not m:
             return None
-        path = self.uploads / m.group(1)
+        path = folder / m.group(1)
         return path if path.is_file() else None
 
     def _send(self, body: bool) -> None:
@@ -89,6 +100,11 @@ class _PhotoHandler(BaseHTTPRequestHandler):
 
 
 class Tunnel:
+    # подклассы (доступ с телефона, phone.py) пускают через тот же cloudflared другой локальный сервер
+    label = "Фото доступны Prom"
+    start_error = "Не удалось открыть временный доступ к фото (Cloudflare не ответил). Повторим позже"
+    probe = (f"/media/{'0' * 32}.jpg", 404)  # что отвечает наш сервер, когда туннель уже работает
+
     def __init__(self):
         self.lock = threading.Lock()
         self.server: ThreadingHTTPServer | None = None
@@ -97,11 +113,12 @@ class Tunnel:
         self.last_used = 0.0
         self.error = ""
         self.reach_timeout = 30
+        self.reachable = False
 
     # --- сервер фото ---
     def _ensure_server(self) -> int:
         if self.server is None:
-            handler = type("Handler", (_PhotoHandler,), {"uploads": db.uploads_dir()})
+            handler = type("Handler", (_PhotoHandler,), {"uploads": db.uploads_dir(), "feeds": feeds_dir()})
             self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
             threading.Thread(target=self.server.serve_forever, daemon=True).start()
         return self.server.server_address[1]
@@ -165,23 +182,24 @@ class Tunnel:
             if not found.wait(START_TIMEOUT):
                 self._stop_proc()
                 self.error = "Cloudflare не выдал адрес вовремя"
-                raise TunnelError("Не удалось открыть временный доступ к фото (Cloudflare не ответил). Повторим позже")
-            self._wait_reachable(self.reach_timeout)
+                raise TunnelError(self.start_error)
+            self.reachable = self._wait_reachable(self.reach_timeout)
             self.error = ""
-            log.info("Фото доступны Prom по адресу %s", self.url)
+            log.info("%s по адресу %s", self.label, self.url)
             return self.url
 
-    def _wait_reachable(self, seconds: int = 30) -> None:
+    def _wait_reachable(self, seconds: int = 30) -> bool:
         """Новому адресу Cloudflare нужно несколько секунд, чтобы заработать."""
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             try:
-                r = httpx.head(f"{self.url}/media/{'0' * 32}.jpg", timeout=5)
-                if r.status_code == 404:  # ответил наш сервер фото — туннель работает
-                    return
+                r = httpx.head(self.url + self.probe[0], timeout=5)
+                if r.status_code == self.probe[1]:  # ответил наш сервер — туннель работает
+                    return True
             except httpx.HTTPError:
                 pass
             time.sleep(2)
+        return False
 
     def touch(self) -> None:
         self.last_used = time.monotonic()

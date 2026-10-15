@@ -154,13 +154,18 @@ def test_claude_refusal():
 
 
 def test_api_endpoint(client, monkeypatch):
+    db.set_setting("nbu_rate_USD", json.dumps({"rate": 40.0, "date": __import__("datetime").date.today().isoformat()}))
     pid = products.create({"name": "Кружка", "price": 10})
     r = client.post(f"/api/products/{pid}/ai", json={"action": "improve"})
     assert r.status_code == 400 and "Настройках" in r.json()["detail"]
 
-    monkeypatch.setattr(ai, "run", lambda p, action, instruction="": {"description": f"<p>{p['name']} {action} {instruction}</p>"})
+    used = {"provider": "gemini", "model": "gemini-3.8-flash", "tokens_in": 1000, "tokens_out": 500,
+            "cost_usd": 0.002625, "free": False}
+    monkeypatch.setattr(ai, "run_detailed", lambda p, action, instruction="": (
+        {"description": f"<p>{p['name']} {action} {instruction}</p>"}, used))
     r = client.post(f"/api/products/{pid}/ai", json={"action": "custom", "instruction": "короче"})
-    assert r.json() == {"changes": {"description": "<p>Кружка custom короче</p>"}}
+    assert r.json()["changes"] == {"description": "<p>Кружка custom короче</p>"}
+    assert r.json()["usage"]["cost_usd"] == 0.002625 and r.json()["usage"]["cost_uah"] == round(0.002625 * 40, 4)
     assert products.get(pid)["description"] == ""  # ничего не сохраняется само
 
     s = client.post("/api/settings", json={"ai_provider": "gemini", "gemini_key": "AIzaSy-very-secret-key",
@@ -219,3 +224,45 @@ def test_overload_everywhere_is_temporary_error():
     with pytest.raises(ai.AIError, match="перегружен") as err:
         ai.run(PRODUCT, "improve", transport=transport)
     assert err.value.temporary
+
+
+def test_translate_ru_prompt_and_result():
+    use("gemini", model="gemini-test")
+    p = {**PRODUCT, "name": "Кухоль білий", "description": "<p>Кухоль для чаю.</p>", "name_ua": "", "description_ua": ""}
+    transport, seen = gemini_reply({"name": "Кружка белая", "description": "<p>Кружка для чая.</p>",
+                                    "name_ua": "Кухоль білий", "description_ua": "<p>Кухоль для чаю.</p>", "keywords": ""})
+    changes = ai.run(p, "translate_ru", transport=transport)
+    # перевод — в русские поля, исходный украинский текст сохранён в украинских
+    assert changes == {"name": "Кружка белая", "description": "<p>Кружка для чая.</p>",
+                       "name_ua": "Кухоль білий", "description_ua": "<p>Кухоль для чаю.</p>"}
+    prompt = json.loads(seen[0].content)["contents"][0]["parts"][0]["text"]
+    assert "на русский язык" in prompt and "name_ua" in prompt
+
+
+def test_translate_ru_without_ukrainian_text_is_not_sent():
+    use("gemini", model="gemini-test")
+    transport, seen = gemini_reply({})
+    with pytest.raises(ai.AIError, match="переводить на русский нечего"):
+        ai.run({**PRODUCT, "name": "Кружка белая", "description": "Обычная кружка."}, "translate_ru", transport=transport)
+    assert seen == []  # запроса к ИИ не было — он бы стоил денег
+    assert not ai.nothing_to_translate({**PRODUCT, "name_ua": "Кухоль"}, "translate_ru")
+    assert not ai.nothing_to_translate({**PRODUCT, "description": "Чудовий кухоль, об'єм 350 мл"}, "translate_ru")
+    assert not ai.nothing_to_translate(PRODUCT, "improve")
+
+
+def test_translate_ru_in_bulk_skips_russian_only():
+    from promloader import aibulk
+    use("gemini")
+    ru = products.create({"name": "Кружка белая", "price": 1})
+    ua = products.create({"name": "Кухоль білий", "price": 1})
+    job = aibulk.create([ru, ua], "translate_ru", only_empty=False)
+    calls = []
+
+    def runner(p, action, instruction=""):
+        calls.append(p["id"])
+        return {"name": "Кружка белая", "name_ua": "Кухоль білий"}
+    while aibulk.process_one(runner) != "idle":
+        pass
+    assert calls == [ua]
+    assert products.get(ua)["name_ua"] == "Кухоль білий"
+    assert aibulk.get(job["id"])["counts"] == {"done": 1, "skipped": 1}

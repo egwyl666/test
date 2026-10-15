@@ -77,3 +77,26 @@ def test_csv_cp1251(tmp_path):
     path.write_bytes("Название;Цена\nКружка;150\n".encode("cp1251"))
     rows, _ = excel.read_sheet(path, "CSV")
     assert rows == [["Название", "Цена"], ["Кружка", "150"]]
+
+
+def test_photo_urls_with_spaces_are_not_cut():
+    """Имя файла поставщика с пробелом: «LU991black_warm_white (2)500x500.jpg» — ссылка целиком, пробел → %20."""
+    from promloader import excel
+    cell = ("https://karaman.com.ua/image/catalog/cont168/LU991black_warm_white/LU991black_warm_white (2)500x500.jpg\n"
+            "https://karaman.com.ua/image/catalog/cont168/LU991black_warm_white/LU991black_warm_white (5)500x500.jpg")
+    assert excel._split_urls(cell) == [
+        "https://karaman.com.ua/image/catalog/cont168/LU991black_warm_white/LU991black_warm_white%20(2)500x500.jpg",
+        "https://karaman.com.ua/image/catalog/cont168/LU991black_warm_white/LU991black_warm_white%20(5)500x500.jpg",
+    ]
+    assert excel._split_urls("https://a.ua/1.jpg, https://a.ua/2.jpg;https://a.ua/3.jpg | https://a.ua/4%20x.jpg") == [
+        "https://a.ua/1.jpg", "https://a.ua/2.jpg", "https://a.ua/3.jpg", "https://a.ua/4%20x.jpg"]
+    assert excel._split_urls("https://a.ua/фото 1.jpg") == ["https://a.ua/%D1%84%D0%BE%D1%82%D0%BE%201.jpg"]
+    assert excel._split_urls("нет фото") == []
+
+
+def test_supplier_photo_with_cyrillic_x_and_space():
+    """Реальный адрес поставщика: пробел и кириллическая «х» в «500х500» — ссылка должна совпасть с рабочей."""
+    from promloader import excel
+    raw = "https://karaman.com.ua/image/catalog/cont168/LU991black_warm_white/LU991black_warm_white (2)500х500.jpg"
+    assert excel._split_urls(raw) == [
+        "https://karaman.com.ua/image/catalog/cont168/LU991black_warm_white/LU991black_warm_white%20(2)500%D1%85500.jpg"]

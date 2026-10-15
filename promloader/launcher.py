@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 
 HOST = "127.0.0.1"
+LAN_HOST = "0.0.0.0"  # доступ с телефона по Wi‑Fi: слушать и домашнюю сеть
 PORTS = range(8000, 8011)
 log = logging.getLogger("promloader.launcher")
 
@@ -33,10 +34,10 @@ def running_at(port: int) -> bool:
     return r.status_code == 200 and '"presence"' in r.text
 
 
-def port_free(port: int) -> bool:
+def port_free(port: int, host: str = HOST) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            s.bind((HOST, port))
+            s.bind((host, port))
             return True
         except OSError:
             return False
@@ -95,22 +96,29 @@ def main() -> None:
             webbrowser.open(url)
             return
 
-    port = next((p for p in PORTS if port_free(p)), None)
-    if port is None:
-        print("Не нашёл свободный порт (8000–8010). Закройте лишние программы и попробуйте ещё раз.")
-        sys.exit(1)
-
     data_dir = Path(os.environ.get("PROMLOADER_DATA", "data")).resolve()
     is_first = first_run(str(data_dir))
     before_start(data_dir)
 
-    from . import runtime, updater
+    from . import phone, runtime, updater
+
+    # база уже открыта (before_start): по настройке «Доступ с телефона по Wi‑Fi» слушаем и домашнюю сеть
+    bind = LAN_HOST if phone.lan_enabled() else HOST
+    port = next((p for p in PORTS if port_free(p, bind)), None)
+    if port is None:
+        print("Не нашёл свободный порт (8000–8010). Закройте лишние программы и попробуйте ещё раз.")
+        sys.exit(1)
+    runtime.port = port
+    runtime.lan_bound = bind == LAN_HOST
 
     url = f"http://localhost:{port}/" + ("settings?welcome=1" if is_first else "")
     line = "=" * 60
     print(line)
     print(f" Prom Loader {updater.current_version()} запущен")
     print(f" Адрес в браузере: http://localhost:{port}/")
+    if runtime.lan_bound:
+        for lan_url in phone.lan_urls():
+            print(f" С телефона по Wi‑Fi: {lan_url}")
     if not os.environ.get("PROMLOADER_TRAY"):
         print()
         print(" НЕ ЗАКРЫВАЙТЕ это окно, пока работаете с программой.")
@@ -123,7 +131,7 @@ def main() -> None:
 
     import uvicorn
 
-    config = uvicorn.Config("promloader.main:app", host=HOST, port=port, log_level="warning")
+    config = uvicorn.Config("promloader.main:app", host=bind, port=port, log_level="warning")
     server = uvicorn.Server(config)
     runtime.server = server
     port_file = data_dir / "port"  # по нему значок у часов открывает программу

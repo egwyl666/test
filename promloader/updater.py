@@ -201,22 +201,49 @@ def install(content: bytes, app_dir: Path = APP_DIR) -> str:
     old_files, new_files = _code_files(app_dir), _code_files(root)
     shipped = _previous_manifest(updates)
     shutil.rmtree(previous, ignore_errors=True)
-    for rel in old_files:
-        (previous / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(app_dir / rel, previous / rel)
-    for rel in new_files:
-        (app_dir / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(root / rel, app_dir / rel)
-    # удаляем только то, что было частью прошлой версии программы, — свои файлы пользователя не трогаем
-    for rel in old_files - new_files:
-        if (shipped is not None and rel.as_posix() in shipped) or (shipped is None and rel.parts[0] in OWNED_DIRS):
-            (app_dir / rel).unlink(missing_ok=True)
+    try:
+        for rel in old_files:
+            (previous / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(app_dir / rel, previous / rel)
+    except OSError as exc:
+        raise UpdateError(f"Не удалось сохранить текущую версию для отката ({exc}) — обновление отменено")
+    # Отметка «новая версия ещё не проверена» — ДО копирования: если копирование оборвётся (диск, антивирус,
+    # выключили свет), в папке программы останется смесь версий, и START.bat по этой отметке вернёт прежнюю
+    (updates / "pending-check").write_text(version, encoding="utf-8")
+    try:
+        for rel in new_files:
+            (app_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / rel, app_dir / rel)
+        # удаляем только то, что было частью прошлой версии программы, — свои файлы пользователя не трогаем
+        for rel in old_files - new_files:
+            if (shipped is not None and rel.as_posix() in shipped) or (shipped is None and rel.parts[0] in OWNED_DIRS):
+                (app_dir / rel).unlink(missing_ok=True)
+    except OSError as exc:
+        if _put_back(app_dir, previous, old_files, new_files):
+            (updates / "pending-check").unlink(missing_ok=True)
+        raise UpdateError(f"Не удалось записать файлы новой версии ({exc}) — возвращена прежняя версия")
     (updates / "manifest.json").write_text(json.dumps(sorted(r.as_posix() for r in new_files)), encoding="utf-8")
     shutil.rmtree(work, ignore_errors=True)
-    (updates / "pending-check").write_text(version, encoding="utf-8")
     db.set_setting("update_latest", "")
     log.info("Установлена версия %s", version)
     return version
+
+
+def _put_back(app_dir: Path, previous: Path, old_files: set[Path], new_files: set[Path]) -> bool:
+    """Вернуть прежнюю версию после неудачного копирования. False — не всё удалось (откатит START.bat)."""
+    ok = True
+    for rel in old_files:
+        try:
+            (app_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(previous / rel, app_dir / rel)
+        except OSError:
+            ok = False
+    for rel in new_files - old_files:
+        try:
+            (app_dir / rel).unlink(missing_ok=True)
+        except OSError:
+            ok = False
+    return ok
 
 
 def update(transport=None, app_dir: Path = APP_DIR) -> str:

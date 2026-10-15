@@ -54,6 +54,7 @@ function formValues() {
     if (el.name) values[el.name] = el.value;
   }
   values.params = readParams();
+  values.videos = [...videoList];
   return values;
 }
 
@@ -64,7 +65,62 @@ function fillForm(p) {
     el.value = v === null || v === undefined ? "" : v;
   }
   renderParams(p.params || []);
+  renderVideos(p.videos || []);
 }
+
+// Обновить поля из ответа сервера («↩ Вернуть», «🔒 своё»), не трогая то, что пользователь сейчас набирает
+// или ещё не сохранил, и поле с ошибкой: раньше форма заполнялась целиком и затирала набранное
+function fillUntouched(p) {
+  const active = document.activeElement;
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in p) || el === active || el.name in state.pending || el.classList.contains("invalid")) continue;
+    const v = p[el.name];
+    el.value = v === null || v === undefined ? "" : v;
+  }
+  if (!("params" in state.pending) && !$("#params").contains(active)) renderParams(p.params || []);
+  if (!("videos" in state.pending)) renderVideos(p.videos || []);
+}
+
+// ---------- видео (ссылки YouTube) ----------
+const MAX_VIDEOS = 5;
+let videoList = [];
+
+function youtubeId(url) {
+  const m = String(url || "").match(/(?:[?&]v=|youtu\.be\/|shorts\/|embed\/|live\/)([A-Za-z0-9_-]{11})(?![A-Za-z0-9_-])/);
+  return m ? m[1] : "";
+}
+
+function renderVideos(list) {
+  videoList = [...list];
+  const box = $("#videos");
+  box.innerHTML = videoList.length ? videoList.map((url, i) => `<div class="video-item">
+      <a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">
+        <img src="https://img.youtube.com/vi/${esc(youtubeId(url))}/mqdefault.jpg" alt="" loading="lazy"
+          onerror="this.style.visibility='hidden'"><span>▶</span></a>
+      <button type="button" class="btn small" data-i="${i}" title="Удалить видео">✕</button></div>`).join("")
+    : `<p class="small muted" style="margin:0">Видео нет. Из прайса поставщика оно добавляется само, если там есть колонка или тег со ссылкой YouTube.</p>`;
+  $$("[data-i]", box).forEach((b) => (b.onclick = () => {
+    videoList.splice(Number(b.dataset.i), 1);
+    renderVideos(videoList);
+    changed("videos");
+  }));
+}
+
+function addVideo() {
+  const input = $("#video-url");
+  const url = input.value.trim();
+  if (!url) return;
+  const id = youtubeId(url);
+  if (!id) { toast("Это не ссылка на видео YouTube — Prom принимает только YouTube", "error"); return; }
+  if (videoList.some((v) => youtubeId(v) === id)) { toast("Это видео уже добавлено", "error"); return; }
+  if (videoList.length >= MAX_VIDEOS) { toast(`Не больше ${MAX_VIDEOS} видео у товара`, "error"); return; }
+  videoList.push(`https://www.youtube.com/watch?v=${id}`);
+  input.value = "";
+  renderVideos(videoList);
+  changed("videos");
+}
+$("#btn-video-add").addEventListener("click", addVideo);
+$("#video-url").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addVideo(); } });
 
 function readParams() {
   return $$(".param-row", $("#params")).map((row) => ({
@@ -154,7 +210,10 @@ async function save() {
       }
       applyServer(product);
       writeBackup();
-      setSaveState("saved", "Сохранено ✓");
+      // поле с ошибкой не сохранено — «Сохранено ✓» вводило бы в заблуждение
+      const bad = form.querySelector(".invalid");
+      if (bad) setSaveState("failed", `${bad.title || "Ошибка в поле"} — исправьте поле, остальное сохранено`);
+      else setSaveState("saved", "Сохранено ✓");
     } catch (err) {
       // вернуть неотправленное, не затирая то, что ввели за время запроса
       state.pending = { ...payload, ...state.pending };
@@ -208,25 +267,133 @@ function applyServer(product) {
   state.product = product;
   const active = document.activeElement;
   for (const el of form.elements) {
-    if (!el.name || el === active || el.name in state.pending) continue;
+    // поле с ошибкой не заменяем старым значением: пользователь должен видеть, что именно не принято
+    if (!el.name || el === active || el.name in state.pending || el.classList.contains("invalid")) continue;
     if (el.name === "external_id" && product.external_id) el.value = product.external_id;
+    // цену и валюту программа могла пересчитать сама (поменяли закупку — цена по наценке и курсу)
+    if (["price", "currency", "cost_currency"].includes(el.name)) el.value = product[el.name] ?? "";
   }
   $("#title").textContent = product.name || "Новый товар";
+  $("#title").translate = !product.name;  // название товара — данные, «Новый товар» — интерфейс
   $("#status").innerHTML = statusBadge(product.status);
   $("#last-error").textContent = product.status === "error" && product.last_error ? "Ошибка Prom: " + product.last_error : "";
   ["#btn-duplicate", "#btn-delete", "#btn-send"].forEach((s) => ($(s).disabled = false));
-  $("#btn-send").disabled = product.status === "sending";
+  $("#btn-send").disabled = product.status === "sending" || product.status === "deleting";
+  $("#btn-diagnose").hidden = false;
+  $("#btn-diagnose").href = `/diagnose?id=${product.id}`;
+  $("#btn-on-prom").hidden = !product.prom_url;
+  if (product.prom_url) $("#btn-on-prom").href = product.prom_url;
+  else if (product.synced_at && !state.promLinkAsked) {
+    // выгружен импортом — номер на Prom узнаём один раз
+    state.promLinkAsked = true;
+    api(`/api/products/${product.id}/prom-link`, { method: "POST" }).then((r) => {
+      if (r.url) { $("#btn-on-prom").href = r.url; $("#btn-on-prom").hidden = false; }
+    }).catch(() => {});
+  }
+  if (product.status === "deleting") $("#last-error").textContent = product.last_error || "Удаляется с Prom — ждём подтверждения";
   $("#btn-send").textContent = product.status === "sending" ? "Отправляется…" : "Отправить на Prom";
   renderCheck(product.check);
   renderSupplier(product);
+  renderCategory(product);
   renderPhotos();
   renderPreview();
   if (product.status === "sending") pollStatus();
+  $("#history").hidden = false;
+  if ($("#history").open) { clearTimeout(historyTimer); historyTimer = setTimeout(loadHistory, 800); }
 }
+
+// ---------- история изменений ----------
+
+let historyTimer;
+
+async function loadHistory() {
+  if (!state.id) return;
+  let data;
+  try { data = await api(`/api/products/${state.id}/changes?limit=100`); }
+  catch (err) { $("#history-list").textContent = err.message; return; }
+  $("#history-list").innerHTML = data.items.length ? data.items.map((r) => {
+    const what = esc(data.labels[r.field] || r.field);
+    // значения — данные товара: не переводим (кроме служебных «на Prom» / «нет на Prom»)
+    const value = (v) => `<span translate="no">${esc(v || "—")}</span>`;
+    const change = r.field === "prom" ? esc(r.new) : r.field === "created" || r.field === "deleted"
+      ? value(r.new) : `<s>${value(r.old)}</s> → ${value(r.new)}`;
+    const back = r.revertable ? ` <button type="button" class="btn small" data-revert="${r.id}"
+      title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : "";
+    return `<div class="history-row"><span class="muted">${esc(formatDate(r.at))}</span> <b>${what}</b>: ${change}` +
+      ` <span class="muted">· ${esc(r.source)}</span>${back}</div>`;
+  }).join("") : "Изменений пока нет";
+}
+
+// «↩ Вернуть» прежнее значение из истории
+$("#history-list").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-revert]");
+  if (!btn) return;
+  if (!confirm("Вернуть прежнее значение?")) return;
+  btn.disabled = true;
+  try {
+    await flush();
+    const p = await api(`/api/changes/${btn.dataset.revert}/revert`, { method: "POST" });
+    fillUntouched(p);
+    applyServer(p);
+    toast("Прежнее значение возвращено", "ok");
+    loadHistory();
+  } catch (err) { toast(err.message, "error"); btn.disabled = false; }
+});
+
+// ---------- категория каталога Prom ----------
+// Названия категорий приходят от Prom — translate="no".
+
+function catLabel(c) { return c ? (c.caption || `№${c.id}`) : ""; }
+
+function renderCategory(p) {
+  const c = p.categories || {};
+  const chip = (cat) => `<span class="chip cat-chip"${cat.path ? ` title="${esc(cat.path)}"` : ""}><span translate="no">${esc(catLabel(cat))}</span></span>`;
+  const parts = [];
+  if (c.target) {
+    parts.push(`${I18N.tr("Нужная:")} ${chip(c.target)} ` + (c.locked
+      ? `<button type="button" class="lock" id="cat-unlock" title="Выбрано в карточке. Нажмите, чтобы снова брать категорию по правилу группы">🔒 своё</button>`
+      : `<span class="muted">${esc(I18N.tr("по правилу группы"))}</span>`));
+  } else {
+    parts.push(`<span class="muted">${esc(I18N.tr("не задана — решает Prom"))}</span>`);
+  }
+  if (c.prom) parts.push(`${I18N.tr("Сейчас на Prom:")} ${chip(c.prom)}`);
+  if (c.mismatch) parts.push(`<b class="err-text">${esc(I18N.tr("Prom поставил другую категорию — уйдёт со следующей отправкой"))}</b>`);
+  $("#cat-box").innerHTML = parts.join("<br>") +
+    ` <button type="button" class="btn small" id="cat-change">${c.target ? "Изменить" : "Выбрать"}</button>`;
+  $("#cat-change").onclick = () => {
+    $("#cat-pick").classList.toggle("hidden");
+    if (!$("#cat-q").value) $("#cat-q").value = p.name || "";
+    $("#cat-q").focus();
+  };
+  const unlock = $("#cat-unlock");
+  if (unlock) unlock.onclick = () => unlockField("target_category_id");
+}
+
+async function searchCategory() {
+  const q = $("#cat-q").value.trim();
+  if (!q) return;
+  $("#cat-found").innerHTML = `<span class="muted small">Ищу на prom.ua…</span>`;
+  try {
+    const res = await api(`/api/categories/suggest?q=${encodeURIComponent(q)}`);
+    $("#cat-found").innerHTML = res.items.length ? res.items.map((c) => `<button type="button" class="cat-option" data-cat="${c.id}">
+        <b translate="no">${esc(catLabel(c))}</b>${c.path ? `<span class="small muted" translate="no">${esc(c.path)}</span>` : ""}</button>`).join("")
+      : `<span class="muted small">prom.ua ничего не нашёл — попробуйте другие слова.</span>`;
+  } catch (err) { $("#cat-found").innerHTML = `<span class="err-text">${esc(err.message)}</span>`; }
+}
+$("#cat-search").onclick = () => busy($("#cat-search"), searchCategory);
+$("#cat-q").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("#cat-search").click(); } });
+$("#cat-found").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-cat]");
+  if (!b) return;
+  state.pending.target_category_id = Number(b.dataset.cat);
+  $("#cat-pick").classList.add("hidden");
+  $("#cat-found").innerHTML = "";
+  try { await save(); } catch { /* ошибку уже показал save() */ }
+});
 
 // ---------- поставщик и закреплённые поля ----------
 
-const LOCK_LABEL = { images: "фото", params: "характеристики" };
+const LOCK_LABEL = { images: "фото", params: "характеристики", videos: "видео", target_category_id: "категорию Prom" };
 
 function renderSupplier(p) {
   const box = $("#supplier-box");
@@ -234,7 +401,7 @@ function renderSupplier(p) {
   box.classList.toggle("hidden", !p.supplier);
   if (p.supplier) {
     box.classList.toggle("missing", p.supplier.missing);
-    box.innerHTML = `Товар поставщика <a href="/supplier?id=${p.supplier.id}"><b>${esc(p.supplier.name)}</b></a>.
+    box.innerHTML = `Товар поставщика <a href="/supplier?id=${p.supplier.id}"><b translate="no">${esc(p.supplier.name)}</b></a>.
       ${p.supplier.missing ? "<b>Сейчас его нет в прайсе поставщика.</b> " : ""}
       Цена и наличие обновляются из прайса. Поля, которые вы поменяли руками, помечены <span class="lock" style="cursor:default">🔒 своё</span> —
       поставщик их не перезапишет.${renderOffers(p)}`;
@@ -261,13 +428,16 @@ function renderSupplier(p) {
   const margin = $("#margin");
   if (cost !== null || p.rrp !== null) {
     const parts = [];
-    if (cost !== null) parts.push(`закупка ${formatPrice(cost, p.currency)}`);
-    if (p.rrp !== null) parts.push(`РРЦ ${formatPrice(p.rrp, p.currency)}`);
-    if (cost !== null && p.price) {
-      const m = p.price - cost;
-      parts.push(`маржа ${formatPrice(m, p.currency)} (${Math.round((m / cost) * 100)}%)`);
+    const cc = p.cost_currency || p.currency;
+    const costUah = p.cost_uah ?? (cc === p.currency ? cost : null);
+    if (cost !== null) parts.push(`закупка ${formatPrice(cost, cc)}` + (p.cost_uah ? ` (≈ ${formatPrice(p.cost_uah, "UAH")} по курсу)` : ""));
+    if (p.rrp !== null) parts.push(`РРЦ ${formatPrice(p.rrp, cc)}`);
+    if (costUah !== null && p.price && (p.cost_uah ? p.currency === "UAH" : true)) {
+      const m = p.price - costUah;
+      parts.push(`маржа ${formatPrice(m, p.currency)} (${Math.round((m / costUah) * 100)}%)`);
     }
-    margin.textContent = parts.join(" · ") + (locked.has("price") ? "" : " · цена считается по правилам наценки");
+    if (!locked.has("price")) parts.push("цена считается по правилам наценки");
+    margin.textContent = parts.map(I18N.tr).join(" · ");
   } else {
     margin.textContent = "";
   }
@@ -277,23 +447,23 @@ function renderOffers(p) {
   if (!p.offers || p.offers.length < 2) return "";
   const presence = (o) => o.missing ? "нет в прайсе" : (META.presence[o.presence] || o.presence);
   return `<div style="margin-top:8px"><b>Этот товар есть у нескольких поставщиков</b> — описание и фото от
-    «${esc(p.supplier.name)}», цена и наличие — от самого дешёвого, у кого он есть:
+    «<span translate="no">${esc(p.supplier.name)}</span>», цена и наличие — от самого дешёвого, у кого он есть:
     <table class="offers">${p.offers.map((o) => `<tr class="${o.active ? "active" : ""}">
-      <td>${o.active ? "✓ " : ""}${esc(o.supplier_name)}</td>
+      <td>${o.active ? "✓ " : ""}<span translate="no">${esc(o.supplier_name)}</span></td>
       <td>закупка ${esc(formatPrice(o.cost_price ?? o.price, p.currency))}</td>
       <td>${esc(presence(o))}${o.quantity != null ? `, ${o.quantity} шт.` : ""}</td>
-      <td class="muted">${esc(o.sku)}</td></tr>`).join("")}</table></div>`;
+      <td class="muted" translate="no">${esc(o.sku)}</td></tr>`).join("")}</table></div>`;
 }
 
 async function unlockField(field) {
   const what = LOCK_LABEL[field] || "это поле";
-  const source = state.product.supplier ? "из прайса поставщика" : "по правилам наценки";
+  const source = field === "target_category_id" ? "по правилу группы"
+    : state.product.supplier ? "из прайса поставщика" : "по правилам наценки";
   if (!confirm(`Вернуть ${what} ${source}? Ваше значение будет заменено.`)) return;
   try {
     await flush();
     const p = await api(`/api/products/${state.id}/unlock`, { method: "POST", json: { fields: [field] } });
-    if (field === "params") renderParams(p.params);
-    else if (form.elements[field]) form.elements[field].value = p[field] ?? "";
+    fillUntouched(p);
     applyServer(p);
     toast("Значение возвращено", "ok");
   } catch (err) {
@@ -381,7 +551,7 @@ function renderPhotos() {
       el.textContent = "Загрузка…";
     } else {
       el.className = "photo failed";
-      el.innerHTML = `<div>${esc(u.file.name)}<br>${esc(u.error)}</div>`;
+      el.innerHTML = `<div><span translate="no">${esc(u.file.name)}</span><br>${esc(u.error)}</div>`;
       const retry = document.createElement("button");
       retry.type = "button";
       retry.className = "btn small";
@@ -437,6 +607,7 @@ async function uploadFiles(files, retryOf = null) {
 }
 
 async function deleteImage(imageId) {
+  if (!confirm("Удалить это фото у товара?")) return;
   try {
     applyServer(await api(`/api/products/${state.id}/images/${imageId}`, { method: "DELETE" }));
   } catch (err) {
@@ -530,12 +701,12 @@ document.addEventListener("paste", (e) => {
 
 $("#btn-add-param").addEventListener("click", () => addParamRow("", "", true));
 
-$("#btn-send").addEventListener("click", async () => {
+$("#btn-send").addEventListener("click", () => busy($("#btn-send"), async () => {
   try {
     await flush();
     const res = await api("/api/sync", { method: "POST", json: { ids: [state.id] } });
     if (res.rejected.length) {
-      toast("Не отправлено: " + res.rejected[0].reasons.join("; "), "error");
+      toast(`Не отправлено: ${res.rejected[0].reasons.map(I18N.tr).join("; ")}`, "error");
     } else {
       toast("Поставлено в очередь на Prom", "ok");
     }
@@ -543,9 +714,9 @@ $("#btn-send").addEventListener("click", async () => {
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}));
 
-$("#btn-duplicate").addEventListener("click", async () => {
+$("#btn-duplicate").addEventListener("click", () => busy($("#btn-duplicate"), async () => {
   try {
     await flush();
     const copy = await api(`/api/products/${state.id}/duplicate`, { method: "POST" });
@@ -553,19 +724,29 @@ $("#btn-duplicate").addEventListener("click", async () => {
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}));
 
-$("#btn-delete").addEventListener("click", async () => {
-  if (!confirm("Удалить товар? Это действие нельзя отменить.")) return;
+$("#btn-delete").addEventListener("click", () => busy($("#btn-delete"), async () => {
+  let onProm;
   try {
-    await api("/api/products/delete", { method: "POST", json: { ids: [state.id] } });
+    onProm = (await api("/api/products/delete/check", { method: "POST", json: { ids: [state.id] } })).on_prom;
+  } catch (err) {
+    // не знаем, есть ли товар на Prom, — не спрашиваем «удалить?» с неверным текстом
+    toast(err.message, "error");
+    return;
+  }
+  if (!confirm(onProm
+    ? "Удалить товар из программы и с Prom?\n\nОн уйдёт из программы, когда Prom подтвердит удаление. Удалить только из программы (оставив на Prom) можно в списке товаров."
+    : "Удалить товар? Это действие нельзя отменить.")) return;
+  try {
+    await api("/api/products/delete", { method: "POST", json: { ids: [state.id], prom: true } });
     state.pending = {};
     writeBackup();
     location.href = "/";
   } catch (err) {
     toast(err.message, "error");
   }
-});
+}));
 
 let pollTimer = null;
 function pollStatus() {
@@ -612,24 +793,30 @@ async function askAi(action, instruction = "") {
     await ensureId();
     await flush();
     const res = await api(`/api/products/${state.id}/ai`, { method: "POST", json: { action, instruction } });
-    showAiResult(res.changes);
+    showAiResult(res.changes, res.usage);
   } catch (err) {
-    box.innerHTML = `<div class="err-text" style="font-size:14px">${esc(err.message)}</div>`;
+    const settings = /«Настройки»/.test(err.message) ? ` <a href="/settings#ai">Открыть «Настройки»</a>` : "";
+    const other = /«✨ ИИ»/.test(err.message) ? ` <a href="#" data-open-ai>Открыть окно «✨ ИИ»</a>` : "";
+    box.innerHTML = `<div class="err-text" style="font-size:14px">${esc(err.message)}${settings}${other}</div>`;
+    const link = box.querySelector("[data-open-ai]");
+    if (link) link.onclick = (e) => { e.preventDefault(); openAiWindow(); };
   } finally {
     buttons.forEach((b) => (b.disabled = false));
+    refreshAiMeta();  // расход за сегодня в значке «✨» (и неудачный запрос виден в окне «ИИ»)
   }
 }
 
-function showAiResult(changes) {
+function showAiResult(changes, usage) {
   const box = $("#ai-result");
   const values = formValues();
   const show = (field, value) => (field.startsWith("description") ? descriptionHtml(value) : esc(value)) || '<span class="muted">пусто</span>';
-  box.innerHTML = Object.entries(changes).map(([field, value]) => `
+  box.innerHTML = (usage ? `<p class="ai-usage" title="Сколько стоил этот запрос. Все запросы и расходы — в окне «✨ ИИ» вверху страницы">
+    ${esc(aiUsageLine(usage))}</p>` : "") + Object.entries(changes).map(([field, value]) => `
     <div class="ai-field">
       <h4>${esc(AI_FIELD_LABEL[field] || field)}</h4>
       <div class="ai-cols">
-        <div class="old"><div class="label">Было</div>${show(field, values[field] || "")}</div>
-        <div class="new"><div class="label">Предлагает ИИ</div>${show(field, value)}</div>
+        <div class="old"><div class="label">Было</div><div translate="no">${show(field, values[field] || "")}</div></div>
+        <div class="new"><div class="label">Предлагает ИИ</div><div translate="no">${show(field, value)}</div></div>
       </div>
     </div>`).join("") + `
     <div class="toolbar" style="margin:0">
@@ -643,7 +830,10 @@ function showAiResult(changes) {
       form.elements[field].value = value;
       changed(field);
     }
-    if (changes.name_ua || changes.description_ua) $("#lang-tabs [data-lang=ua]").click();
+    // показываем язык, на который переводили: «на украинский» — вкладка UA, «на русский» — RU
+    const toRu = changes.name || changes.description;
+    if (!toRu && (changes.name_ua || changes.description_ua)) $("#lang-tabs [data-lang=ua]").click();
+    else if (toRu) $("#lang-tabs [data-lang=ru]")?.click();
     box.classList.add("hidden");
     toast("Применено — сохраняю", "ok");
   };
@@ -651,6 +841,7 @@ function showAiResult(changes) {
 }
 
 $("#ai-custom").addEventListener("click", () => askAi("custom", $("#ai-instruction").value));
+document.addEventListener("ai-changed", renderAiPanel);  // ИИ подключили или выключили в окне «✨ ИИ»
 $("#ai-instruction").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); askAi("custom", e.target.value); }
 });
@@ -658,6 +849,11 @@ $("#ai-instruction").addEventListener("keydown", (e) => {
 // ---------- старт ----------
 
 async function init() {
+  // «← К списку» — к тому же виду списка (фильтры, сортировка), откуда открыли товар
+  try {
+    const back = sessionStorage.getItem("promloader-list-url");
+    if (back && back.startsWith("/")) $("#back-link").href = back;
+  } catch {}
   await loadMeta();
   $("#presence").innerHTML = Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");
@@ -680,7 +876,18 @@ async function init() {
   }
 
   // восстановление несохранённого после сбоя/закрытия вкладки
-  const backup = readBackup();
+  let backup = readBackup();
+  // копия в браузере старше изменений на сервере (обновил поставщик, правили в другой вкладке) — не затираем
+  // более новые данные молча, а спрашиваем
+  const serverAt = state.product ? Date.parse(state.product.updated_at) : NaN;
+  if (backup && Object.keys(backup.pending || {}).length && serverAt > (backup.at || 0)) {
+    const when = new Date(backup.at || 0).toLocaleString(uiLocale());
+    if (!confirm(`Есть несохранённые правки этого товара от ${when}, но товар с тех пор уже изменился.\n\n` +
+                 `ОК — вернуть мои правки поверх, Отмена — оставить как сейчас.`)) {
+      try { localStorage.removeItem(backupKey()); } catch {}
+      backup = null;
+    }
+  }
   if (backup && Object.keys(backup.pending || {}).length) {
     const current = formValues();
     fillForm({ ...current, ...backup.pending, params: backup.pending.params || current.params });
@@ -691,5 +898,7 @@ async function init() {
   renderPreview();
   if (!state.id) form.elements.name.focus();
 }
+
+$("#history").addEventListener("toggle", () => { if ($("#history").open) loadHistory(); });
 
 init();

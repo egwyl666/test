@@ -28,6 +28,25 @@ def description_html(text: str) -> str:
     return "".join("<p>" + html.escape(p).replace("\n", "<br>") + "</p>" for p in paragraphs)
 
 
+# Видео YouTube Prom через импорт принимает только встроенным плеером в описании: теги <video>, <videos>,
+# <video_url>, <video_link> он пропускает, а <param name="Відео"> показывает как текст характеристики. iframe YouTube
+# в описании он сохраняет и показывает плеером на странице товара (проверено на живом кабинете 2026-10-11).
+VIDEO_IFRAME = ('<p><iframe width="560" height="315" src="https://www.youtube.com/embed/{id}" frameborder="0" '
+                'allowfullscreen></iframe></p>')
+
+
+def with_videos(description: str, videos: list[str]) -> str:
+    """Описание для Prom: в конец — плеер каждого видео, которого в описании ещё нет."""
+    players = "".join(VIDEO_IFRAME.format(id=vid) for vid in (products.youtube_id(v) for v in videos or [])
+                      if vid and vid not in (description or ""))
+    return (description or "") + players
+
+
+# Как передать категорию каталога Prom (не группу магазина). None — способ не найден, категорию решает Prom.
+# Проверено 2026-10-15: ни portal_id, ни <portal_category_id>, ни <portal_category_url>, ни /products/edit Prom не принимает.
+CATEGORY_TAG: str | None = None
+
+
 def category_id(group_name: str) -> str:
     """Стабильный числовой id группы — один и тот же при каждой выгрузке."""
     return str(zlib.crc32(group_name.strip().lower().encode()) % 10_000_000 + 1)
@@ -44,11 +63,13 @@ def _fmt_price(value: float) -> str:
 
 
 def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> bytes:
-    """Фид по списку товаров; None — все товары, кроме черновиков."""
+    """Фид по списку товаров; None — постоянный фид: все товары, кроме черновиков, удаляемых и тех, что Prom всё
+    равно не примет (нет названия или цены) — иначе автоимпорт вернул бы на Prom удаляемый товар."""
     if product_ids is None:
-        rows = db.query("SELECT id FROM products WHERE status != 'draft' ORDER BY id")
-        product_ids = [r["id"] for r in rows]
-    items = [products.get(pid) for pid in product_ids]
+        rows = db.query("SELECT id FROM products WHERE status NOT IN ('draft', 'deleting') ORDER BY id")
+        items = [p for p in (products.get(r["id"]) for r in rows) if products.validate(p, image_count=1)["ok"]]
+    else:
+        items = [products.get(pid) for pid in product_ids]
 
     shop_name = shop_name or db.get_setting("shop_name") or "Магазин"
     root = ET.Element("yml_catalog", date=datetime.now().strftime("%Y-%m-%d %H:%M"))
@@ -69,14 +90,18 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
     for p in items:
         offer = ET.SubElement(offers, "offer", id=p["external_id"], available=AVAILABLE_ATTR.get(p["presence"], "true"))
         _sub(offer, "name", p["name"])
-        if p["name_ua"]:
-            _sub(offer, "name_ua", p["name_ua"])
+        # Prom считает <name> русским; если текст уже украинский, а украинской версии нет — отдаём его и как украинский
+        name_ua = p["name_ua"] or (p["name"] if products.looks_ukrainian(p["name"]) else "")
+        if name_ua:
+            _sub(offer, "name_ua", name_ua)
         if p["price"] is not None:
             _sub(offer, "price", _fmt_price(p["price"]))
         if p["old_price"] and p["price"] and p["old_price"] > p["price"]:
             _sub(offer, "oldprice", _fmt_price(p["old_price"]))
         _sub(offer, "currencyId", p["currency"] or "UAH")
         _sub(offer, "categoryId", category_id(p["group_name"] or NO_GROUP))
+        if CATEGORY_TAG and p.get("target_category_id"):
+            _sub(offer, CATEGORY_TAG, str(p["target_category_id"]))
         for img in products.image_rows(p["id"])[: products.MAX_IMAGES]:
             _sub(offer, "picture", products.image_src(img, base_url))
         _sub(offer, "vendorCode", p["external_id"])
@@ -90,10 +115,12 @@ def build(product_ids: list[int] | None, base_url: str, shop_name: str = "") -> 
             _sub(offer, "quantity_in_stock", str(p["quantity"]))
         if p["keywords"]:
             _sub(offer, "keywords", p["keywords"])
-        if p["description"]:
-            _sub(offer, "description", description_html(p["description"]))
-        if p["description_ua"]:
-            _sub(offer, "description_ua", description_html(p["description_ua"]))
+        description = with_videos(description_html(p["description"]), p["videos"])
+        if description:
+            _sub(offer, "description", description)
+        description_ua = p["description_ua"] or (p["description"] if products.looks_ukrainian(p["description"]) else "")
+        if description_ua:
+            _sub(offer, "description_ua", with_videos(description_html(description_ua), p["videos"]))
         for param in p["params"]:
             if param["name"] and param["value"]:
                 _sub(offer, "param", param["value"], name=param["name"])

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Чат с покупателями — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#6d3fe0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prom Loader">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav></nav>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <h1 style="margin:0">Чат с покупателями</h1>
+      <span class="spacer"></span>
+      <span class="small muted" id="poll-info"></span>
+      <button class="btn" id="refresh">↻ Проверить новые</button>
+    </div>
+    <div id="chat-off" class="panel hidden">Чтобы видеть чат, укажите API-токен Prom в <a href="/settings">Настройках</a>.
+      Новые сообщения проверяются каждую минуту, уведомления можно получать в Telegram — это тоже в Настройках.</div>
+    <div class="err-text" id="error"></div>
+    <div class="chat-layout" id="layout">
+      <aside class="chat-list panel">
+        <input id="q" placeholder="Поиск: имя, телефон, текст">
+        <div class="chips" style="margin:8px 0">
+          <button class="chip active" data-filter="">Все</button>
+          <button class="chip" data-filter="unread">Непрочитанные</button>
+        </div>
+        <div id="rooms"></div>
+      </aside>
+      <section class="chat-room panel" id="room">
+        <p class="muted" id="room-empty">Выберите диалог слева.</p>
+        <div id="room-body" class="hidden">
+          <div class="toolbar chat-head">
+            <button class="btn small show-sm" id="back">← Диалоги</button>
+            <b id="buyer" translate="no"></b>
+            <span class="small muted" id="buyer-phone" translate="no"></span>
+            <span class="spacer"></span>
+            <a class="badge ready hidden" id="order-link" href="/orders"></a>
+          </div>
+          <div id="room-product"></div>
+          <div class="chat-messages" id="messages"></div>
+          <div class="chips chat-templates" id="templates">
+            <button class="chip" data-tpl="0">Здравствуйте! Товар в наличии, цена актуальная.</button>
+            <button class="chip" data-tpl="1">Отправим сегодня Новой Почтой.</button>
+            <button class="chip" data-tpl="2">Сейчас уточню на складе и напишу вам.</button>
+          </div>
+          <textarea id="reply" rows="3" placeholder="Ответ покупателю…"></textarea>
+          <div class="toolbar" style="margin:8px 0 0">
+            <button class="btn" id="ai-draft" title="ИИ напишет черновик по переписке и товару — вы проверите и отправите сами">✨ Черновик ИИ</button>
+            <span class="small muted" id="ai-usage"></span>
+            <span class="spacer"></span>
+            <button class="btn primary" id="send">Отправить</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/chat.js"></script>
+</body>
+</html>

@@ -3,6 +3,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY promloader ./promloader
+COPY VERSION ./
 ENV PROMLOADER_DATA=/data
 VOLUME /data
 EXPOSE 8000

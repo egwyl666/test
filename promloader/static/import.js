@@ -86,6 +86,7 @@ function renderPreview() {
     <div class="muted">Уже есть (по артикулу): <b>${existing.length}</b></div>`;
   renderItemsPreview($("#preview"), items, { token: grid.token, sheet: grid.sheet, onlyBad: $("#only-bad").checked });
   $("#commit").disabled = bad.length === items.length;
+  $("#commit").textContent = "Импортировать";
 }
 
 $("#only-bad").addEventListener("change", renderPreview);
@@ -115,9 +116,10 @@ $("#commit").addEventListener("click", async () => {
       <a class="btn primary" href="/">Перейти к товарам</a>`;
     $("#result").scrollIntoView({ behavior: "smooth" });
     toast("Импорт завершён", "ok");
+    // повторное нажатие создало бы товары без артикула ещё раз; снова включится после новой проверки
+    btn.textContent = "Импортировано ✓";
   } catch (err) {
     toast(err.message, "error");
-  } finally {
     btn.disabled = false;
     btn.textContent = "Импортировать";
   }

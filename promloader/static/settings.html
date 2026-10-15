@@ -4,21 +4,21 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Настройки — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#6d3fe0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prom Loader">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
 </head>
 <body>
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
-    <nav>
-      <a href="/">Товары</a>
-      <a href="/orders">Заказы</a>
-      <a href="/suppliers">Поставщики</a>
-      <a href="/pricing">Наценка</a>
-      <a href="/import">Импорт файла</a>
-      <a href="/settings">Настройки</a>
-      <a href="/support">Поддержка</a>
-    </nav>
+    <nav></nav>
   </header>
 
   <main style="max-width:820px">
@@ -126,6 +126,32 @@
         <b>Запускать Prom Loader вместе с Windows</b> <span class="muted">— чтобы расписание работало, даже если вы забыли открыть программу</span></label>
     </div>
 
+    <div class="panel" id="np">
+      <h2>🚚 Новая Почта</h2>
+      <p class="small muted" style="margin-top:-4px">ТТН из заказа в один клик (получатель и отделение — из заказа Prom), этикетка
+        100×100 и отслеживание посылок. Статусы посылок программа проверяет и без ключа — в том числе ТТН из кабинета Prom.</p>
+      <label class="field"><span>Ключ API Новой Почты <span class="muted" id="np-key-state"></span></span>
+        <input id="np-key" type="password" autocomplete="new-password" placeholder="кабинет Новой Почты → Налаштування → Безпека → Створити ключ"></label>
+      <div class="toolbar"><button class="btn" id="np-check">Проверить ключ</button><span class="small" id="np-sender"></span></div>
+      <div id="np-form" class="hidden">
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="field" style="flex:1;min-width:180px"><span>Контактное лицо отправителя</span><select id="np-contact" translate="no"></select></label>
+          <label class="field" style="flex:1;min-width:160px"><span>Телефон отправителя</span><input id="np-phone" placeholder="380XXXXXXXXX" inputmode="tel"></label>
+        </div>
+        <label class="field"><span>Город отправки</span><input id="np-city" list="np-cities" autocomplete="off" translate="no"><datalist id="np-cities"></datalist></label>
+        <label class="field"><span>Отделение отправки</span><select id="np-warehouse" translate="no"></select></label>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="field" style="flex:1;min-width:110px"><span>Вес по умолчанию, кг</span><input id="np-weight" inputmode="decimal"></label>
+          <label class="field" style="flex:2;min-width:160px"><span>Что в посылке (по умолчанию)</span><input id="np-desc"></label>
+        </div>
+        <div class="row" style="gap:8px;flex-wrap:wrap">
+          <label class="field" style="flex:1;min-width:160px"><span>Доставку оплачивает</span><select id="np-payer"></select></label>
+          <label class="field" style="flex:1;min-width:160px"><span>Напомнить, если посылку не забирают, дней</span><input id="np-days" inputmode="numeric"></label>
+        </div>
+        <button class="btn primary" id="np-save">Сохранить</button>
+      </div>
+    </div>
+
     <div class="panel" id="telegram">
       <h2>📨 Уведомления в Telegram <span class="muted small">(по желанию)</span></h2>
       <ol class="small" style="margin-top:-4px;line-height:1.7">
@@ -142,6 +168,7 @@
         <span class="small" id="tg-result"></span>
       </div>
       <h3 style="margin:14px 0 6px">Получатели</h3>
+      <div class="err-text hidden" id="tg-outbox" style="margin-bottom:8px"></div>
       <div id="tg-recipients"></div>
       <div id="tg-candidates"></div>
       <div class="toolbar" style="margin-top:8px">
@@ -160,9 +187,11 @@
     <div class="panel" id="ai">
       <h2>✨ ИИ-помощник</h2>
       <p class="small muted" style="margin-top:-6px">
-        Помогает в карточке товара: улучшить описание, перевести на украинский, придумать название и ключевые слова.
+        Помогает в карточке товара: улучшить описание, перевести на украинский или русский, придумать название и ключевые слова.
         ИИ только предлагает текст — в карточку он попадает после нажатия «Применить».
       </p>
+      <p class="small" style="margin-top:-4px">Здесь — ключи. Модель, цена запроса, расходы и лимиты — в окне
+        <a href="#" id="open-ai-window">«✨ ИИ»</a> вверху любой страницы.</p>
       <label class="field"><span>Какой ИИ использовать</span>
         <select id="ai-provider"><option value="">не подключать</option></select></label>
       <div id="ai-gemini" class="hidden">
@@ -177,7 +206,9 @@
         <label class="field"><span>API-ключ Anthropic <span class="muted" id="anthropic-state"></span></span>
           <input id="anthropic-key" name="anthropic_key" type="password" placeholder="sk-ant-…" autocomplete="new-password"></label>
         <p class="small muted" style="margin-top:-6px">Ключ создаётся в <a href="https://platform.claude.com/" target="_blank" rel="noopener">консоли Anthropic</a>; оплата по использованию.</p>
-        <label class="field"><span>Модель</span><input id="claude-model" name="claude_model"></label>
+        <label class="field"><span>Модель</span><input id="claude-model" name="claude_model" list="claude-models"
+          placeholder="claude-opus-5-5"></label>
+        <datalist id="claude-models"></datalist>
       </div>
       <label class="field"><span>Массовый ИИ: запросов в минуту <span class="muted">(пусто — по умолчанию: 8 для бесплатного Gemini, 30 для Claude)</span></span>
         <input id="ai-rate" inputmode="numeric" style="max-width:160px"></label>
@@ -185,6 +216,70 @@
         <button class="btn primary" id="ai-save">Сохранить</button>
         <button class="btn" id="ai-check">Проверить</button>
         <span id="ai-check-result" class="small"></span>
+      </div>
+      <p class="small err-text hidden" id="ai-key-warning"></p>
+    </div>
+
+    <div class="panel" id="app">
+      <h2>📲 Приложение на телефоне</h2>
+      <p class="small muted" style="margin-top:-4px">Значок Prom Loader на главном экране телефона: открывается как обычное
+        приложение, без адресной строки, и присылает уведомления о заказах и сообщениях покупателей — без Telegram.</p>
+      <div class="toolbar">
+        <button class="btn primary hidden" id="app-install">📲 Установить на телефон</button>
+        <span class="small" id="app-installed"></span>
+      </div>
+      <div class="small muted" id="app-howto">
+        <p style="margin:4px 0"><b>Android (Chrome):</b> меню ⋮ → «Установить приложение» (или «Добавить на главный экран»).</p>
+        <p style="margin:4px 0"><b>iPhone (Safari):</b> кнопка «Поделиться» → «На экран „Домой“». Уведомления на iPhone
+          работают только у установленного так значка (iOS 16.4 и новее).</p>
+        <p style="margin:4px 0">Значок, добавленный по адресу Cloudflare (https://….trycloudflare.com), работает, пока этот адрес
+          не сменится — после перезапуска программы откройте новый адрес из Telegram или QR-кода и установите значок заново.
+          Адрес по Wi‑Fi дома не меняется, но уведомлений по нему нет: браузеры разрешают их только на https.</p>
+      </div>
+      <div id="push-box" style="margin-top:10px">
+        <h3>Уведомления на этот телефон</h3>
+        <p class="small muted" id="push-note"></p>
+        <div id="push-events" class="small"></div>
+        <div class="toolbar">
+          <button class="btn" id="push-on">🔔 Включить уведомления</button>
+          <button class="btn hidden" id="push-test">Проверить уведомление</button>
+          <button class="btn hidden" id="push-off">Выключить</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="phone">
+      <h2>📱 Доступ с телефона</h2>
+      <p class="small muted" style="margin-top:-4px">Открывайте программу с телефона: дома по Wi‑Fi или из любого места через интернет.
+        Компьютер с программой должен быть включён. Вход — по паролю, который вы придумаете здесь.</p>
+      <p class="small muted hidden" id="phone-remote-only">Эти настройки меняются только на самом компьютере.</p>
+      <div id="phone-form">
+        <label class="field"><span>Пароль для входа с телефона <span class="muted" id="phone-pass-state"></span></span>
+          <input id="phone-password" type="password" autocomplete="new-password" placeholder="не меньше 8 символов"></label>
+        <label class="photo-mode"><input type="checkbox" id="phone-lan">
+          <span><b>Дома — по Wi‑Fi</b><br>
+          <span class="small muted">Телефон и компьютер подключены к одному роутеру. Быстро, через интернет ничего не идёт.
+            Включение и выключение перезапускает программу (несколько секунд). Windows может спросить, разрешить ли
+            Python доступ к сети, — отметьте «Частные сети» и нажмите «Разрешить».</span></span></label>
+        <label class="photo-mode"><input type="checkbox" id="phone-remote">
+          <span><b>Из любого места — через Cloudflare</b><br>
+          <span class="small muted">Бесплатный защищённый адрес вида https://….trycloudflare.com. Адрес меняется при каждом
+            запуске программы — новый адрес придёт в Telegram (событие «новый адрес для входа с телефона»).</span></span></label>
+        <div class="toolbar">
+          <button class="btn primary" id="phone-save">Сохранить</button>
+          <button class="btn" id="phone-sign-out">Выйти на всех телефонах</button>
+          <span class="small" id="phone-result"></span>
+        </div>
+        <div id="phone-lan-box" class="hidden phone-box">
+          <h3>Дома по Wi‑Fi</h3>
+          <p class="small muted" id="phone-lan-note"></p>
+          <div id="phone-lan-urls" class="phone-urls"></div>
+        </div>
+        <div id="phone-remote-box" class="hidden phone-box">
+          <h3>Из любого места</h3>
+          <p class="small" id="phone-remote-state"></p>
+          <div id="phone-remote-url" class="phone-urls"></div>
+        </div>
       </div>
     </div>
 
@@ -211,6 +306,55 @@
       <button class="btn" id="update-save" style="margin-top:8px">Сохранить</button>
     </div>
 
+    <div class="panel" id="migration">
+      <h2>📦 Переезд на другой компьютер или сервер</h2>
+      <p class="small muted" style="margin-top:-4px">Всё переезжает одним файлом: товары, фото, прайсы поставщиков, заказы, чаты,
+        настройки и все ключи и токены (Prom, ИИ, Telegram, R2, ссылка фида — адрес в кабинете Prom не меняется). Ключи в файле
+        зашифрованы паролем, который вы придумаете: без него файл бесполезен.</p>
+
+      <h3>1. На старом компьютере</h3>
+      <div id="mig-old">
+        <label class="field"><span>Пароль копии</span>
+          <input id="mig-pass" type="password" autocomplete="new-password" placeholder="не меньше 8 символов — запомните его"></label>
+        <label class="small" style="display:block"><input type="checkbox" id="mig-photos" checked> Включить папку фото с компьютера
+          <span class="muted">(снимите, если все фото уже в R2 — файл станет в мегабайты, а не в гигабайты)</span></label>
+        <label class="small hidden" style="display:block" id="mig-cloud-wrap"><input type="checkbox" id="mig-cloud"> Сразу отправить пакет в облако R2</label>
+        <label class="small" style="display:block;margin-bottom:8px"><input type="checkbox" id="mig-pause"> Поставить фоновую работу на этом
+          компьютере на паузу <span class="muted">(заказы, чат, отправка — чтобы новый и старый не работали одновременно)</span></label>
+        <div class="toolbar">
+          <button class="btn primary" id="mig-create">Создать пакет переезда</button>
+          <button class="btn hidden" id="mig-code-btn">Код подключения к облаку</button>
+          <button class="btn hidden" id="mig-save-pass">Запомнить пароль для облачных копий</button>
+        </div>
+        <div id="mig-result" class="small"></div>
+        <div id="mig-code-box" class="hidden">
+          <p class="small muted">Код подключения — вставьте его на новом компьютере вместе с паролем: программа сама подключится к R2 и
+            покажет копии.</p>
+          <div class="row"><input id="mig-code" readonly translate="no"><button class="btn narrow" id="mig-code-copy" style="flex:0 0 auto">Копировать</button></div>
+        </div>
+        <p class="small muted" id="mig-pass-state"></p>
+      </div>
+
+      <h3>2. На новом компьютере или сервере</h3>
+      <div class="toolbar">
+        <button class="btn" id="mig-file">Выбрать файл копии…</button>
+        <span class="small muted">или код подключения к облаку:</span>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <input id="mig-connect-code" placeholder="PLK1-…" style="flex:2;min-width:200px" translate="no">
+        <input id="mig-connect-pass" type="password" placeholder="пароль копии" autocomplete="off" style="flex:1;min-width:140px">
+        <button class="btn" id="mig-connect" style="flex:0 0 auto">Подключиться к облаку</button>
+      </div>
+      <table class="runs" id="mig-cloud-list"></table>
+      <div id="mig-preview" class="hidden" style="margin-top:10px;border-left:4px solid var(--accent);padding-left:10px">
+        <p id="mig-preview-text"></p>
+        <label class="field hidden" id="mig-apply-pass-wrap"><span>Пароль копии (ключи и токены зашифрованы)</span>
+          <input id="mig-apply-pass" type="password" autocomplete="off"></label>
+        <button class="btn primary" id="mig-apply">Восстановить на этом компьютере</button>
+        <p class="small muted">Текущие данные этого компьютера перед восстановлением сохранятся в копию.</p>
+      </div>
+    </div>
+
     <div class="panel" id="backups">
       <h2>💾 Резервные копии</h2>
       <p class="small muted" style="margin-top:-4px">Копия базы товаров и всех фото делается автоматически раз в сутки (хранятся последние 7)
@@ -221,6 +365,15 @@
         <span class="small muted" id="backup-last"></span>
       </div>
       <table class="runs" id="backup-list"></table>
+      <div id="cloud-backup" class="hidden" style="margin-top:14px;border-top:1px solid var(--line);padding-top:10px">
+        <label class="small" style="display:block"><input type="checkbox" id="cloud-backup-on">
+          <b>Хранить копии и в облаке R2</b> — на случай, если пропадёт компьютер или диск.</label>
+        <p class="small muted" style="margin:4px 0 8px">Ежедневные и ручные копии уходят в ваше хранилище R2 (последние 10).
+          Токены, ключи и пароль в облачную копию <b>не попадают</b>; при восстановлении на этом компьютере они сохраняются,
+          на новом — их нужно будет ввести заново.</p>
+        <p class="small err-text" id="cloud-backup-error"></p>
+        <table class="runs" id="cloud-backup-list"></table>
+      </div>
     </div>
 
     <div class="panel">
@@ -270,19 +423,38 @@
   </main>
 
   <script src="/static/common.js"></script>
+  <script src="/static/phone.js"></script>
   <script>
     let current = {};
 
-    function fill(s) {
-      current = s;
+    // Каждый раздел заполняет только свои поля: раньше сохранение одного раздела перезаполняло все и стирало
+    // несохранённые правки в остальных
+    function fillMain(s) {
       const f = $("#form");
       f.prom_token.value = "";
       $("#token-state").textContent = s.prom_token_set ? `(сейчас: ${s.prom_token})` : "(не задан)";
       f.public_base_url.value = s.public_base_url;
       f.shop_name.value = s.shop_name;
+    }
+    function fillAdv(s) {
       $("#import-settings").value = s.import_settings;
       $("#api-base").value = s.prom_api_base;
+    }
+    function fillInfo(s) {
+      current = s;
       $("#feed-url").value = s.public_base_url ? s.feed_url : "Сначала укажите публичный адрес сайта";
+      for (const [key, locked] of Object.entries(s.locked)) {
+        const el = document.querySelector(`[name=${key}]`);
+        if (el && locked) { el.disabled = true; el.title = "Задано переменной окружения"; }
+      }
+    }
+    function fill(s) {
+      fillMain(s);
+      fillAdv(s);
+      fillAi(s);
+      fillInfo(s);
+    }
+    function fillAi(s) {
       $("#ai-provider").innerHTML = `<option value="">не подключать</option>` +
         Object.entries(s.ai_providers).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
       $("#ai-provider").value = s.ai_provider;
@@ -295,15 +467,13 @@
       $("#claude-model").value = s.claude_model;
       $("#ai-rate").value = s.ai_rate || "";
       showProvider();
-      for (const [key, locked] of Object.entries(s.locked)) {
-        const el = document.querySelector(`[name=${key}]`);
-        if (el && locked) { el.disabled = true; el.title = "Задано переменной окружения"; }
-      }
     }
 
-    async function save(data) {
+    async function save(data, section = () => {}) {
       try {
-        fill(await api("/api/settings", { method: "POST", json: data }));
+        const s = await api("/api/settings", { method: "POST", json: data });
+        section(s);
+        fillInfo(s);
         toast("Сохранено", "ok");
       } catch (err) {
         toast(err.message, "error");
@@ -312,10 +482,10 @@
 
     $("#save").onclick = () => {
       const f = $("#form");
-      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value });
+      save({ prom_token: f.prom_token.value, public_base_url: f.public_base_url.value, shop_name: f.shop_name.value }, fillMain);
     };
     $("#save-adv").onclick = () => save({ import_settings: $("#import-settings").value, prom_api_base: $("#api-base").value,
-                                          quick_updates: $("#quick-updates").checked });
+                                          quick_updates: $("#quick-updates").checked }, fillAdv);
     $("#new-key").onclick = () => {
       if (confirm("Старая ссылка перестанет работать — её нужно будет заменить в кабинете Prom. Продолжить?")) {
         save({ regenerate_feed_key: true });
@@ -352,17 +522,35 @@
         ai_rate: $("#ai-rate").value,
       };
     }
-    $("#ai-save").onclick = () => save(aiBody());
-    $("#ai-check").onclick = async () => {
+    function showKeyWarning(s) {
+      $("#ai-key-warning").textContent = s.ai_key_warning || "";
+      $("#ai-key-warning").classList.toggle("hidden", !s.ai_key_warning);
+    }
+    // вставили новый ключ — сразу проверяем (бесплатно: список моделей), а не узнаём о проблеме в карточке
+    $("#ai-save").onclick = async () => {
+      const body = aiBody();
+      const newKey = Boolean(body.gemini_key || body.anthropic_key);
+      let ok = false;
+      await save(body, (s) => { fillAi(s); showKeyWarning(s); refreshAiMeta(); ok = true; });
+      if (ok && newKey && body.ai_provider) runAiCheck();
+    };
+    $("#open-ai-window").onclick = (e) => { e.preventDefault(); openAiWindow(); };
+    $("#ai-check").onclick = () => runAiCheck(true);
+    async function runAiCheck(saveFirst) {
       const out = $("#ai-check-result");
-      out.textContent = "Проверяю…";
+      out.textContent = "Проверяю ключ…";
       out.style.color = "";
       try {
-        fill(await api("/api/settings", { method: "POST", json: aiBody() }));
+        const s = saveFirst ? await api("/api/settings", { method: "POST", json: aiBody() }) : await api("/api/settings");
+        fillAi(s);
+        fillInfo(s);
+        if (saveFirst) showKeyWarning(s);
         const res = await api("/api/ai/check", { method: "POST" });
         out.textContent = res.message;
         out.style.color = res.ok ? "var(--ok)" : "var(--err)";
-        $("#gemini-models").innerHTML = (res.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+        const options = (res.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+        $(s.ai_provider === "claude" ? "#claude-models" : "#gemini-models").innerHTML = options;
+        refreshAiMeta();
       } catch (err) {
         out.textContent = err.message;
         out.style.color = "var(--err)";
@@ -443,8 +631,42 @@
       });
     }
     $("#backup-now").onclick = async () => {
-      try { await api("/api/backups", { method: "POST" }); toast("Копия создана", "ok"); loadBackups(); }
-      catch (err) { toast(err.message, "error"); }
+      try {
+        const r = await api("/api/backups", { method: "POST" });
+        toast(r.cloud ? "Копия создана, отправляю в облако…" : "Копия создана", "ok");
+        loadBackups();
+        if (r.cloud) setTimeout(loadCloudBackups, 15000);
+      } catch (err) { toast(err.message, "error"); }
+    };
+
+    // ---------- копии в облаке R2 ----------
+    async function loadCloudBackups() {
+      let r;
+      try { r = await api("/api/backups/cloud"); } catch (err) { if (!err.network) toast(err.message, "error"); return; }
+      $("#cloud-backup").classList.toggle("hidden", !r.available);
+      $("#cloud-backup-on").checked = r.enabled;
+      $("#cloud-backup-error").textContent = r.error || "";
+      $("#cloud-backup-list").innerHTML = !r.enabled ? "" : r.items.map((b) => `
+        <tr>
+          <td>☁ ${esc(formatDate(b.created))}</td>
+          <td class="muted">${esc(b.reason_label)}</td>
+          <td class="muted">${fmtSize(b.size)}</td>
+          <td style="text-align:right"><button class="btn small" data-cloud-restore="${esc(b.name)}">Восстановить</button></td>
+        </tr>`).join("") || `<tr><td class="muted">В облаке копий пока нет — первая уйдёт со следующей копией</td></tr>`;
+      $$("[data-cloud-restore]").forEach((btn) => btn.onclick = () => busy(btn, async () => {
+        if (!confirm("Скачать эту копию из облака и вернуть к ней товары и фото? Текущие данные перед этим сохранятся в копию.")) return;
+        try {
+          const res = await api(`/api/backups/cloud/${encodeURIComponent(btn.dataset.cloudRestore)}/restore`, { method: "POST" });
+          waitForRestart("Восстанавливаю данные…", res.restarting);
+        } catch (err) { toast(err.message, "error"); }
+      }));
+    }
+    $("#cloud-backup-on").onchange = async (e) => {
+      try {
+        await api("/api/backups/cloud", { method: "POST", json: { enabled: e.target.checked } });
+        toast("Сохранено", "ok");
+        loadCloudBackups();
+      } catch (err) { e.target.checked = !e.target.checked; toast(err.message, "error"); }
     };
     $("#backup-upload").onclick = async () => {
       const [file] = await pickFiles({ accept: ".zip", multiple: false });
@@ -574,11 +796,28 @@
       const r = await api("/api/telegram/recipients");
       tgEvents = r.events;
       renderRecipients(r.items);
+      renderOutbox(r.outbox);
+    }
+    // уведомления, которые не дошли (нет связи): программа повторяет сама, здесь — видно и можно повторить сразу
+    function renderOutbox(o) {
+      const box = $("#tg-outbox");
+      box.classList.toggle("hidden", !o || !o.pending);
+      if (!o || !o.pending) return;
+      box.innerHTML = `Не доставлено уведомлений: ${o.pending}${o.error ? ` — ${esc(o.error)}` : ""}.
+        Программа повторит сама${o.next_at ? ` (${esc(formatDate(o.next_at))})` : ""}.
+        <button class="btn small" id="tg-retry">Повторить сейчас</button>`;
+      $("#tg-retry").onclick = () => busy($("#tg-retry"), async () => {
+        try {
+          const r = await api("/api/telegram/retry", { method: "POST" });
+          renderOutbox(r.outbox);
+          toast(r.sent ? `Отправлено: ${r.sent}` : "Пока не получилось — программа повторит сама", r.sent ? "ok" : "error");
+        } catch (err) { toast(err.message, "error"); }
+      });
     }
     function renderRecipients(items) {
       $("#tg-recipients").innerHTML = items.length ? items.map((r) => `
         <div class="recipient" data-id="${r.id}">
-          <div><b>${esc(r.name)}</b> <span class="muted small">ID ${esc(r.chat_id)}</span></div>
+          <div><b translate="no">${esc(r.name)}</b> <span class="muted small">ID ${esc(r.chat_id)}</span></div>
           <div class="small">${Object.entries(tgEvents).map(([k, v]) =>
             `<label style="margin-right:12px;white-space:nowrap"><input type="checkbox" value="${k}" ${r.events.includes(k) ? "checked" : ""}> ${esc(v)}</label>`).join("")}</div>
           <div class="toolbar" style="margin:6px 0 0"><button class="btn small" data-act="test">Тест</button>
@@ -624,7 +863,7 @@
         const r = await api("/api/telegram/candidates", { method: "POST" });
         $("#tg-candidates").innerHTML = r.items.length
           ? `<p class="small" style="margin:8px 0 4px">Недавно писали боту:</p>` + r.items.map((c) =>
-            `<div class="toolbar" style="margin:0 0 4px"><span>${esc(c.name)} <span class="muted small">ID ${esc(c.chat_id)}</span></span>
+            `<div class="toolbar" style="margin:0 0 4px"><span><span translate="no">${esc(c.name)}</span> <span class="muted small">ID ${esc(c.chat_id)}</span></span>
              <button class="btn small primary" data-chat="${esc(c.chat_id)}" data-name="${esc(c.name)}">Добавить</button></div>`).join("")
           : `<p class="small muted">Новых чатов нет. Пусть человек откроет бота, нажмёт «Старт» — и нажмите кнопку ещё раз.</p>`;
       } catch (err) { tgOut(err.message, false); }
@@ -676,7 +915,7 @@
       try {
         const r = await api("/api/support/channel/chats", { method: "POST", json: { token: $("#sup-token").value } });
         $("#sup-chats").innerHTML = r.items.length ? "Писали боту: " + r.items.map((c) =>
-          `<a href="#" data-chat="${esc(c.chat_id)}">${esc(c.name)} (${esc(c.chat_id)})</a>`).join(", ")
+          `<a href="#" data-chat="${esc(c.chat_id)}" translate="no">${esc(c.name)} (${esc(c.chat_id)})</a>`).join(", ")
           : "Никто не писал боту поддержки. Напишите ему что-нибудь и нажмите ещё раз.";
       } catch (err) { supOut(err.message, false); }
     };
@@ -689,10 +928,14 @@
     });
 
     loadMeta().catch(() => {});
-    loadSchedules().catch(() => {});
+    loadSchedules().catch((err) => toast(`Расписание не загрузилось: ${err.message}`, "error"));
     api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); fillPhotos(s); }).catch((err) => toast(err.message, "error"));
-    loadBackups().catch(() => {});
-    loadRecipients().catch(() => {});
+    loadBackups().catch((err) => toast(`Список копий не загрузился: ${err.message}`, "error"));
+    loadCloudBackups();
+    loadRecipients().catch((err) => toast(`Получатели Telegram не загрузились: ${err.message}`, "error"));
   </script>
+  <script src="/static/migration.js"></script>
+  <script src="/static/app-install.js"></script>
+  <script src="/static/np-settings.js"></script>
 </body>
 </html>

@@ -4,26 +4,48 @@
 """
 
 import json
+from urllib.parse import quote
 
 import httpx
+
+# Что обновлять у товаров из файла — как галочки «Інформація, яку потрібно оновити» в ручном импорте.
+UPDATED_FIELDS = ["name", "sku", "price", "images_urls", "presence", "quantity_in_stock", "description", "group",
+                  "keywords", "attributes", "discount", "labels", "gtin", "mpn"]
 
 DEFAULT_IMPORT_SETTINGS = {
     # Товары, которых нет в файле, не трогаем: выгружаем только выбранные.
     "mark_missing_product_as": "none",
     "force_update": False,
     "only_available": False,
+    "updated_fields": UPDATED_FIELDS,
 }
 
-# Статусы импорта: всё, что не «в процессе», считается завершённым.
+# Статусы импорта. Проверено на живом кабинете (обновление 1 товара):
+#   +3 с SUCCESS total 0 → +10 с SUCCESS total 1 → +89 с PARTIAL total 1, updated 0 → +172 с PARTIAL updated 1.
+# Ни "SUCCESS", ни "PARTIAL" сами по себе не значат «готово» — конец, когда счётчики покрыли все товары файла.
 IMPORT_DONE_OK = {"success", "partial"}
 IMPORT_DONE_FAIL = {"fatal", "error", "failed"}
 
 
+# «В данный момент действует ограничение на запуск одновременных импортов» — Prom ещё занят предыдущим.
+BUSY_MARKERS = ("одновременн", "одночасн", "ограничение на запуск", "обмеження на запуск")
+
+
+# Проверено на живом кабинете (2026-10-09): все методы API отвечают 403 с текстом
+# «Api is not available for free premium service», когда у магазина пакет без доступа к API.
+NO_API_MARKER = "api is not available"
+NO_API_MESSAGE = ("Prom закрыл доступ к API для вашего магазина: «Api is not available for free premium service». "
+                  "API работает только на платных пакетах Prom — проверьте пакет услуг в кабинете Prom. Токен в порядке")
+
+
 class PromError(Exception):
-    def __init__(self, message: str, retryable: bool = False, status: int | None = None):
+    def __init__(self, message: str, retryable: bool = False, status: int | None = None, busy: bool = False,
+                 no_api: bool = False):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+        self.busy = busy  # Prom занят другим импортом — просто подождать
+        self.no_api = no_api  # у магазина пакет без API — повторы не помогут
 
 
 class PromClient:
@@ -52,6 +74,9 @@ class PromClient:
             raise PromError(f"Нет связи с Prom: {exc}", retryable=True)
 
         code = response.status_code
+        if code in (401, 403) and NO_API_MARKER in response.text.lower():
+            # «Api is not available for free premium service»: дело не в токене — у магазина пакет без API
+            raise PromError(NO_API_MESSAGE, status=code, no_api=True)
         if code in (401, 403):
             raise PromError("Prom отклонил токен: проверьте токен и его права в кабинете", status=code)
         if code == 429 or code >= 500:
@@ -61,7 +86,11 @@ class PromClient:
         except ValueError:
             raise PromError(f"Prom вернул не JSON (HTTP {code}): {response.text[:300]}", retryable=code >= 500, status=code)
         if code >= 400:
-            raise PromError(f"Prom отклонил запрос (HTTP {code}): {_error_text(body)}", status=code)
+            text = _error_text(body)
+            if any(m in text.lower() for m in BUSY_MARKERS):
+                raise PromError("Prom ещё выполняет предыдущий импорт и не даёт запустить новый — программа подождёт "
+                                "и повторит сама", retryable=True, status=code, busy=True)
+            raise PromError(f"Prom отклонил запрос (HTTP {code}): {text}", status=code)
         if isinstance(body, dict) and body.get("error"):
             raise PromError(f"Prom: {_error_text(body)}", status=code)
         return body
@@ -75,6 +104,29 @@ class PromClient:
         if last_id:
             params["last_id"] = last_id
         return await self._request("GET", "/products/list", params=params)
+
+    # ---------- чат с покупателями ----------
+    # Prom отвечает 200 и {"status": "error", "message": …}, если что-то не так в запросе — это тоже ошибка
+    async def _chat(self, method: str, path: str, **kwargs) -> dict:
+        body = await self._request(method, path, **kwargs)
+        if isinstance(body, dict) and body.get("status") == "error":
+            raise PromError(f"Prom: {json.dumps(body.get('message'), ensure_ascii=False)[:300]}")
+        return (body.get("data") or {}) if isinstance(body, dict) else {}
+
+    async def chat_rooms(self, limit: int = 50) -> list[dict]:
+        return (await self._chat("GET", "/chat/rooms", params={"limit": limit})).get("rooms") or []
+
+    async def chat_messages(self, room_ident: str, limit: int = 100) -> list[dict]:
+        # room_id (uuid) Prom здесь не принимает — только room_ident
+        data = await self._chat("GET", "/chat/messages_history", params={"room_ident": room_ident, "limit": limit})
+        return data.get("messages") or []
+
+    async def chat_send(self, user_id: str, body: str, project: str = "promua") -> dict:
+        """Ответ покупателю. user_id — первая часть room_ident ({user_id}_{company_id}_buyer)."""
+        return await self._chat("POST", "/chat/send_message", json={"user_id": user_id, "body": body, "project": project})
+
+    async def chat_mark_read(self, room_id: str, message_id: int) -> dict:
+        return await self._chat("POST", "/chat/mark_message_read", json={"room_id": room_id, "message_id": int(message_id)})
 
     async def list_orders(self, limit: int = 100, last_id: int | None = None, **params) -> dict:
         query = {"limit": limit, **{k: v for k, v in params.items() if v not in (None, "")}}
@@ -92,12 +144,22 @@ class PromClient:
             body["cancellation_text"] = cancellation_text
         return await self._request("POST", "/orders/set_status", json=body)
 
-    async def import_file(self, content: bytes, settings: dict | None = None, filename: str = "products.xml") -> str:
-        """Загружает YML-файл целиком. Фото Prom скачает сам по ссылкам <picture>."""
+    async def save_declaration(self, order_id: int, declaration_id: str, delivery_type: str = "nova_poshta") -> dict:
+        """Номер ТТН, созданной не в кабинете Prom, — в заказ Prom (покупатель видит его в своём заказе)."""
+        body = await self._request("POST", "/delivery/save_declaration_id",
+                                   json={"order_id": order_id, "declaration_id": declaration_id,
+                                         "delivery_type": delivery_type})
+        if isinstance(body, dict) and body.get("status") == "error":
+            raise PromError(f"Prom не сохранил номер ТТН: {body.get('message') or ''} {json.dumps(body.get('errors') or '', ensure_ascii=False)}".strip())
+        return body
+
+    async def import_file(self, content: bytes, settings: dict | None = None, filename: str = "products.xml",
+                          content_type: str = "text/xml") -> str:
+        """Загружает файл целиком: YML (фото Prom скачает сам по ссылкам <picture>) или Excel."""
         body = await self._request(
             "POST",
             "/products/import_file",
-            files={"file": (filename, content, "application/xml")},
+            files={"file": (filename, content, content_type)},
             data={"data": json.dumps(settings or DEFAULT_IMPORT_SETTINGS)},
         )
         return _import_id(body)
@@ -106,8 +168,22 @@ class PromClient:
         body = await self._request("POST", "/products/import_url", json={"url": url, **(settings or DEFAULT_IMPORT_SETTINGS)})
         return _import_id(body)
 
+    async def get_by_external_id(self, external_id: str) -> dict | None:
+        """Товар на Prom по артикулу программы (id оффера в файле). None — такого товара нет."""
+        try:
+            body = await self._request("GET", f"/products/by_external_id/{quote(str(external_id), safe='')}")
+        except PromError as err:
+            if err.status == 404:
+                return None
+            raise
+        return body.get("product", body) if isinstance(body, dict) else None
+
     async def import_status(self, import_id: str) -> dict:
         return await self._request("GET", f"/products/import/status/{import_id}")
+
+    async def delete_products(self, prom_ids: list[int]) -> dict:
+        """Удалить товары на Prom (до 100 за раз). Ответ: {"processed_ids": [...], "errors": {"id": {...}}}."""
+        return await self._request("POST", "/products/edit", json=[{"id": int(i), "status": "deleted"} for i in prom_ids])
 
     async def edit_by_external_id(self, items: list[dict]) -> dict:
         """Быстрое изменение цены/наличия уже выгруженных товаров (до 100 за раз)."""
@@ -133,8 +209,45 @@ def _error_text(body) -> str:
 def import_state(status_body: dict) -> str:
     """'running' | 'ok' | 'failed' по ответу /products/import/status."""
     status = str(status_body.get("status", "")).lower()
-    if status in IMPORT_DONE_OK:
-        return "ok"
     if status in IMPORT_DONE_FAIL:
         return "failed"
+    if status in IMPORT_DONE_OK:
+        return "ok" if import_counted(status_body) else "running"
     return "running"
+
+
+# Ошибки строк файла. Проверено на живом кабинете (2026-10-09): счётчик with_errors_count при этом 0, а ошибки
+# приходят списком по категориям, с номерами позиций (в YML — id оффера, в Excel — «Унікальний_ідентифікатор»):
+#   "errors": [{"category": "validation", "errors": [{"code": 1001, "field_code": "name", "positions": ["3228575013"]}]}]
+FIELD_NAMES = {"name": "название", "price": "цена", "currency": "валюта", "description": "описание", "group": "группа",
+               "presence": "наличие", "images": "фото", "sku": "код товара", "external_id": "внешний ID"}
+ERROR_CODES = {1001: "обязательное поле не заполнено"}
+
+
+def error_positions(body: dict) -> dict:
+    """{позиция: текст ошибки} из ответа /products/import/status."""
+    out: dict[str, str] = {}
+    groups = body.get("errors") if isinstance(body, dict) else None
+    for group in groups if isinstance(groups, list) else []:
+        for e in (group.get("errors") if isinstance(group, dict) else None) or []:
+            if not isinstance(e, dict):
+                continue
+            field = str(e.get("field_code") or "")
+            what = ERROR_CODES.get(e.get("code")) or str(e.get("message") or "ошибка")
+            text = f"Prom: {FIELD_NAMES.get(field, field)} — {what} (код {e.get('code')})" if field else f"Prom: {what}"
+            for pos in e.get("positions") or []:
+                out[str(pos)] = f"{out[str(pos)]}; {text}" if str(pos) in out else text
+    return out
+
+
+def import_counted(body: dict) -> bool:
+    """Prom отчитался по всем товарам файла: создано + обновлено + без изменений + с ошибками = всего."""
+    total = body.get("total")
+    if not isinstance(total, int):
+        return True  # ответ без счётчиков — верим статусу
+    if total == 0:
+        return False  # файл ещё не разобран (или товаров нет — это решает ожидание в sync)
+    n = lambda key: body.get(key) or 0  # noqa: E731
+    errors = max(n("with_errors_count"), len(error_positions(body)))
+    done = max(n("imported"), n("created") + n("updated")) + n("not_changed") + errors
+    return done >= total

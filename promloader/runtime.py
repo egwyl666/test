@@ -6,6 +6,8 @@ RESTART_CODE = 3
 
 server = None          # uvicorn.Server, если программа запущена через launcher
 restart_requested = False
+port: int | None = None  # порт, на котором слушает программа (для туннеля к телефону)
+lan_bound = False       # программа слушает домашнюю сеть (включён доступ с телефона по Wi‑Fi)
 
 
 def can_restart() -> bool:

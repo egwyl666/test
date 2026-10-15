@@ -1,0 +1,149 @@
+"""Чат с покупателями: опрос Prom (подменённый HTTP), связь с товаром и заказом, «непрочитано», уведомления только на
+сообщения покупателя, ответ и «прочитано» (что именно уходит на Prom), черновик ИИ."""
+
+import asyncio
+import json
+
+import httpx
+import pytest
+
+from promloader import ai, chat, db, notify, products, sync
+from promloader.prom_api import PromClient
+
+ROOM = "14174056_4225569_buyer"
+
+
+def msg(mid, body, mine=False, status="unread", when="2026-10-15T10:00:00", **extra):
+    return {"id": mid, "room_id": "room-uuid", "room_ident": ROOM, "body": body, "date_sent": when, "type": "message",
+            "status": status, "is_sender": mine, "user_name": "Магазин" if mine else "Олена", "user_phone": "",
+            "context_item_type": None, "context_item_id": None, "attachments": None, **extra}
+
+
+class FakeProm:
+    """Prom: комнаты, история, приём ответа и «прочитано». Всё, что ушло на Prom, — в self.sent."""
+
+    def __init__(self):
+        self.messages = [
+            {**msg(1, None, when="2026-10-15T09:59:00"), "type": "context", "context_item_type": "product",
+             "context_item_id": 777},
+            msg(2, "Добрий день! Є в наявності?"),
+        ]
+        self.last_id = 2
+        self.sent = []
+        self.history_calls = 0
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/chat/rooms"):
+            return httpx.Response(200, json={"status": "ok", "data": {"rooms": [
+                {"id": "room-uuid", "ident": ROOM, "project": "promua", "status": "active",
+                 "last_message_id": self.last_id, "date_sent": "2026-10-15T10:00:00"}]}})
+        if path.endswith("/chat/messages_history"):
+            assert request.url.params["room_ident"] == ROOM
+            self.history_calls += 1
+            return httpx.Response(200, json={"status": "ok", "data": {"messages": self.messages}})
+        if path.endswith("/chat/send_message") or path.endswith("/chat/mark_message_read"):
+            self.sent.append((path.rsplit("/", 1)[-1], json.loads(request.content)))
+            return httpx.Response(200, json={"status": "ok", "data": {"message_id": 900}})
+        return httpx.Response(404, json={})
+
+    def client(self):
+        return PromClient("t", "https://my.prom.ua/api/v1", transport=httpx.MockTransport(self.handler))
+
+
+@pytest.fixture
+def prom(monkeypatch):
+    fake = FakeProm()
+    monkeypatch.setattr(sync, "make_client", fake.client)
+    return fake
+
+
+@pytest.fixture
+def tg(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append((event, text)))
+    return sent
+
+
+def poll(fake):
+    async def run():
+        async with fake.client() as c:
+            return await chat.poll(c)
+    return asyncio.run(run())
+
+
+def test_first_poll_stores_links_product_and_does_not_notify(prom, tg):
+    pid = products.create({"name": "Кружка", "price": 100})
+    with db.tx() as c:
+        c.execute("UPDATE products SET prom_id = 777 WHERE id = ?", (pid,))
+    assert poll(prom) == 0 and tg == []           # старая переписка — без уведомлений
+    room = chat.rooms()[0]
+    assert room["buyer_name"] == "Олена" and room["unread"] == 1 and room["product"]["id"] == pid
+    assert chat.unseen() == 1
+    data = chat.messages(ROOM)
+    assert [m["type"] for m in data["messages"]] == ["context", "message"]
+    assert data["messages"][0]["product"]["id"] == pid
+
+    # ничего не поменялось — историю не запрашиваем
+    calls = prom.history_calls
+    poll(prom)
+    assert prom.history_calls == calls
+
+    # новое сообщение покупателя — уведомление; своё сообщение магазина — нет
+    prom.messages += [msg(3, "А доставка коли?", when="2026-10-15T10:05:00"),
+                      msg(4, "Сьогодні відправимо", mine=True, status="read", when="2026-10-15T10:06:00")]
+    prom.last_id = 4
+    assert poll(prom) == 1
+    assert len(tg) == 1 and tg[0][0] == "chat" and "А доставка коли?" in tg[0][1] and "Олена" in tg[0][1]
+    assert chat.rooms()[0]["last_message"] == "Сьогодні відправимо" and chat.unseen() == 2
+
+
+def test_send_and_mark_read_payloads(prom, tg, client):
+    poll(prom)
+    r = client.post(f"/api/chat/rooms/{ROOM}/send", json={"text": "Так, є. Відправимо сьогодні."})
+    assert r.status_code == 200
+    # Prom ждёт user_id из room_ident и project — так шлёт и открытая библиотека Prom API
+    assert prom.sent[0] == ("send_message", {"user_id": "14174056", "body": "Так, є. Відправимо сьогодні.", "project": "promua"})
+    assert r.json()["messages"][-1]["body"] == "Так, є. Відправимо сьогодні." and r.json()["messages"][-1]["is_my"]
+    assert client.post(f"/api/chat/rooms/{ROOM}/send", json={"text": "  "}).status_code == 400
+
+    r = client.post(f"/api/chat/rooms/{ROOM}/read").json()
+    assert prom.sent[1] == ("mark_message_read", {"room_id": "room-uuid", "message_id": 2})
+    assert r["unseen"] == 0 and client.get("/api/meta").json()["chat_unseen"] == 0
+    assert client.get("/api/chat/rooms", params={"unread": "true"}).json()["rooms"] == []
+    assert client.get("/api/chat/rooms", params={"q": "олена"}).json()["rooms"][0]["buyer_name"] == "Олена"
+
+
+def test_prom_error_status_is_shown(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={"status": "error", "message": {"room_id": ["Unknown field."]}})
+
+    async def run():
+        async with PromClient("t", "https://x", transport=httpx.MockTransport(handler)) as c:
+            await c.chat_messages(ROOM)
+    with pytest.raises(Exception, match="Unknown field"):
+        asyncio.run(run())
+
+
+def test_ai_draft_uses_product_and_history(prom, monkeypatch, client):
+    pid = products.create({"name": "Кружка", "price": 100, "quantity": 5,
+                           "params": [{"name": "Обʼєм", "value": "350 мл"}]})
+    with db.tx() as c:
+        c.execute("UPDATE products SET prom_id = 777 WHERE id = ?", (pid,))
+    poll(prom)
+    seen = {}
+
+    def fake_reply(context, transport=None):
+        seen["context"] = context
+        return "Добрий день! Так, є в наявності.", {"model": "gemini-x", "tokens_in": 10, "tokens_out": 5, "cost_usd": 0.001}
+    monkeypatch.setattr(ai, "chat_reply", fake_reply)
+    r = client.post(f"/api/chat/rooms/{ROOM}/ai-draft").json()
+    assert r["reply"].startswith("Добрий день") and r["usage"]["model"] == "gemini-x"
+    assert "Кружка" in seen["context"] and "350 мл" in seen["context"] and "Є в наявності?" in seen["context"]
+    assert prom.sent == []  # черновик ничего не отправляет
+
+
+def test_page_and_rooms_api(client):
+    assert client.get("/chat").status_code == 200
+    body = client.get("/api/chat/rooms").json()
+    assert body["rooms"] == [] and body["unseen"] == 0 and body["enabled"] is True
