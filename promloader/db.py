@@ -270,6 +270,17 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_rooms_unread ON chat_rooms(unread);
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint    TEXT NOT NULL UNIQUE,
+    p256dh      TEXT NOT NULL,
+    auth        TEXT NOT NULL,
+    events      TEXT NOT NULL DEFAULT '[]',
+    device      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    last_error  TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS chat_messages (
     id           INTEGER PRIMARY KEY,
     room_ident   TEXT NOT NULL,

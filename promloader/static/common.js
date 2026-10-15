@@ -883,3 +883,17 @@ renderNav();
 renderLangSwitch();
 syncActionMenus();
 document.addEventListener("DOMContentLoaded", () => { initNav(); syncActionMenus(); addHelpButton(); });
+
+
+// ---------- приложение на телефоне (PWA) ----------
+// Service worker нужен для значка «как приложение» и push-уведомлений. Браузер разрешает его только на https
+// (адрес Cloudflare) или localhost — по Wi‑Fi (http://192.168…) значок на экран добавить можно, push — нет.
+let installPrompt = null;
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();  // покажем свою кнопку «📲 Установить на телефон» в «Настройках»
+  installPrompt = e;
+  document.dispatchEvent(new Event("pl-install-ready"));
+});
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register("/sw.js").catch(() => {});
+}

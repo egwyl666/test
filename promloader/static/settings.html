@@ -8,6 +8,12 @@
   <script src="/static/i18n.js"></script>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="icon" href="/static/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#6d3fe0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prom Loader">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
 </head>
 <body>
   <header class="topbar">
@@ -186,6 +192,34 @@
         <span id="ai-check-result" class="small"></span>
       </div>
       <p class="small err-text hidden" id="ai-key-warning"></p>
+    </div>
+
+    <div class="panel" id="app">
+      <h2>📲 Приложение на телефоне</h2>
+      <p class="small muted" style="margin-top:-4px">Значок Prom Loader на главном экране телефона: открывается как обычное
+        приложение, без адресной строки, и присылает уведомления о заказах и сообщениях покупателей — без Telegram.</p>
+      <div class="toolbar">
+        <button class="btn primary hidden" id="app-install">📲 Установить на телефон</button>
+        <span class="small" id="app-installed"></span>
+      </div>
+      <div class="small muted" id="app-howto">
+        <p style="margin:4px 0"><b>Android (Chrome):</b> меню ⋮ → «Установить приложение» (или «Добавить на главный экран»).</p>
+        <p style="margin:4px 0"><b>iPhone (Safari):</b> кнопка «Поделиться» → «На экран „Домой“». Уведомления на iPhone
+          работают только у установленного так значка (iOS 16.4 и новее).</p>
+        <p style="margin:4px 0">Значок, добавленный по адресу Cloudflare (https://….trycloudflare.com), работает, пока этот адрес
+          не сменится — после перезапуска программы откройте новый адрес из Telegram или QR-кода и установите значок заново.
+          Адрес по Wi‑Fi дома не меняется, но уведомлений по нему нет: браузеры разрешают их только на https.</p>
+      </div>
+      <div id="push-box" style="margin-top:10px">
+        <h3>Уведомления на этот телефон</h3>
+        <p class="small muted" id="push-note"></p>
+        <div id="push-events" class="small"></div>
+        <div class="toolbar">
+          <button class="btn" id="push-on">🔔 Включить уведомления</button>
+          <button class="btn hidden" id="push-test">Проверить уведомление</button>
+          <button class="btn hidden" id="push-off">Выключить</button>
+        </div>
+      </div>
     </div>
 
     <div class="panel" id="phone">
@@ -875,5 +909,6 @@
     loadRecipients().catch((err) => toast(`Получатели Telegram не загрузились: ${err.message}`, "error"));
   </script>
   <script src="/static/migration.js"></script>
+  <script src="/static/app-install.js"></script>
 </body>
 </html>

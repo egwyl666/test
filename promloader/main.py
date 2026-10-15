@@ -491,6 +491,20 @@ for route, filename in PAGES.items():
     app.get(route, include_in_schema=False)(_page(filename))
 
 
+# приложение на телефоне: манифест и service worker — с корня сайта (иначе service worker не охватит все страницы);
+# открыты без входа: браузер запрашивает манифест без куки, секретов в них нет
+@app.get("/manifest.webmanifest", include_in_schema=False)
+def manifest():
+    return FileResponse(STATIC / "manifest.webmanifest", media_type="application/manifest+json",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/sw.js", include_in_schema=False)
+def service_worker():
+    return FileResponse(STATIC / "sw.js", media_type="text/javascript; charset=utf-8",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
 @app.get("/media/{name}", include_in_schema=False)
 def media(name: str):
     path = db.uploads_dir() / Path(name).name

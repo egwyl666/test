@@ -32,7 +32,7 @@ ITERATIONS = 200_000
 LOGIN_WINDOW = 15 * 60       # окно подсчёта неудачных попыток входа, секунд
 LOGIN_FAILS_PER_CLIENT = 10
 LOGIN_FAILS_TOTAL = 30       # на всех вместе: перебор с разных адресов тоже упирается в предел
-PUBLIC_PATHS = {"/login", "/api/login", "/api/logout", "/favicon.ico"}
+PUBLIC_PATHS = {"/login", "/api/login", "/api/logout", "/favicon.ico", "/manifest.webmanifest", "/sw.js"}
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 SETTINGS = ("phone_lan", "phone_remote", "phone_password_hash", "phone_secret")
 
