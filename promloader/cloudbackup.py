@@ -22,7 +22,8 @@ from . import backup, db, r2
 log = logging.getLogger("promloader.cloudbackup")
 
 SECRET_SETTINGS = ("prom_token", "feed_key", "gemini_key", "anthropic_key", "github_token", "telegram_token",
-                   "support_token", "r2_access_key_id", "r2_secret_access_key", "phone_password_hash", "phone_secret")
+                   "support_token", "r2_access_key_id", "r2_secret_access_key", "phone_password_hash", "phone_secret",
+                   "backup_password")
 CLOUD_KEEP = 10
 REASONS = ("daily", "manual")  # перед обновлением и восстановлением — только на диске: они нужны «здесь и сейчас»
 
@@ -35,7 +36,7 @@ def enabled() -> bool:
     return db.get_setting("backup_cloud") == "1" and r2.configured()
 
 
-def _prefix() -> str:
+def prefix() -> str:
     value = db.get_setting("backup_cloud_prefix")
     if not value:
         value = secrets.token_hex(16)
@@ -76,11 +77,13 @@ def upload(name: str, transport=None) -> dict:
     try:
         with tempfile.TemporaryDirectory() as tmp:
             clean = Path(tmp) / name
-            strip_secrets(source, clean)
-            r2.put_file(_prefix() + name, clean, transport=transport)
+            # с сохранённым паролем копии ключи едут в облако зашифрованными — переезд без ввода ключей заново
+            from . import migration
+            migration.seal(source, clean, db.get_setting("backup_password") or None)
+            r2.put_file(prefix() + name, clean, transport=transport)
         for old in listing(transport)[CLOUD_KEEP:]:
-            r2.delete(_prefix() + old["name"], transport=transport)
-    except (r2.R2Error, OSError, zipfile.BadZipFile, sqlite3.DatabaseError) as exc:
+            r2.delete(prefix() + old["name"], transport=transport)
+    except (r2.R2Error, OSError, zipfile.BadZipFile, sqlite3.DatabaseError, ValueError) as exc:
         _set_state(error=f"Копия {name} не отправлена в облако: {exc}")
         log.warning("Облачная копия %s не отправлена: %s", name, exc)
         raise CloudBackupError(f"Копия не отправлена в облако: {exc}")
@@ -91,10 +94,10 @@ def upload(name: str, transport=None) -> dict:
 
 def listing(transport=None) -> list[dict]:
     """Копии в облаке, новые сверху."""
-    prefix = _prefix()
+    start = prefix()
     items = []
-    for obj in r2.list_keys(prefix, transport=transport):
-        name = obj["key"][len(prefix):]
+    for obj in r2.list_keys(start, transport=transport):
+        name = obj["key"][len(start):]
         if backup.NAME_RE.match(name):
             items.append({**backup.describe(name), "size": obj["size"]})
     return sorted(items, key=lambda b: b["name"], reverse=True)
@@ -108,7 +111,7 @@ def stage_restore(name: str, transport=None) -> None:
         path = Path(tmp) / name
         try:
             with open(path, "wb") as out:
-                r2.download(_prefix() + name, out, transport=transport)
+                r2.download(prefix() + name, out, transport=transport)
         except r2.R2Error as exc:
             raise CloudBackupError(f"Не удалось скачать копию из облака: {exc}")
         with open(path, "rb") as f:

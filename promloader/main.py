@@ -142,7 +142,8 @@ async def rates_worker(stop: asyncio.Event) -> None:
         pass
     while not stop.is_set():
         try:
-            await asyncio.to_thread(rates.check_changed)
+            if not db.paused():
+                await asyncio.to_thread(rates.check_changed)
         except Exception:
             log.exception("Сбой проверки курса")
         try:
@@ -187,7 +188,8 @@ async def notify_worker(stop: asyncio.Event) -> None:
     """Досылает уведомления Telegram, которые не ушли сразу (нет связи, Telegram недоступен)."""
     while not stop.is_set():
         try:
-            await asyncio.to_thread(notify.flush)
+            if not db.paused():  # после переезда уведомления шлёт новый компьютер — без дублей
+                await asyncio.to_thread(notify.flush)
         except Exception:
             log.exception("Сбой отправки уведомлений Telegram")
         try:
@@ -200,7 +202,7 @@ async def chat_worker(stop: asyncio.Event) -> None:
     """Раз в минуту — новые сообщения покупателей в чате Prom (если указан токен)."""
     while not stop.is_set():
         try:
-            if chat.enabled():
+            if chat.enabled() and not db.paused():
                 async with sync.make_client() as client:
                     await chat.poll(client)
         except PromError:
@@ -230,7 +232,7 @@ async def orders_worker(stop: asyncio.Event) -> None:
     """Раз в 5 минут забирает заказы с Prom (если указан токен)."""
     while not stop.is_set():
         try:
-            if orders.enabled():
+            if orders.enabled() and not db.paused():
                 async with sync.make_client() as client:
                     await orders.poll(client)
         except PromError:
@@ -251,7 +253,7 @@ async def ai_worker(stop: asyncio.Event) -> None:
     while not stop.is_set():
         delay = 3.0
         try:
-            if await asyncio.to_thread(aibulk.has_work):
+            if not db.paused() and await asyncio.to_thread(aibulk.has_work):
                 wait = pacer.wait_time()
                 if wait > 0:
                     delay = wait
@@ -283,7 +285,7 @@ async def schedule_worker(stop: asyncio.Event) -> None:
     """Выгрузка по расписанию; после отключения света пропущенные запуски обрабатываются по настройке."""
     while not stop.is_set():
         try:
-            for event in await asyncio.to_thread(schedule.tick):
+            for event in ([] if db.paused() else await asyncio.to_thread(schedule.tick)):
                 log.info("Расписание: %s", event)
         except Exception:
             log.exception("Сбой расписания выгрузки")
@@ -322,7 +324,7 @@ async def supplier_worker(stop: asyncio.Event) -> None:
     """Обновляет поставщиков по расписанию. Разбор прайса идёт в отдельном потоке, чтобы не тормозить интерфейс."""
     while not stop.is_set():
         try:
-            due = await asyncio.to_thread(suppliers.due)
+            due = [] if db.paused() else await asyncio.to_thread(suppliers.due)
         except Exception:
             log.exception("Сбой проверки расписания поставщиков")
             due = []

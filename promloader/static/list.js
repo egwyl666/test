@@ -611,6 +611,8 @@ function renderFirstSteps() {
       "Отметьте товар в списке ниже → «Отправить на Prom». Через 1–3 минуты он появится в кабинете Prom."],
   ];
   const done = steps.filter(([ok]) => ok).length;
+  // новая установка (товаров ещё нет) — сразу предлагаем переезд, чтобы не искать его в «Настройках»
+  $("#move-here").classList.toggle("hidden", f.products > 0);
   $("#first-steps").classList.toggle("hidden", hidden || done === steps.length);
   $("#first-steps-count").textContent = `сделано ${done} из ${steps.length}`;
   $("#first-steps-list").innerHTML = steps.map(([ok, title, text]) =>

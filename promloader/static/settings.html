@@ -246,6 +246,55 @@
       <button class="btn" id="update-save" style="margin-top:8px">Сохранить</button>
     </div>
 
+    <div class="panel" id="migration">
+      <h2>📦 Переезд на другой компьютер или сервер</h2>
+      <p class="small muted" style="margin-top:-4px">Всё переезжает одним файлом: товары, фото, прайсы поставщиков, заказы, чаты,
+        настройки и все ключи и токены (Prom, ИИ, Telegram, R2, ссылка фида — адрес в кабинете Prom не меняется). Ключи в файле
+        зашифрованы паролем, который вы придумаете: без него файл бесполезен.</p>
+
+      <h3>1. На старом компьютере</h3>
+      <div id="mig-old">
+        <label class="field"><span>Пароль копии</span>
+          <input id="mig-pass" type="password" autocomplete="new-password" placeholder="не меньше 8 символов — запомните его"></label>
+        <label class="small" style="display:block"><input type="checkbox" id="mig-photos" checked> Включить папку фото с компьютера
+          <span class="muted">(снимите, если все фото уже в R2 — файл станет в мегабайты, а не в гигабайты)</span></label>
+        <label class="small hidden" style="display:block" id="mig-cloud-wrap"><input type="checkbox" id="mig-cloud"> Сразу отправить пакет в облако R2</label>
+        <label class="small" style="display:block;margin-bottom:8px"><input type="checkbox" id="mig-pause"> Поставить фоновую работу на этом
+          компьютере на паузу <span class="muted">(заказы, чат, отправка — чтобы новый и старый не работали одновременно)</span></label>
+        <div class="toolbar">
+          <button class="btn primary" id="mig-create">Создать пакет переезда</button>
+          <button class="btn hidden" id="mig-code-btn">Код подключения к облаку</button>
+          <button class="btn hidden" id="mig-save-pass">Запомнить пароль для облачных копий</button>
+        </div>
+        <div id="mig-result" class="small"></div>
+        <div id="mig-code-box" class="hidden">
+          <p class="small muted">Код подключения — вставьте его на новом компьютере вместе с паролем: программа сама подключится к R2 и
+            покажет копии.</p>
+          <div class="row"><input id="mig-code" readonly translate="no"><button class="btn narrow" id="mig-code-copy" style="flex:0 0 auto">Копировать</button></div>
+        </div>
+        <p class="small muted" id="mig-pass-state"></p>
+      </div>
+
+      <h3>2. На новом компьютере или сервере</h3>
+      <div class="toolbar">
+        <button class="btn" id="mig-file">Выбрать файл копии…</button>
+        <span class="small muted">или код подключения к облаку:</span>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <input id="mig-connect-code" placeholder="PLK1-…" style="flex:2;min-width:200px" translate="no">
+        <input id="mig-connect-pass" type="password" placeholder="пароль копии" autocomplete="off" style="flex:1;min-width:140px">
+        <button class="btn" id="mig-connect" style="flex:0 0 auto">Подключиться к облаку</button>
+      </div>
+      <table class="runs" id="mig-cloud-list"></table>
+      <div id="mig-preview" class="hidden" style="margin-top:10px;border-left:4px solid var(--accent);padding-left:10px">
+        <p id="mig-preview-text"></p>
+        <label class="field hidden" id="mig-apply-pass-wrap"><span>Пароль копии (ключи и токены зашифрованы)</span>
+          <input id="mig-apply-pass" type="password" autocomplete="off"></label>
+        <button class="btn primary" id="mig-apply">Восстановить на этом компьютере</button>
+        <p class="small muted">Текущие данные этого компьютера перед восстановлением сохранятся в копию.</p>
+      </div>
+    </div>
+
     <div class="panel" id="backups">
       <h2>💾 Резервные копии</h2>
       <p class="small muted" style="margin-top:-4px">Копия базы товаров и всех фото делается автоматически раз в сутки (хранятся последние 7)
@@ -825,5 +874,6 @@
     loadCloudBackups();
     loadRecipients().catch((err) => toast(`Получатели Telegram не загрузились: ${err.message}`, "error"));
   </script>
+  <script src="/static/migration.js"></script>
 </body>
 </html>

@@ -25,7 +25,7 @@ KEEP_OTHER = 5
 DB_NAME = "promloader.sqlite3"
 FOLDERS = ("uploads", "suppliers")
 NAME_RE = re.compile(r"^promloader-(\d{8}-\d{6})-([a-z-]+)\.zip$")
-REASONS = {"daily": "ежедневная", "manual": "вручную", "before-update": "перед обновлением", "before-restore": "перед восстановлением"}
+REASONS = {"daily": "ежедневная", "manual": "вручную", "migration": "для переезда", "before-update": "перед обновлением", "before-restore": "перед восстановлением"}
 
 
 class BackupError(Exception):
@@ -38,7 +38,11 @@ def backups_dir() -> Path:
     return path
 
 
-def create(reason: str = "manual") -> dict:
+# зашифрованные ключи и токены и описание пакета (migration.py) — в копии для переезда и облачных копиях с паролем
+EXTRA_FILES = ("secrets.enc", "migration_manifest.json")
+
+
+def create(reason: str = "manual", with_photos: bool = True) -> dict:
     """Снимок базы делается через sqlite backup API — копия целостная, даже если программа работает."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = backups_dir() / f"promloader-{stamp}-{reason}.zip"
@@ -54,6 +58,8 @@ def create(reason: str = "manual") -> dict:
         with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(snapshot, DB_NAME)
             for folder in FOLDERS:
+                if folder == "uploads" and not with_photos:
+                    continue  # для переезда, когда все фото уже в R2: файл в мегабайты, а не в гигабайты
                 base = db.data_dir() / folder
                 if not base.exists():
                     continue
@@ -119,7 +125,7 @@ def _allowed(name: str) -> bool:
     parts = Path(name).parts
     if not parts or name.startswith(("/", "\\")) or ".." in parts or ":" in parts[0]:
         return False
-    return name == DB_NAME or (parts[0] in FOLDERS and len(parts) > 1)
+    return name in (DB_NAME, *EXTRA_FILES) or (parts[0] in FOLDERS and len(parts) > 1)
 
 
 def _validate(path: Path) -> None:
@@ -178,7 +184,7 @@ def stage_restore_stream(source) -> None:
 
 # настройки этого компьютера: восстановление копии их не меняет (в том числе пароль и доступ с телефона)
 DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update", "phone_lan", "phone_remote", "phone_password_hash",
-                   "phone_secret", "backup_cloud", "backup_cloud_prefix")
+                   "phone_secret", "backup_cloud", "backup_cloud_prefix", "paused", "backup_password")
 # токены и ключи этого компьютера: если в восстановленной копии их нет (облачная копия — без секретов), остаются свои
 KEEP_IF_MISSING = ("prom_token", "feed_key", "gemini_key", "anthropic_key", "telegram_token", "support_token",
                    "r2_access_key_id", "r2_secret_access_key")
@@ -215,6 +221,56 @@ def _restore_device_settings(data_dir: Path, kept: dict) -> None:
         conn.close()
 
 
+SECRETS_PENDING = "restore-secrets.json"  # ключи из копии для переезда, уже расшифрованные паролем (migration.py)
+
+
+def _apply_restored_secrets(data_dir: Path) -> None:
+    """Ключи и токены из пакета переезда важнее своих: переезжаем целиком, ничего не вводим заново."""
+    path = data_dir / SECRETS_PENDING
+    if not path.exists():
+        return
+    import json
+
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+        conn = sqlite3.connect(data_dir / DB_NAME)
+        try:
+            with conn:
+                conn.executemany("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                                 [(str(k), str(v)) for k, v in values.items()])
+        finally:
+            conn.close()
+    except (OSError, ValueError, sqlite3.DatabaseError) as exc:
+        log.error("Ключи из копии не восстановлены: %s", exc)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+# колонки с именами файлов: в базе только имя, без папки. Если в старой базе с Windows встретится путь с «\»,
+# на Linux (Docker, сервер) файл не нашёлся бы — оставляем одно имя
+PATH_COLUMNS = (("images", "file"), ("suppliers", "source_file"), ("r2_objects", "file"))
+
+
+def normalize_paths(db_path: Path) -> int:
+    conn = sqlite3.connect(db_path)
+    fixed = 0
+    try:
+        with conn:
+            for table, column in PATH_COLUMNS:
+                try:
+                    rows = conn.execute(f"SELECT rowid, {column} FROM {table} WHERE {column} LIKE '%\\%' "
+                                        f"OR {column} LIKE '%/%'").fetchall()
+                except sqlite3.OperationalError:
+                    continue  # таблицы нет в старой копии
+                for rowid, value in rows:
+                    name = value.replace("\\", "/").rsplit("/", 1)[-1]
+                    conn.execute(f"UPDATE OR IGNORE {table} SET {column} = ? WHERE rowid = ?", (name, rowid))
+                    fixed += 1
+    finally:
+        conn.close()
+    return fixed
+
+
 def apply_pending(data_dir: Path) -> bool:
     """Вызывается при запуске ДО открытия базы. Текущие данные сперва сохраняются в копию."""
     pending = data_dir / "restore-pending.zip"
@@ -231,6 +287,7 @@ def apply_pending(data_dir: Path) -> bool:
     except BackupError as exc:
         log.error("Восстановление отменено: %s", exc)
         pending.rename(pending.with_suffix(".rejected"))
+        (data_dir / SECRETS_PENDING).unlink(missing_ok=True)  # ключи от отклонённой копии не должны ждать следующей
         return False
     # откуда брать обновления — настройка этого компьютера, а не копии (копию мог подложить кто угодно)
     kept = _device_settings(data_dir)
@@ -246,6 +303,8 @@ def apply_pending(data_dir: Path) -> bool:
                 continue
             z.extract(info, data_dir)
     _restore_device_settings(data_dir, kept)
+    _apply_restored_secrets(data_dir)
+    normalize_paths(data_dir / DB_NAME)
     pending.unlink()
     log.info("Данные восстановлены из резервной копии")
     return True

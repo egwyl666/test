@@ -595,6 +595,12 @@ async def run_once(client_factory: Callable[[], PromClient] = make_client) -> in
 
 async def worker(stop: asyncio.Event, interval: float = 2.0) -> None:
     while not stop.is_set():
+        if db.paused():  # программа переехала на другой компьютер: отправляет он, а не этот
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval * 5)
+            except asyncio.TimeoutError:
+                pass
+            continue
         try:
             await run_once()
         except Exception:

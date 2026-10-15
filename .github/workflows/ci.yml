@@ -3,9 +3,17 @@
 # украинский — tests/test_i18n.py).
 name: Проверка
 
+# Один и тот же коммит уходит и в main, и в рабочую ветку — проверяем его один раз (в main),
+# а если запуск для того же коммита уже идёт, лишний отменяется.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.sha }}
+  cancel-in-progress: true
 
 jobs:
   tests:

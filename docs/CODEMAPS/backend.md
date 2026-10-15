@@ -40,6 +40,8 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
 | `reports.py` | 420 | Отчёты: `period_bounds`, `_load_orders` (заказы → позиции, комиссия `cpa_commission`, причина отмены), `_link_products` (по `prom_id`, затем артикулу — одним запросом), `_cost_history`/`_cost_at` (закупка на дату заказа по журналу, иначе текущая и «≈»), `sales`, `products_report` (ABC, `dead_stock`), `suppliers_report`, `store_report`, `build`, `xlsx` |
 | `web.py` | 40 | Общее для `main.py` и `routes/`: `log`, `_background`, `STATIC`, `_page` (страницы с `?v=`) |
 | `routes/*.py` | 1800 | Обработчики API по разделам (`APIRouter`): products, sending, settings, imports, suppliers, pricing, service, phone_access, schedule, catalog, chat, reports, categories, ai_bulk, orders, support. Подключаются в `main.py` в порядке `routes.ROUTERS` — порядок важен (`/api/reports/{tab}.xlsx` раньше `/api/reports/{tab}`, `/api/backups/cloud` раньше `/api/backups/{name}`) |
+| `migration.py` | 300 | Переезд: шифрование ключей паролем (`encrypt`/`decrypt`: PBKDF2-HMAC-SHA256 → HMAC-SHA256-CTR + HMAC-тег, только стандартная библиотека), `seal` (копия без ключей + `secrets.enc` + `migration_manifest.json`), `create_bundle` (причина «migration», `with_photos`), `receive`/`receive_cloud`/`inspect`, `apply` (пароль проверяется до любых изменений → `restore-secrets.json` → `backup.apply_pending`), `connection_code`/`connect` (`PLK1-…`: R2 и папка копий) |
+| `routes/migration.py` | 100 | `/api/migration*` (bundle, code, connect, inspect, inspect-cloud, apply, password), `/api/pause` |
 | `cloudbackup.py` | 150 | Копии в облаке R2: `strip_secrets` (без токенов, VACUUM), `upload` (`backups/<32 hex>/…`, последние 10), `listing`, `stage_restore`, `after_backup` (daily/manual) |
 | `phone.py` | 326 | Доступ с телефона: пароль (`hash_password` pbkdf2, `check_password`), сессия (`make_session` / `valid_session`, `sign_out_everywhere`), `LoginLimiter`, `client_kind`, `from_this_computer`, `lan_addresses` / `lan_urls`, `qr_svg` (segno), `PhoneTunnel` (cloudflared к самой программе, подкласс `phototunnel.Tunnel`), `keep_tunnel` (шаг `phone_worker`, новый адрес → Telegram «phone»), `status` |
 | `chat.py` | 270 | Чат с покупателями Prom: `poll` (комнаты → история только изменившихся, `_store`, уведомление «chat» о новых сообщениях покупателя, при первом опросе — без уведомлений), `rooms`, `messages`, `unseen`, `send` (`user_id` из `room_ident`), `mark_read`, `ai_draft` (`ai.chat_reply`) |
@@ -83,6 +85,8 @@ _Обновлено: 2026-10-11 · версия 2.9.0_
 - `main.py` — только приложение, middleware, воркеры, страницы. Новый обработчик — в свой раздел `routes/<раздел>.py`
   (`@router.get…`), общий помощник другого раздела — `from .products import _selected`. Все пути вместе —
   `main.all_routes()` (FastAPI прячет подключённые роутеры от `app.routes`).
+- Пауза после переезда — `db.paused()`: каждый фоновый цикл, который ходит на Prom или шлёт уведомления, проверяет
+  её (новый воркер — тоже). `paused` и `backup_password` — настройки компьютера (`backup.DEVICE_SETTINGS`).
 - Секреты в `settings` перечислены в `cloudbackup.SECRET_SETTINGS` и `backup.KEEP_IF_MISSING`: новый токен или ключ —
   добавить туда, иначе он уйдёт в облачную копию.
 - Эндпоинты — обычные `def` (FastAPI выполняет их в пуле потоков). `async def` — только если нужен цикл событий

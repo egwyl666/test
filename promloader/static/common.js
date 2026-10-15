@@ -45,6 +45,7 @@ async function loadMeta() {
   showUpdateBanner();
   showTokenBanner();
   showFailedSuppliers();
+  showPaused();
   showMissedSchedules();
   const link = document.querySelector('.topbar nav a[href="/orders"]');
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
@@ -93,6 +94,22 @@ function showFailedSuppliers() {
   bar.innerHTML = `⚠️ Поставщик <b translate="no">«${esc(first.name)}»</b> не обновился: ${esc((first.message || "").slice(0, 160))}
     <a href="/supplier?id=${first.id}">Открыть</a>${show.length > 1 ? ` · и ещё ${show.length - 1} — <a href="/suppliers">все поставщики</a>` : ""}`;
   document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
+}
+
+// Пауза после переезда: этот компьютер не забирает заказы и не отправляет — работает новый.
+function showPaused() {
+  $$(".paused-banner").forEach((el) => el.remove());
+  if (!META.paused) return;
+  const bar = document.createElement("div");
+  bar.className = "update-banner paused-banner";
+  bar.innerHTML = `⏸ Программа на паузе: данные перенесены на другое устройство, здесь заказы, чат и отправка на Prom
+    не работают. <button class="btn small" id="unpause">Включить обратно</button>`;
+  document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
+  bar.querySelector("#unpause").onclick = async () => {
+    if (!confirm("Включить фоновую работу на этом компьютере? Если программа работает и на новом устройстве, заказы и уведомления будут приходить дважды.")) return;
+    try { await api("/api/pause", { method: "POST", json: { paused: false } }); await loadMeta(); }
+    catch (err) { toast(err.message, "error"); }
+  };
 }
 
 // «Что изменится»: окно с итогом пробного прогона. Возвращает true, если нажали «Применить».

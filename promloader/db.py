@@ -443,6 +443,12 @@ def in_transaction() -> bool:
 IN_LIST = "IN (SELECT value FROM json_each(?))"
 
 
+def paused() -> bool:
+    """Фоновая работа на паузе: данные перенесены на другой компьютер или сервер, и работает он — иначе оба
+    забирали бы заказы и чат с Prom, слали двойные уведомления и мешали друг другу при отправке."""
+    return get_setting("paused") == "1"
+
+
 def as_list(values) -> str:
     return json.dumps(list(values), ensure_ascii=False)
 
