@@ -21,7 +21,7 @@ jobs:
             requirements.txt
             requirements-dev.txt
       - name: Установить зависимости
-        run: pip install -r requirements-dev.txt ruff
+        run: pip install -r requirements-dev.txt ruff==0.15.8  # версия закреплена: новые ruff включают новые правила сами
       - name: ruff
         run: ruff check promloader tests
       - name: pytest
