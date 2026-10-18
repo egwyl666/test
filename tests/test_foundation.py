@@ -190,10 +190,10 @@ def test_log_redacts_secrets_in_urls(tmp_path):
     import logging
 
     from promloader import config, main
-    line = ('HTTP Request: POST https://api.telegram.org/bot8902121553:AAH_VJS-x/sendMessage "200" '
-            'GET https://ncase.ua/xml2/?key=01a5e35d&lang=ua POST https://fcm.googleapis.com/fcm/send/fWF1:APA91b "201"')
+    line = ('HTTP Request: POST https://api.telegram.org/bot1234567890:AAFakeTok-x/sendMessage "200" '
+            'GET https://ncase.ua/xml2/?key=fakekey77&lang=ua POST https://fcm.googleapis.com/fcm/send/fWF1:APA91b "201"')
     clean = config.redact(line)
-    assert "AAH_VJS" not in clean and "01a5e35d" not in clean and "APA91b" not in clean
+    assert "AAFakeTok" not in clean and "fakekey77" not in clean and "APA91b" not in clean
     assert "/bot***/sendMessage" in clean and "?key=***&lang=ua" in clean
     handler = main.setup_log_file(tmp_path)
     logging.getLogger("httpx").warning("HTTP Request: %s", "https://api.telegram.org/bot123:SECRET/getMe")
