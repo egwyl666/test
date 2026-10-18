@@ -80,7 +80,7 @@ def test_old_single_chat_is_migrated():
     db.set_setting("telegram_events", "order")
     # события, появившиеся позже (адрес для телефона, посылки), получатель получает автоматически — один раз
     assert [(r["chat_id"], r["name"], r["events"]) for r in notify.recipients()] == [
-        ("555", "Старый", ["order", "phone", "parcel_waiting", "parcel_refused"])]
+        ("555", "Старый", ["order", "phone", "parcel_waiting", "parcel_refused", "daily_summary"])]
 
 
 def test_bad_token_message(monkeypatch):

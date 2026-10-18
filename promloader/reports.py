@@ -260,6 +260,20 @@ def _abc(rows: list[dict]) -> None:
 def products_report(start: date, end: date, dead_days: int = DEAD_DAYS) -> dict:
     orders = _load_orders(start, end)
     _profit_items(orders)
+    rows = _product_rows(orders)
+    sold = [r for r in rows if r["units"]]
+    top = sorted(sold, key=lambda r: (-r["revenue"], r["name"]))
+    return {
+        "top": top,
+        "abc": {k: sum(1 for r in sold if r.get("abc") == k) for k in "ABC"},
+        "dead": dead_stock(dead_days),
+        "dead_days": dead_days,
+        "canceled": sorted([r for r in rows if r["canceled"]], key=lambda r: -r["canceled"])[:30],
+    }
+
+
+def _product_rows(orders: list[dict]) -> list[dict]:
+    """Позиции заказов (уже с прибылью) → строка на товар: штуки, выручка, прибыль, заказы, отмены, ABC."""
     rows: dict = {}
     canceled: Counter = Counter()
     for o in orders:
@@ -286,14 +300,8 @@ def products_report(start: date, end: date, dead_days: int = DEAD_DAYS) -> dict:
     _abc(sold)
     for r in rows.values():
         r["revenue"], r["profit"] = _r(r["revenue"]), _r(r["profit"]) if r["profit_known"] else None
-    top = sorted(sold, key=lambda r: (-r["revenue"], r["name"]))
-    return {
-        "top": top,
-        "abc": {k: sum(1 for r in sold if r.get("abc") == k) for k in "ABC"},
-        "dead": dead_stock(dead_days),
-        "dead_days": dead_days,
-        "canceled": sorted([r for r in rows.values() if r["canceled"]], key=lambda r: -r["canceled"])[:30],
-    }
+        r["units"] = _r(r["units"])
+    return list(rows.values())
 
 
 def dead_stock(days: int = DEAD_DAYS) -> list[dict]:
@@ -419,6 +427,111 @@ def build(tab: str, period: str = "30d", date_from: str = "", date_to: str = "",
     return {"tab": tab, "period": period, "from": start.isoformat(), "to": end.isoformat(), **data}
 
 
+# ---------- страница «Заказы»: выручка и статистика товаров ----------
+
+def _totals(orders: list[dict]) -> dict:
+    done = [o for o in orders if not o["canceled"]]
+    revenue = sum(o["total"] for o in done)
+    known = [o for o in done if any(i["profit"] is not None for i in o["items"])]
+    profit = sum(i["profit"] for o in known for i in o["items"] if i["profit"] is not None) - \
+        sum(o["commission"] for o in known)
+    return {"orders": len(done), "revenue": _r(revenue), "avg_check": _r(revenue / len(done)) if done else 0,
+            "units": _r(sum(i["qty"] for o in done for i in o["items"])),
+            "profit": _r(profit) if known else None,
+            "approx": any(i["approx"] for o in known for i in o["items"] if i["profit"] is not None),
+            "canceled": len(orders) - len(done)}
+
+
+def order_summary(today: date | None = None) -> dict:
+    """Полоска над списком заказов: сегодня, вчера, 7 дней, этот месяц — один проход по заказам месяца."""
+    today = today or datetime.now().date()
+    start = min(today.replace(day=1), today - timedelta(days=6))
+    rates.prefetch()
+    orders = _load_orders(start, today)
+    _profit_items(orders)
+    spans = {"today": (today, today), "yesterday": (today - timedelta(days=1),) * 2,
+             "7d": (today - timedelta(days=6), today), "month": (today.replace(day=1), today)}
+    return {k: _totals([o for o in orders if a <= o["day"] <= b]) for k, (a, b) in spans.items()}
+
+
+ORDER_SORTS = {"revenue": lambda r: (-r["revenue"], r["name"]), "units": lambda r: (-r["units"], r["name"]),
+               "profit": lambda r: (-(r["profit"] if r["profit"] is not None else float("-inf")), r["name"]),
+               "orders": lambda r: (-r["orders"], r["name"]), "canceled": lambda r: (-r["canceled"], r["name"]),
+               "name": lambda r: r["name"].lower()}
+
+
+def order_stats(period: str = "30d", date_from: str = "", date_to: str = "", q: str = "", sort: str = "revenue") -> dict:
+    """Вкладка «Статистика» на странице заказов: итоги периода и строка на каждый проданный (или отменённый) товар."""
+    start, end = period_bounds(period, date_from, date_to)
+    rates.prefetch()
+    orders = _load_orders(start, end)
+    _profit_items(orders)
+    rows = _product_rows(orders)
+    total = sum(r["revenue"] for r in rows) or 0
+    for r in rows:
+        r["share"] = round(r["revenue"] / total * 100, 1) if total else 0
+    if q:
+        q = q.lower()
+        rows = [r for r in rows if q in (r["name"] or "").lower() or q in (r["code"] or "").lower()]
+    rows.sort(key=ORDER_SORTS.get(sort, ORDER_SORTS["revenue"]))
+    return {"tab": "order_products", "period": period, "from": start.isoformat(), "to": end.isoformat(),
+            "totals": _totals(orders), "items": rows}
+
+
+# ---------- сводка за день в Telegram ----------
+
+SUMMARY_HOUR = 21   # местное время: к вечеру день уже почти закончен, а утром сводка была бы за вчера
+
+
+def _money(x) -> str:
+    return f"{x:,.0f}".replace(",", " ") + " грн"
+
+
+def daily_summary_text(day: date) -> str:
+    from .notify import esc
+    orders = _load_orders(day - timedelta(days=1), day)
+    _profit_items(orders)
+    t = _totals([o for o in orders if o["day"] == day])
+    y = _totals([o for o in orders if o["day"] == day - timedelta(days=1)])
+    lines = [f"📊 <b>Итоги дня {day.strftime('%d.%m.%Y')}</b>"]
+    if not t["orders"] and not t["canceled"]:
+        lines.append("Заказов сегодня не было.")
+    else:
+        diff = ""
+        if y["revenue"]:
+            pct = round((t["revenue"] - y["revenue"]) / y["revenue"] * 100)
+            diff = f" ({'+' if pct >= 0 else ''}{pct}% к вчера)"
+        lines.append(f"Заказов: <b>{t['orders']}</b> · выручка <b>{_money(t['revenue'])}</b>{diff}")
+        if t["orders"]:
+            lines.append(f"Средний чек: {_money(t['avg_check'])}")
+        if t["profit"] is not None:
+            lines.append(f"Прибыль: {'≈ ' if t['approx'] else ''}{_money(t['profit'])}")
+        if t["canceled"]:
+            lines.append(f"Отменено: {t['canceled']}")
+        top = sorted((r for r in _product_rows([o for o in orders if o["day"] == day]) if r["units"]),
+                     key=lambda r: -r["revenue"])[:3]
+        if top:
+            lines.append("Больше всего выручки:")
+            lines += [f"• {esc(r['name'])} — {r['units']:g} шт., {_money(r['revenue'])}" for r in top]
+    return "\n".join(lines)
+
+
+def maybe_daily_summary(now: datetime | None = None) -> bool:
+    """Раз в день после SUMMARY_HOUR — сводка подписанным на «daily_summary». Пропущенный вечер (компьютер был
+    выключен) не досылается утром: вчерашние итоги уже не новость."""
+    from . import notify
+    now = now or datetime.now()
+    today = now.date().isoformat()
+    if now.hour < SUMMARY_HOUR or db.get_setting("daily_summary_sent") == today:
+        return False
+    db.set_setting("daily_summary_sent", today)
+    if not any("daily_summary" in r["events"] for r in notify.recipients()):
+        return False
+    rates.prefetch()
+    notify.send("daily_summary", daily_summary_text(now.date()), background=False)
+    return True
+
+
 # ---------- Excel ----------
 
 # заголовки листов Excel (как и выгрузка списка товаров) — по-русски
@@ -437,6 +550,10 @@ XLSX_TABLES = {
                                                ("Выручка, грн", "revenue"), ("Прибыль, грн", "profit")]),
                   ("Группы", "groups", [("Группа", "name"), ("Штук", "units"), ("Выручка, грн", "revenue"),
                                         ("Прибыль, грн", "profit")])],
+    "order_products": [("Товары в заказах", "items", [("Товар", "name"), ("Артикул", "code"), ("Группа", "group"),
+                                                       ("Поставщик", "supplier"), ("Заказов", "orders"), ("Штук", "units"),
+                                                       ("Выручка, грн", "revenue"), ("Доля выручки, %", "share"),
+                                                       ("Прибыль, грн", "profit"), ("≈", "approx"), ("Отмен", "canceled")])],
     "store": [("Расходы ИИ", "ai", [("Модель", "model"), ("Действие", "action"), ("Запросов", "requests"),
                                     ("Токенов", "tokens"), ("$", "usd"), ("грн", "uah")])],
 }

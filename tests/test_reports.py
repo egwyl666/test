@@ -103,3 +103,82 @@ def test_api_xlsx_and_page(client):
     assert client.get("/api/reports/nope").status_code == 400
     assert client.get("/api/reports/sales", params={"period": "custom", "date_from": "x"}).status_code == 400
     assert client.get("/reports").status_code == 200
+
+
+# ---------- 2.17.0: выручка на странице «Заказы», статистика товаров, сводка за день ----------
+
+def test_order_summary_today_yesterday_week_month():
+    product("Фонарь", 501, cost=60)
+    order(1, 0, [(501, 1, 100)])
+    order(2, 0, [(501, 2, 200)], status="canceled")
+    order(3, 1, [(501, 3, 300)])
+    s = reports.order_summary()
+    assert s["today"]["orders"] == 1 and s["today"]["revenue"] == 100 and s["today"]["canceled"] == 1
+    assert s["today"]["profit"] == 40
+    assert s["7d"]["revenue"] == 400 and s["7d"]["units"] == 4
+    assert s["yesterday"]["revenue"] == 300
+
+
+def test_order_stats_per_product_sort_search_and_share():
+    product("Фонарь", 501, cost=60)
+    product("Повербанк", 502, cost=200)
+    order(1, 2, [(501, 2, 200), (502, 1, 300)])
+    order(2, 3, [(501, 1, 100)])
+    order(3, 1, [(502, 1, 300)], status="canceled")
+    r = reports.order_stats("30d")
+    assert r["totals"]["revenue"] == 600 and r["totals"]["canceled"] == 1
+    names = [i["name"] for i in r["items"]]
+    assert names == ["Повербанк", "Фонарь"]  # по выручке: 300 = 300 → по имени
+    fon = r["items"][1]
+    assert fon["units"] == 3 and fon["orders"] == 2 and fon["profit"] == 120 and fon["share"] == 50.0
+    pb = r["items"][0]
+    assert pb["canceled"] == 1 and pb["units"] == 1
+    assert [i["name"] for i in reports.order_stats("30d", sort="units")["items"]][0] == "Фонарь"
+    assert [i["name"] for i in reports.order_stats("30d", q="повер")["items"]] == ["Повербанк"]
+
+
+def test_order_stats_api_and_xlsx(client):
+    product("Фонарь", 501, cost=60)
+    order(1, 1, [(501, 2, 200)])
+    r = client.get("/api/orders/stats?period=7d").json()
+    assert r["items"][0]["revenue"] == 200
+    assert client.get("/api/orders/summary").json()["7d"]["revenue"] == 200
+    x = client.get("/api/orders/stats.xlsx?period=7d")
+    ws = openpyxl.load_workbook(io.BytesIO(x.content)).active
+    rows = list(ws.values)
+    assert rows[1][0] == "Товар" and rows[2][0] == "Фонарь" and rows[2][6] == 200
+    assert client.get("/api/orders/stats?period=custom&date_from=bad").status_code == 400
+
+
+def test_daily_summary_once_a_day_after_hour(monkeypatch):
+    from promloader import notify
+    product("Фонарь", 501, cost=60)
+    order(1, 0, [(501, 2, 200)])
+    sent = []
+    monkeypatch.setattr(notify, "recipients", lambda: [{"chat_id": "1", "events": ["daily_summary"]}])
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append((event, text)))
+    now = datetime.now()
+    assert not reports.maybe_daily_summary(now.replace(hour=reports.SUMMARY_HOUR - 1))
+    assert reports.maybe_daily_summary(now.replace(hour=reports.SUMMARY_HOUR))
+    assert not reports.maybe_daily_summary(now.replace(hour=reports.SUMMARY_HOUR + 1))  # второй раз — нет
+    event, text = sent[0]
+    assert event == "daily_summary" and "Заказов: <b>1</b>" in text and "Фонарь" in text and "Прибыль" in text
+
+
+def test_daily_summary_skipped_without_subscribers(monkeypatch):
+    from promloader import notify
+    monkeypatch.setattr(notify, "recipients", lambda: [{"chat_id": "1", "events": ["order"]}])
+    monkeypatch.setattr(notify, "send", lambda *a, **k: (_ for _ in ()).throw(AssertionError("не должно")))
+    assert not reports.maybe_daily_summary(datetime.now().replace(hour=23))
+
+
+def test_daily_summary_text_empty_day():
+    assert "Заказов сегодня не было" in reports.daily_summary_text(datetime.now().date())
+
+
+def test_daily_summary_event_added_to_existing_recipients():
+    from promloader import notify
+    with db.tx() as c:
+        c.execute("INSERT INTO tg_recipients (chat_id, name, events, created_at) VALUES ('5', 'x', '[\"order\"]', ?)", (db.now(),))
+    db.set_setting("tg_events_version", "1")
+    assert "daily_summary" in notify.recipients()[0]["events"]

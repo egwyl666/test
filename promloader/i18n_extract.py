@@ -34,7 +34,8 @@ PY_SKIP_NAMES = {
     "MISMATCH_HEADERS", "CAT_HEADERS", "COD_WORDS", "NP_DEFAULTS",                  # categories.py — колонки файла для кабинета Prom
 }
 PY_SKIP_RETURNS = {"build_prompt"}     # ai.py — что возвращается, уходит модели
-PY_SKIP_FUNCS = {"ai_draft"}           # chat.py — текст для модели, а не для экрана
+PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
+                 "daily_summary_text"}  # reports.py — сообщение в Telegram (Telegram — по-русски)
 PY_SKIP_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "send", "notify", "_tg",
                  # регулярные выражения
                  "compile", "search", "match", "fullmatch", "sub", "split", "findall", "finditer",

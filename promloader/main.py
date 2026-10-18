@@ -42,6 +42,7 @@ from . import (
     promcatalog,
     r2,
     rates,
+    reports,
     schedule,
     suppliers,
     support,
@@ -195,6 +196,7 @@ async def notify_worker(stop: asyncio.Event) -> None:
         try:
             if not db.paused():  # после переезда уведомления шлёт новый компьютер — без дублей
                 await asyncio.to_thread(notify.flush)
+                await asyncio.to_thread(reports.maybe_daily_summary)
         except Exception:
             log.exception("Сбой отправки уведомлений Telegram")
         try:

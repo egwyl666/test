@@ -2,8 +2,9 @@
 
 
 from fastapi import APIRouter, Body, HTTPException
+from fastapi.responses import Response
 
-from .. import config, db, notify, orders, sync
+from .. import config, db, notify, orders, reports, sync
 from ..prom_api import PromError
 
 router = APIRouter()
@@ -16,6 +17,32 @@ def list_orders(status: str = "", q: str = "", date_from: str = "", date_to: str
     return {**orders.list_orders(flt, max(1, min(limit, 200)), max(0, min(offset, 10 ** 9))),
             "statuses": orders.STATUSES, "settable": orders.SETTABLE, "cancel_reasons": orders.CANCEL_REASONS,
             "enabled": orders.enabled()}
+
+
+@router.get("/api/orders/summary")
+def orders_summary():
+    return reports.order_summary()
+
+
+def _stats(period, date_from, date_to, q, sort):
+    try:
+        return reports.order_stats(period, date_from, date_to, q.strip(), sort)
+    except reports.ReportError as exc:
+        raise HTTPException(400, str(exc))
+
+
+# Excel — та же таблица, что на вкладке «Статистика»
+@router.get("/api/orders/stats.xlsx")
+def orders_stats_xlsx(period: str = "30d", date_from: str = "", date_to: str = "", q: str = "", sort: str = "revenue"):
+    report = _stats(period, date_from, date_to, q, sort)
+    name = f"tovary-v-zakazah-{report['from']}-{report['to']}.xlsx"
+    return Response(reports.xlsx(report), media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/api/orders/stats")
+def orders_stats(period: str = "30d", date_from: str = "", date_to: str = "", q: str = "", sort: str = "revenue"):
+    return _stats(period, date_from, date_to, q, sort)
 
 
 @router.post("/api/orders/refresh")

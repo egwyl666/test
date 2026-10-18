@@ -30,6 +30,32 @@
       <span class="spacer"></span>
       <span class="small muted" id="poll-info"></span>
     </div>
+    <div class="tabs" id="order-tabs">
+      <button class="tab active" data-tab="list">Заказы</button>
+      <button class="tab" data-tab="stats">Статистика товаров</button>
+    </div>
+    <div class="kpis" id="revenue-strip"></div>
+    <section id="stats-view" class="hidden">
+      <div class="toolbar report-period">
+        <select id="st-period" style="max-width:160px">
+          <option value="today">Сегодня</option><option value="7d">7 дней</option>
+          <option value="30d" selected>30 дней</option><option value="month">Этот месяц</option>
+          <option value="custom">Свой период</option>
+        </select>
+        <span id="st-custom" class="hidden">
+          <label class="small muted">с <input type="date" id="st-from"></label>
+          <label class="small muted">по <input type="date" id="st-to"></label>
+        </span>
+        <input id="st-q" placeholder="Название или артикул" style="max-width:240px">
+        <span class="spacer"></span>
+        <a class="btn small" id="st-xlsx" href="#">⬇ Excel</a>
+      </div>
+      <div class="kpis" id="st-totals"></div>
+      <div class="err-text" id="st-error"></div>
+      <div id="st-table"></div>
+      <p class="small muted" id="st-note"></p>
+    </section>
+    <section id="list-view">
     <div id="orders-off" class="panel hidden">
       Чтобы видеть заказы, укажите API-токен Prom в <a href="/settings">Настройках</a>.
       Заказы проверяются автоматически каждые 5 минут. Уведомления о новых заказах можно получать в Telegram — это тоже в Настройках.
@@ -51,6 +77,7 @@
       <button class="btn hidden" id="more">Показать ещё</button>
     </div>
     <div id="empty" class="panel empty-state hidden">Заказов пока нет.</div>
+    </section>
   </main>
 
   <div class="modal hidden" id="ttn-modal">
@@ -97,6 +124,7 @@
 
   <script src="/static/common.js"></script>
   <script src="/static/orders-np.js"></script>
+  <script src="/static/orders-stats.js"></script>
   <script>
     const PAGE = 50;
     const view = { status: "", q: "", date_from: "", date_to: "", items: [], total: 0, seq: 0 };

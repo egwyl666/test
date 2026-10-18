@@ -31,9 +31,10 @@ EVENTS = {
     "parcel_arrived": "посылка прибыла в отделение Новой Почты",
     "parcel_waiting": "посылку долго не забирают из отделения",
     "parcel_refused": "отказ от посылки или возврат",
+    "daily_summary": "сводка за день: заказы, выручка, прибыль (в 21:00)",
 }
 DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_missed", "phone", "parcel_waiting",
-                  "parcel_refused"]
+                  "parcel_refused", "daily_summary"]
 
 
 class NotifyError(Exception):
@@ -113,7 +114,7 @@ def _migrate_single_chat() -> None:
 
 # события, появившиеся после того, как получатели уже были добавлены: включаем их всем один раз
 # (иначе новый адрес для телефона не приходил тем, кто подключил Telegram раньше)
-NEW_EVENTS = {1: ["phone", "parcel_waiting", "parcel_refused"]}
+NEW_EVENTS = {1: ["phone", "parcel_waiting", "parcel_refused"], 2: ["daily_summary"]}
 
 
 def _add_new_events() -> None:
