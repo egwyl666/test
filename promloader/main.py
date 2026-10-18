@@ -90,6 +90,7 @@ def setup_log_file(data_dir: Path) -> logging.Handler:
     handler = RotatingFileHandler(folder / "promloader.log", maxBytes=LOG_LIMIT, backupCount=2, encoding="utf-8",
                                   delay=True)
     handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.addFilter(config.RedactFilter())  # токен бота, ключи в ссылках — не в журнал
     handler.promloader_file = True
     root.addHandler(handler)
     if os.environ.get("PROMLOADER_TRAY"):

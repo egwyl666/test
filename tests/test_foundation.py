@@ -183,3 +183,22 @@ def test_strip_secrets_leaves_other_settings(tmp_path):
         z.extract(backup.DB_NAME, tmp_path / "x")
     rows = dict(sqlite3.connect(tmp_path / "x" / backup.DB_NAME).execute("SELECT key, value FROM settings").fetchall())
     assert rows == {"shop_name": "Мій магазин"}
+
+
+def test_log_redacts_secrets_in_urls(tmp_path):
+    """2.17.3: httpx писал в журнал токен бота Telegram и ключи из ссылок прайсов — журнал уходит в «Поддержку»."""
+    import logging
+
+    from promloader import config, main
+    line = ('HTTP Request: POST https://api.telegram.org/bot8902121553:AAH_VJS-x/sendMessage "200" '
+            'GET https://ncase.ua/xml2/?key=01a5e35d&lang=ua POST https://fcm.googleapis.com/fcm/send/fWF1:APA91b "201"')
+    clean = config.redact(line)
+    assert "AAH_VJS" not in clean and "01a5e35d" not in clean and "APA91b" not in clean
+    assert "/bot***/sendMessage" in clean and "?key=***&lang=ua" in clean
+    handler = main.setup_log_file(tmp_path)
+    logging.getLogger("httpx").warning("HTTP Request: %s", "https://api.telegram.org/bot123:SECRET/getMe")
+    handler.flush()
+    text = (tmp_path / "logs" / "promloader.log").read_text(encoding="utf-8")
+    assert "SECRET" not in text and "/bot***/getMe" in text
+    logging.getLogger().removeHandler(handler)
+    handler.close()

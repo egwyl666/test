@@ -188,7 +188,7 @@ def test_gemini_free_tier_limit_parsed_and_remembered():
     transport = httpx.MockTransport(lambda r: httpx.Response(
         429, json=quota_429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 250)))
     with pytest.raises(ai.AIError, match="лимит 250 запросов в сутки для gemini-3.8-flash .бесплатный ключ. — "
-                                         "снова можно через 31 с. Чтобы программа сама переходила") as err:
+                                         "снова можно через 31 с") as err:
         ai.run(PRODUCT, "improve", transport=transport)
     assert err.value.temporary and err.value.retry_after == 31
     q = aiprice.limits()["gemini"]["last_limit"]
@@ -518,3 +518,34 @@ def test_bulk_remembers_limit_for_pause():
         raise ai.AIError("Gemini: исчерпан лимит", temporary=True, retry_after=600)
     assert aibulk.process_one(limited) == "rate_limited"
     assert aibulk.last_limit.retry_after == 600
+
+
+def test_manually_chosen_model_falls_back_to_others_on_limit():
+    """2.17.3: выбранная вручную модель исчерпала лимит — программа сама пробует другие модели ключа."""
+    use("gemini", model="gemini-3.8-flash")
+    transport, calls = per_model_server({"gemini-3.8-flash"})
+    assert ai.run(PRODUCT, "improve", transport=transport) == {"description": "<p>Да</p>"}
+    assert calls == ["gemini-3.8-flash", "gemini-3.7-flash"]
+    assert db.get_setting("gemini_model_used") == "gemini-3.7-flash"
+    assert db.get_setting("gemini_model") == "gemini-3.8-flash"  # выбор пользователя не стирается
+
+
+@pytest.mark.parametrize("status, body", [(429, {"error": {"message": "Resource exhausted"}}),  # лимит без подробностей
+                                          (503, {"error": {"message": "overloaded"}}),
+                                          (403, {"error": {"message": "Permission denied on model"}})])
+def test_auto_switches_on_any_limit_overload_or_no_access(status, body, monkeypatch):
+    monkeypatch.setattr(ai, "RETRY_DELAYS", ())
+    use("gemini")
+    calls = []
+
+    def handler(r):
+        if r.method == "GET":
+            return httpx.Response(200, json={"models": [{"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
+                                                        for m in ("gemini-3.8-flash", "gemini-3.7-flash")]})
+        model = r.url.path.rsplit("/", 1)[-1].split(":")[0]
+        calls.append(model)
+        if model == "gemini-3.8-flash":
+            return httpx.Response(status, json=body)
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps({"description": "<p>Да</p>"})}]}}]})
+    assert ai.run(PRODUCT, "improve", transport=httpx.MockTransport(handler)) == {"description": "<p>Да</p>"}
+    assert calls == ["gemini-3.8-flash", "gemini-3.7-flash"]

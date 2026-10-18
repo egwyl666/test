@@ -458,7 +458,19 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
     chosen = s["model"].removeprefix("models/")
     candidates = [chosen] if chosen else _usable(auto_models(s["key"], transport))
     tried, limited, overloaded, r, last_error = [], [], 0, None, None
-    while candidates and len(tried) < AUTO_TRIES:
+    widened = not chosen  # выбранная вручную модель не ответила — дальше пробуем остальные модели ключа
+
+    def others(refresh: bool = False) -> list[str]:
+        try:
+            return [m for m in _usable(auto_models(s["key"], transport, refresh=refresh)) if m not in tried]
+        except AIError:
+            return []
+
+    while len(tried) < AUTO_TRIES:
+        if not candidates and switch and not widened:
+            widened, candidates = True, others()
+        if not candidates:
+            break
         model = candidates.pop(0)
         if model in tried:
             continue
@@ -470,27 +482,31 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
         _record("gemini", model, action, ok=False, error=last_error)
         if not switch or last_error.key_error:
             raise last_error
+        # Любой лимит (в минуту, в сутки, у модели или у ключа), перегрузка, «нет модели / нет доступа» — повод
+        # попробовать следующую модель: раньше переключение было только при «лимит этой модели» и только в «Авто»,
+        # и ИИ просто показывал ошибку, хотя другие модели работали
         if r.status_code == 404 or (r.status_code == 400 and "not supported" in r.text):
             if model == chosen and config.get("gemini_model"):
                 db.set_setting("gemini_model", "")  # выбранную вручную модель Google убрал — дальше выбираем сами
-            candidates = [m for m in _usable(auto_models(s["key"], transport, refresh=True)) if m not in tried]
-        elif r.status_code == 429 and _model_quota(last_error):
-            if chosen:  # выбрана вручную — сами не переключаем, но подсказываем «Авто»
-                raise AIError(f"{last_error}. Чтобы программа сама переходила на другие модели (у каждой свой лимит), "
-                              "выберите в окне «✨ ИИ» вариант «Авто».", temporary=last_error.temporary,
-                              retry_after=last_error.retry_after, quota=last_error.quota)
-            limited.append(last_error)  # у этой модели лимит кончился — у следующей он свой
-        elif not chosen and r.status_code in (500, 502, 503, 504) and overloaded < AUTO_OVERLOADED - 1:
-            overloaded += 1  # эта модель перегружена — пробуем следующую из списка
+            widened, candidates = True, others(refresh=True)
+        elif r.status_code == 429:
+            limited.append(last_error)
+        elif r.status_code in (500, 502, 503, 504) and overloaded < AUTO_OVERLOADED:
+            overloaded += 1
+        elif r.status_code == 403:
+            pass  # у ключа нет доступа к этой модели — у других может быть
         else:
             raise last_error
     else:
+        last_error = last_error or AIError("Gemini: не удалось подобрать модель")
+    if r is None or r.status_code >= 400:
         if len(limited) > 1:
             waits = [e.retry_after for e in limited if e.retry_after]
-            raise AIError("Gemini: у бесплатного ключа исчерпаны лимиты моделей "
-                          f"{', '.join(e.quota.get('model', '') for e in limited)}"
+            raise AIError("Gemini: исчерпаны лимиты моделей "
+                          f"{', '.join(e.quota.get('model', '') for e in limited if e.quota) or ', '.join(tried)}"
                           + (f" — снова можно через {human_wait(min(waits))}" if waits else ""),
-                          temporary=True, retry_after=min(waits) if waits else None, quota=limited[-1].quota)
+                          temporary=True, retry_after=min(waits) if waits else None,
+                          quota=next((e.quota for e in reversed(limited) if e.quota), None))
         raise last_error or AIError("Gemini: не удалось подобрать модель")
     if switch:
         db.set_setting("gemini_model_used", model)

@@ -109,7 +109,7 @@ def diagnostics(client: dict | None = None) -> dict:
         "recent_supplier_errors": [r["message"] for r in db.query(
             "SELECT message FROM supplier_runs WHERE status = 'failed' ORDER BY id DESC LIMIT 5")],
         "client": client or {},
-        "log_tail": lines,
+        "log_tail": [config.redact(line) for line in lines],  # и в старых записях журнала
     }
 
 

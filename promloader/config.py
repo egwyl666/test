@@ -1,6 +1,8 @@
 """Настройки: переменные окружения имеют приоритет над значениями, сохранёнными через веб-интерфейс."""
 
+import logging
 import os
+import re
 import secrets
 
 from . import db
@@ -56,3 +58,33 @@ def mask(token: str) -> str:
     if not token:
         return ""
     return token[:4] + "…" + token[-4:] if len(token) > 10 else "…"
+
+
+# ---------- секреты в журнале ----------
+# httpx пишет в журнал полный адрес запроса: токен бота Telegram (/bot<токен>/), ключи в ссылках прайсов (?key=…),
+# адрес push-подписки. Журнал уходит в «Поддержку» с диагностикой — секреты там оставаться не должны.
+_SECRET_PATTERNS = [
+    (re.compile(r"(/bot)\d+:[\w-]+"), r"\1***"),
+    (re.compile(r"([?&](?:key|token|api_key|apikey|access_token|auth|password|pass|secret|sig|signature)=)[^&\s\"']+",
+                re.I), r"\1***"),
+    (re.compile(r"(/fcm/send/|/wpush/v\d/|/push/v\d/)[^\s\"']+"), r"\1***"),
+]
+
+
+def redact(text: str) -> str:
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+class RedactFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        clean = redact(message)
+        if clean != message:
+            record.msg, record.args = clean, None
+        return True
+
