@@ -40,6 +40,11 @@
           <input id="url" placeholder="https://supplier.example.com/export/prices.xml"></label>
         <button class="btn" id="fetch" style="flex:0 0 auto">Скачать и открыть</button>
       </div>
+      <label class="field" style="margin:10px 0 0"><span>Вторая ссылка — тот же прайс на украинском (необязательно)</span>
+        <input id="url-ua" placeholder="https://supplier.example.com/export/prices_ua.xml"></label>
+      <p class="small muted" style="margin-top:4px">Если у поставщика две выгрузки — на русском и на украинском, — вставьте
+        украинскую сюда. Товары, цены и фото берутся из основной ссылки, а из второй — украинские названия и описания
+        (по артикулу). Дублей не будет.</p>
       <p class="small muted">Если ссылки нет — перетащите файл прайса в окно или <a href="#" id="pick">выберите файл</a>.
         Файл станет текущим прайсом поставщика; при обновлении без ссылки будет использоваться он.</p>
       <div class="small" id="source-info"></div>

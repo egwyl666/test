@@ -390,3 +390,36 @@ def test_supplier_update_never_turns_price_into_cost_without_markup_rule():
     pricing.save_rules([{"markup_percent": 50, "rounding": "none"}])
     suppliers.recalc_prices()
     assert products.get(pid)["price"] == 195
+
+
+def test_second_ua_link_merges_ukrainian_texts_without_duplicates():
+    """2.17.2: две выгрузки поставщика — на русском и на украинском. Товары и цены — из основной, из второй —
+    украинские названия и описания по артикулу; лишних товаров из второй ссылки не появляется."""
+    ru = make_yml(BASE)
+    ua = make_yml([("A1", "Кухоль білий", "999", "10", "true"), ("A2", "Кухоль синій", "999", "10", "true"),
+                   ("Z9", "Лише в укр. прайсі", "1", "10", "true")])
+    sid = make_supplier(ru)
+    suppliers.update(sid, {"url": "https://sup.example.com/ru.xml", "url_ua": "https://sup.example.com/ua.xml"})
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, content=ua if "ua.xml" in str(r.url) else ru))
+    r = suppliers.run(sid, transport=transport)
+    assert r["status"] == "ok" and r["stats"]["ua_merged"] == 2
+    p = products_by_sku()
+    assert set(p) == {"A1", "A2", "B1"}                                   # Z9 из укр. прайса не добавлен
+    a1 = products.get(p["A1"]["id"])
+    assert a1["name"] == "Кружка белая" and a1["name_ua"] == "Кухоль білий"
+    assert a1["description_ua"] == "<p>Описание A1</p>" and a1["price"] != 999  # цена — из основной ссылки
+    assert products.get(p["B1"]["id"])["name_ua"] in (None, "")
+    pv = suppliers.preview(sid, transport=transport)
+    assert pv["ua_merged"] == 2 and pv["ua_error"] == ""
+
+
+def test_broken_ua_link_does_not_break_update():
+    sid = make_supplier(make_yml(BASE))
+    suppliers.update(sid, {"url": "https://sup.example.com/ru.xml", "url_ua": "https://sup.example.com/ua.xml"})
+    transport = httpx.MockTransport(lambda r: httpx.Response(404) if "ua.xml" in str(r.url)
+                                    else httpx.Response(200, content=make_yml(BASE)))
+    r = suppliers.run(sid, transport=transport)
+    assert r["status"] == "ok" and "Украинский прайс" in r["stats"]["ua_error"]
+    assert set(products_by_sku()) == {"A1", "A2", "B1"}
+    with pytest.raises(suppliers.SupplierError):
+        suppliers.update(sid, {"url_ua": "ftp://x"})

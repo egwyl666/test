@@ -15,6 +15,7 @@
 
 import io
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta, timezone
 
@@ -480,7 +481,21 @@ def order_stats(period: str = "30d", date_from: str = "", date_to: str = "", q: 
 
 # ---------- сводка за день в Telegram ----------
 
-SUMMARY_HOUR = 21   # местное время: к вечеру день уже почти закончен, а утром сводка была бы за вчера
+SUMMARY_TIME = "21:00"   # по умолчанию, местное время: к вечеру день уже почти закончен
+
+
+def summary_time() -> str:
+    """Время сводки из «Настроек» (ЧЧ:ММ)."""
+    value = db.get_setting("daily_summary_time") or SUMMARY_TIME
+    return value if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value) else SUMMARY_TIME
+
+
+def clean_summary_time(value: str) -> str:
+    value = str(value or "").strip()
+    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?", value)
+    if not m or int(m.group(1)) > 23 or int(m.group(2) or 0) > 59:
+        raise ReportError("Время сводки — в виде ЧЧ:ММ, например 21:00")
+    return f"{int(m.group(1)):02d}:{int(m.group(2) or 0):02d}"
 
 
 def _money(x) -> str:
@@ -517,12 +532,12 @@ def daily_summary_text(day: date) -> str:
 
 
 def maybe_daily_summary(now: datetime | None = None) -> bool:
-    """Раз в день после SUMMARY_HOUR — сводка подписанным на «daily_summary». Пропущенный вечер (компьютер был
+    """Раз в день после времени из «Настроек» (summary_time) — сводка подписанным на «daily_summary». Пропущенный вечер (компьютер был
     выключен) не досылается утром: вчерашние итоги уже не новость."""
     from . import notify
     now = now or datetime.now()
     today = now.date().isoformat()
-    if now.hour < SUMMARY_HOUR or db.get_setting("daily_summary_sent") == today:
+    if now.strftime("%H:%M") < summary_time() or db.get_setting("daily_summary_sent") == today:
         return False
     db.set_setting("daily_summary_sent", today)
     if not any("daily_summary" in r["events"] for r in notify.recipients()):

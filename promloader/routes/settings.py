@@ -1,12 +1,13 @@
 """Настройки программы, проверка подключения, ИИ, R2."""
 
+from datetime import datetime
 import json
 import re
 import secrets
 
 from fastapi import APIRouter, Body, HTTPException
 
-from .. import ai, aiprice, config, db, notify, r2, runtime, support, sync, updater
+from .. import ai, aiprice, config, db, notify, r2, reports, runtime, support, sync, updater
 from ..prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 router = APIRouter()
@@ -33,6 +34,7 @@ def _settings_view() -> dict:
         "ai_rate": db.get_setting("ai_rate"),
         "telegram_token": config.mask(notify.token()),
         "telegram_event_labels": notify.EVENTS,
+        "daily_summary_time": reports.summary_time(),
         "support_token": config.mask(support.channel()["token"]),
         "support_chat_id": support.channel()["chat_id"],
         "auto_update": config.get("auto_update") != "0",
@@ -64,6 +66,16 @@ def save_settings(data: dict = Body(...)):
             db.set_setting("prom_token", data["prom_token"].strip())
         if data.get("telegram_token"):
             db.set_setting("telegram_token", data["telegram_token"].strip())
+        if "daily_summary_time" in data:
+            try:
+                value = reports.clean_summary_time(data["daily_summary_time"])
+            except reports.ReportError as exc:
+                raise HTTPException(400, str(exc))
+            if value != reports.summary_time():
+                db.set_setting("daily_summary_time", value)
+                # перенесли на время, которое сегодня ещё не наступило, — сегодняшняя сводка придёт в новое время
+                if value > datetime.now().strftime("%H:%M"):
+                    db.set_setting("daily_summary_sent", "")
         if data.get("support_token"):
             db.set_setting("support_token", data["support_token"].strip())
         if data.get("support_token_clear"):

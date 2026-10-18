@@ -31,7 +31,7 @@ EVENTS = {
     "parcel_arrived": "посылка прибыла в отделение Новой Почты",
     "parcel_waiting": "посылку долго не забирают из отделения",
     "parcel_refused": "отказ от посылки или возврат",
-    "daily_summary": "сводка за день: заказы, выручка, прибыль (в 21:00)",
+    "daily_summary": "сводка за день: заказы, выручка, прибыль",
 }
 DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_missed", "phone", "parcel_waiting",
                   "parcel_refused", "daily_summary"]

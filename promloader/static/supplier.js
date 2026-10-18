@@ -16,6 +16,7 @@ function settingsBody() {
   const body = {
     name: $("#name").value,
     url: $("#url").value.trim(),
+    url_ua: $("#url-ua").value.trim(),
     interval_hours: Number($("#interval").value),
     missing_action: $("#missing").value,
     prefix: $("#prefix").value,
@@ -40,6 +41,7 @@ function fillForm(s) {
   dirty = false;
   $("#name").value = s.name;
   $("#url").value = s.url;
+  $("#url-ua").value = s.url_ua || "";
   $("#interval").value = String(s.interval_hours);
   if ($("#interval").value !== String(s.interval_hours)) {
     $("#interval").insertAdjacentHTML("beforeend", `<option value="${s.interval_hours}">каждые ${s.interval_hours} ч</option>`);
@@ -203,7 +205,7 @@ async function saveIfDirty() {
     toast("Настройки сохранены", "ok");
   }
 }
-const SETTINGS_FIELDS = "#name, #url, #interval, #missing, #prefix, #new-status, #auto-sync, #merge-barcode, " +
+const SETTINGS_FIELDS = "#name, #url, #url-ua, #interval, #missing, #prefix, #new-status, #auto-sync, #merge-barcode, " +
   "#clean-names, #rate-mode, #rate-value, #def-group, #def-currency";
 const markDirty = (e) => { if (e.target.matches(SETTINGS_FIELDS) || e.target.closest("#mapping")) dirty = true; };
 document.addEventListener("input", markDirty);
@@ -244,6 +246,7 @@ async function previewThenRun(force = false) {
     await saveIfDirty();
     const p = await api(`/api/suppliers/${sid}/preview`, { method: "POST", json: { force } });
     const note = `В прайсе ${p.total} строк${p.errors ? `, с ошибками ${p.errors}` : ""}${p.ignored ? `, удалённых вами ${p.ignored}` : ""}. ` +
+      (p.ua_error ? `⚠️ ${p.ua_error}. ` : p.ua_merged !== null && p.ua_merged !== undefined ? `Украинский текст из второй ссылки — у ${p.ua_merged} строк. ` : "") +
       "Цены и наличие, которые вы поменяли руками (🔒), поставщик не трогает.";
     if (await showPreview(`Обновление «${supplier.name}»: что изменится`, p, { applyLabel: "Обновить", note })) await runNow(force);
   } catch (err) {

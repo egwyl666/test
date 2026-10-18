@@ -158,9 +158,10 @@ def test_daily_summary_once_a_day_after_hour(monkeypatch):
     monkeypatch.setattr(notify, "recipients", lambda: [{"chat_id": "1", "events": ["daily_summary"]}])
     monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append((event, text)))
     now = datetime.now()
-    assert not reports.maybe_daily_summary(now.replace(hour=reports.SUMMARY_HOUR - 1))
-    assert reports.maybe_daily_summary(now.replace(hour=reports.SUMMARY_HOUR))
-    assert not reports.maybe_daily_summary(now.replace(hour=reports.SUMMARY_HOUR + 1))  # второй раз — нет
+    assert reports.summary_time() == "21:00"
+    assert not reports.maybe_daily_summary(now.replace(hour=20, minute=59))
+    assert reports.maybe_daily_summary(now.replace(hour=21, minute=0))
+    assert not reports.maybe_daily_summary(now.replace(hour=22))  # второй раз — нет
     event, text = sent[0]
     assert event == "daily_summary" and "Заказов: <b>1</b>" in text and "Фонарь" in text and "Прибыль" in text
 
@@ -182,3 +183,16 @@ def test_daily_summary_event_added_to_existing_recipients():
         c.execute("INSERT INTO tg_recipients (chat_id, name, events, created_at) VALUES ('5', 'x', '[\"order\"]', ?)", (db.now(),))
     db.set_setting("tg_events_version", "1")
     assert "daily_summary" in notify.recipients()[0]["events"]
+
+
+def test_daily_summary_time_from_settings(client, monkeypatch):
+    from promloader import notify
+    sent = []
+    monkeypatch.setattr(notify, "recipients", lambda: [{"chat_id": "1", "events": ["daily_summary"]}])
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append(event))
+    assert client.post("/api/settings", json={"daily_summary_time": "9:30"}).json()["daily_summary_time"] == "09:30"
+    now = datetime.now()
+    assert not reports.maybe_daily_summary(now.replace(hour=9, minute=29))
+    assert reports.maybe_daily_summary(now.replace(hour=9, minute=30)) and sent == ["daily_summary"]
+    assert client.post("/api/settings", json={"daily_summary_time": "25:00"}).status_code == 400
+    assert client.get("/api/settings").json()["daily_summary_time"] == "09:30"

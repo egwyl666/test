@@ -36,7 +36,7 @@ SYNC_FIELDS = (
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
             "missing_action", "auto_sync", "interval_hours", "merge_by_barcode",
-            "rate_mode", "rate_currency", "rate_value", "rate_add", "clean_names")
+            "rate_mode", "rate_currency", "rate_value", "rate_add", "clean_names", "url_ua")
 
 BROKEN_FEED_MIN = 20       # защита включается, если у поставщика было хотя бы столько товаров
 BROKEN_FEED_RATIO = 0.5    # ...и в новом прайсе осталось меньше этой доли
@@ -219,8 +219,9 @@ def update(supplier_id: int, data: dict) -> dict:
         fields[key] = value
     if "rows" in fields and fields["rows"]:
         excel.parse_row_spec(fields["rows"], 10)  # проверка синтаксиса
-    if "url" in fields and fields["url"] and not re.match(r"^https?://", fields["url"]):
-        raise SupplierError("Ссылка на прайс должна начинаться с http:// или https://")
+    for key in ("url", "url_ua"):
+        if key in fields and fields[key] and not re.match(r"^https?://", fields[key]):
+            raise SupplierError("Ссылка на прайс должна начинаться с http:// или https://")
     if "interval_hours" in fields and fields["interval_hours"] != current["interval_hours"]:
         fields["next_run_at"] = _next_run(fields["interval_hours"])
     if fields:
@@ -650,6 +651,61 @@ def _parse_items(s: dict, path: Path, images: bool = True) -> tuple[list[dict], 
     return items, embedded
 
 
+# украинская версия того же прайса по второй ссылке: те же колонки и артикулы, только тексты на украинском
+UA_KEYS = ("external_id", "vendor_code", "barcode")
+UA_TEXT = {"name": "name_ua", "description": "description_ua"}
+
+
+def merge_ua(items: list[dict], ua_items: list[dict]) -> int:
+    """Тексты украинского прайса → «(укр.)»-поля строк основного по артикулу (иначе — коду поставщика,
+    штрихкоду). Цены, наличие и фото — только из основного; товаров, которых нет в основном, не добавляем:
+    так две ссылки дают один товар, а не два. Возвращает, сколько строк получили украинский текст."""
+    index: dict = {}
+    for u in ua_items:
+        for key in UA_KEYS:
+            value = str(u["data"].get(key) or "").strip()
+            if value:
+                index.setdefault((key, value), u["data"])
+    merged = 0
+    for item in items:
+        data = item["data"]
+        ua = next((index[(k, str(data.get(k)).strip())] for k in UA_KEYS
+                   if str(data.get(k) or "").strip() and (k, str(data.get(k)).strip()) in index), None)
+        if ua is None:
+            continue
+        hit = False
+        for src, dst in UA_TEXT.items():
+            text = ua.get(dst) or ua.get(src)
+            if text and not data.get(dst):
+                data[dst] = text
+                hit = True
+        merged += hit
+    return merged
+
+
+def _with_ua(s: dict, items: list[dict], transport=None) -> int | None:
+    """Вторая ссылка (украинский прайс): скачать, разобрать с теми же настройками и слить. Её сбой не роняет
+    обновление — товары и цены приходят из основной ссылки; в итогах будет пометка."""
+    if not s.get("url_ua"):
+        return None
+    content, name = download(s["url_ua"], transport)
+    tmp = db.suppliers_dir() / f"{s['id']}.ua-{uuid.uuid4().hex[:8]}{excel.detect_suffix(content, name)}"
+    tmp.write_bytes(content)
+    try:
+        ua_items, _ = _parse_items(s, tmp, images=False)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return merge_ua(items, ua_items)
+
+
+def _merge_ua_safe(s: dict, items: list[dict], transport=None) -> tuple[int | None, str]:
+    try:
+        return _with_ua(s, items, transport), ""
+    except Exception as exc:
+        log.warning("Поставщик %s: украинский прайс не загрузился: %s", s["id"], exc)
+        return None, f"Украинский прайс (вторая ссылка) не загрузился: {exc}"
+
+
 PREVIEW_RUN = -1
 
 
@@ -665,6 +721,7 @@ def preview(supplier_id: int, force: bool = False, transport=None) -> dict:
             path, _, _, tmp = _fetch_source(s, transport)
             rates.prefetch()
             items, _ = _parse_items(s, path, images=False)
+            ua_merged, ua_error = _merge_ua_safe(s, items, transport)
 
             def apply_and_queue():
                 changed: list[int] = []
@@ -680,7 +737,8 @@ def preview(supplier_id: int, force: bool = False, transport=None) -> dict:
                 tmp.unlink(missing_ok=True)
     stats = result.pop("result")[0]
     result.update(total=stats["total"], valid=stats["valid"], errors=stats["errors"],
-                  error_samples=stats["error_samples"][:10], unchanged=stats["unchanged"], ignored=stats.get("ignored", 0))
+                  error_samples=stats["error_samples"][:10], unchanged=stats["unchanged"], ignored=stats.get("ignored", 0),
+                  ua_merged=ua_merged, ua_error=ua_error)
     return result
 
 
@@ -699,7 +757,12 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
         path, content, name, tmp = _fetch_source(s, transport)
         rates.prefetch()  # курс — до записи в базу
         items, embedded = _parse_items(s, path)
+        ua_merged, ua_error = _merge_ua_safe(s, items, transport)
         stats, _ = apply_items(s, items, embedded, run_id, force, changed)
+        if ua_merged is not None:
+            stats["ua_merged"] = ua_merged
+        if ua_error:
+            stats["ua_error"] = ua_error
         if content is not None:
             store_source(supplier_id, content, name)  # прайс разобран и применён — теперь он текущий
     except (SupplierError, excel.ImportError_, rates.RateError) as exc:

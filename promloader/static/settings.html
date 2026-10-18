@@ -167,6 +167,12 @@
         <button class="btn primary" id="tg-save">Сохранить токен</button>
         <span class="small" id="tg-result"></span>
       </div>
+      <div class="toolbar" style="margin-top:10px">
+        <label class="small">Сводку за день присылать в <input type="time" id="tg-summary-time" style="width:110px"></label>
+        <button class="btn small" id="tg-summary-save">Сохранить время</button>
+      </div>
+      <p class="small muted" style="margin-top:-4px">Сводка приходит тем получателям, у кого стоит галочка «сводка за день».
+        Если в это время компьютер выключен, сводку за этот день программа не пришлёт.</p>
       <h3 style="margin:14px 0 6px">Получатели</h3>
       <div class="err-text hidden" id="tg-outbox" style="margin-bottom:8px"></div>
       <div id="tg-recipients"></div>
@@ -791,7 +797,14 @@
     function fillTelegram(s) {
       $("#tg-token").value = "";
       $("#tg-state").textContent = s.telegram_token ? `(сейчас: ${s.telegram_token})` : "(не задан)";
+      if (s.daily_summary_time) $("#tg-summary-time").value = s.daily_summary_time;
     }
+    $("#tg-summary-save").onclick = () => busy($("#tg-summary-save"), async () => {
+      try {
+        fillTelegram(await api("/api/settings", { method: "POST", json: { daily_summary_time: $("#tg-summary-time").value } }));
+        toast("Сохранено", "ok");
+      } catch (err) { toast(err.message, "error"); }
+    });
     async function loadRecipients() {
       const r = await api("/api/telegram/recipients");
       tgEvents = r.events;
