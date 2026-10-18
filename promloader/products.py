@@ -698,6 +698,9 @@ def unlock(product_id: int, names: list[str]) -> None:
 
 
 NOT_TRACKED = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields", "prom_category_id"}
+# поля только для программы — на Prom они не уходят (feed.build): их изменение не повод заново отправлять товар
+# (раньше новая закупка из прайса ставила выгруженный товар в «Готов к отправке», хотя на Prom менять было нечего)
+LOCAL_ONLY = {"cost_price", "cost_currency", "rrp"}
 
 
 def group_category(c, group_name: str) -> int | None:
@@ -729,12 +732,12 @@ def _touch(c, product_id: int, fields: dict, status: str | None = None) -> None:
         return
     changes.record_diff(c, product_id, row, fields)
     status = row["status"]
-    changed = [f for f in fields if f not in NOT_TRACKED] or (["images"] if photos else [])
+    changed = [f for f in fields if f not in NOT_TRACKED and f not in LOCAL_ONLY] or (["images"] if photos else [])
     if changed:
         row = c.execute("SELECT pending_fields FROM products WHERE id = ?", (product_id,)).fetchone()
         pending = set(json.loads(row["pending_fields"] or "[]")) if row else set()
         fields["pending_fields"] = json.dumps(sorted(pending | set(changed)))
-    if status in ("synced", "error", "sending"):
+    if changed and status in ("synced", "error", "sending"):
         fields["status"] = "ready"
     sets = ", ".join(f"{k} = ?" for k in fields)
     c.execute(

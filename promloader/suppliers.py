@@ -364,6 +364,9 @@ def recompute_offer(c, product_id: int, pricer: pricing.Pricer) -> bool:
         data["group_name"] = product["group_name"]
         data.setdefault("presence", "available")  # нет колонки наличия — значит, есть (как в choose_offer)
         pricer.apply(data, best["supplier_id"])
+        if data.pop("_no_rule", False) and product["price"] is not None:
+            # нет правила наценки: остаётся текущая цена товара, а не закупка (pricing.Pricer.apply)
+            data["price"], data["currency"] = product["price"], product["currency"]
         # чего нет у лучшего поставщика — не оставляем от прежнего (старая цена «со скидкой», чужой остаток)
         target = {k: data.get(k) for k in ("old_price", "cost_price", "rrp", "quantity")}
         target.update({k: data[k] for k in products.COMMERCIAL if k in data})
@@ -443,6 +446,9 @@ def _apply_one(c, s, item: dict, files: list[bytes], ts: str, run_id: int, stats
         if others or not primary:
             multi.add(product_id)
             returned = False
+        if item["data"].get("_no_rule") and product["price"] is not None:
+            # нет правила наценки: цену товара не заменяем закупкой (pricing.Pricer.apply)
+            fields = {k: v for k, v in fields.items() if k not in ("price", "currency")}
         updates = {k: v for k, v in fields.items() if k not in locked and product[k] != v}
         if returned:
             # вернулся в прайс: наличие берём от поставщика, даже если его правили руками
@@ -770,7 +776,7 @@ def reapply(product_id: int) -> None:
     _drop_files(trash)
 
 
-def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dict:
+def recalc_prices(ids: list[int] | None = None, send: bool | None = None, fresh: bool = False) -> dict:
     """Пересчёт цен по текущим правилам наценки и курсу (кроме цен, закреплённых вручную).
 
     ids — только эти товары (None — все с закупкой/РРЦ). send — отправить изменённые цены товаров, которые
@@ -801,7 +807,9 @@ def recalc_prices(ids: list[int] | None = None, send: bool | None = None) -> dic
                         changed.append(p["id"])
                     continue
                 data = {"cost_price": p["cost_price"], "rrp": p["rrp"], "group_name": p["group_name"],
-                        "cost_currency": p["cost_currency"], "currency": p["currency"], "price": p["price"]}
+                        "cost_currency": p["cost_currency"], "currency": p["currency"],
+                        # fresh — «💲 Цены → это опт»: текущая цена и есть закупка, её не сохраняем
+                        "price": None if fresh else p["price"]}
                 for w in pricer.apply(data, p["supplier_id"]):
                     if w.startswith("Цена не пересчитана"):
                         warnings[w] += 1
@@ -882,6 +890,6 @@ def bulk_prices(ids: list[int], action: str, value: float = 0, currency: str = "
             c.execute(f"UPDATE products SET {sets} WHERE id = ?", list(fields.values()) + [p["id"]])
     if not pricing.list_rules():
         warnings.append("Правил наценки нет — цена равна закупке по курсу. Добавьте правило на странице «Наценка»")
-    result = recalc_prices(ids)
+    result = recalc_prices(ids, fresh=action == "as_cost")
     result["warnings"] = warnings + result["warnings"]
     return result
