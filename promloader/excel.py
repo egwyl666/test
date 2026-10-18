@@ -58,6 +58,8 @@ HINTS = [
     ("barcode", r"штрих|barcode|^ean|gtin"),
     ("vendor_code", r"vendor.?code|артикул пост|код пост|код виробн|код производ"),
     ("external_id", r"^@id$|артикул|код|sku|external|ідентиф|идентиф|^id$"),
+    # описание — раньше названия: «Опис товару» / «Описание товара» — это описание, а не название
+    ("description", r"опис|описан|description"),
     ("name", r"назв|наимен|товар|name"),
     ("price", r"цен|ціна|price|стоим|вартість"),
     ("currency", r"валют|currency"),
@@ -66,7 +68,6 @@ HINTS = [
     ("group_name", r"групп|груп|катег|розділ|раздел|^category$|category.?name|^group$"),
     ("vendor", r"произв|виробн|бренд|brand|^vendor$|марка"),
     ("country", r"стран|країн|country"),
-    ("description", r"опис|описан|description"),
     ("keywords", r"ключ|keyword|теги|tags"),
     ("unit", r"един|одиниц|unit"),
     ("images", r"фото|изображ|зображ|картин|image|photo|picture"),
@@ -258,7 +259,50 @@ def parse_row_spec(spec: str, max_row: int) -> list[int]:
 
 # ---------- сопоставление колонок ----------
 
+# язык заголовка: у двуязычных прайсов колонки «Название» и «Назва», «Описание» и «Опис» идут рядом —
+# без этого обе становились «Названием», и украинская колонка либо терялась, либо затирала русскую
+UA_HEADER = r"[іїєґ]|укр|\bua\b|_ua\b|\buk\b|_uk\b|^назва(\s|$)|^опис(\s|$)"
+RU_HEADER = r"[ыэё]|рус|\bru\b|_ru\b|^название|^наименован|^описан"
+BILINGUAL = {"name": "name_ua", "description": "description_ua"}
+
+
+def _lang(text: str) -> str:
+    if re.search(UA_HEADER, text):
+        return "ua"
+    if re.search(RU_HEADER, text):
+        return "ru"
+    return ""
+
+
 def guess_mapping(headers: list[str]) -> dict[str, str]:
+    mapping = _guess(headers)
+    # двуязычный прайс: две колонки одного смысла на разных языках → русская в поле, украинская в «(укр.)»
+    for ru_target, ua_target in BILINGUAL.items():
+        if ua_target in mapping.values():
+            continue
+        cols = [(get_column_letter(i + 1), _lang((h or "").strip().lower())) for i, h in enumerate(headers)
+                if (h or "").strip() and not (h or "").strip().lower().startswith("param:")]
+        own = [c for c, lang in cols if mapping.get(c) == ru_target]
+        if not own:
+            continue
+        pattern = dict(HINTS)[ru_target]
+        same = [(c, lang) for c, lang in cols
+                if (mapping.get(c) in (None, ru_target)) and re.search(pattern, (headers[_col_index(c)] or "").lower())]
+        ua = [c for c, lang in same if lang == "ua"]
+        other = [c for c, lang in same if lang != "ua"]
+        if ua and other:
+            mapping = {k: v for k, v in mapping.items() if v != ru_target}
+            mapping[other[0]] = ru_target
+            mapping[ua[0]] = ua_target
+    return mapping
+
+
+def _col_index(letter: str) -> int:
+    from openpyxl.utils import column_index_from_string
+    return column_index_from_string(letter) - 1
+
+
+def _guess(headers: list[str]) -> dict[str, str]:
     mapping, used = {}, set()
     for idx, header in enumerate(headers):
         text = (header or "").strip().lower()
@@ -268,7 +312,11 @@ def guess_mapping(headers: list[str]) -> dict[str, str]:
             # <param name="Відео"> — ссылка на видео, а не характеристика «Відео» у покупателя
             mapping[get_column_letter(idx + 1)] = "videos" if re.search(VIDEO_HINT, text[6:]) else "param"
             continue
+        # «Описание товара» при уже занятом описании — не «название» (из-за слова «товар»)
+        is_description = re.search(dict(HINTS)["description"], text)
         for target, pattern in HINTS:
+            if is_description and target == "name":
+                break
             if target not in used and re.search(pattern, text):
                 mapping[get_column_letter(idx + 1)] = target
                 if target != "videos":  # видео бывает в нескольких колонках («Видео», «Видео 2»)

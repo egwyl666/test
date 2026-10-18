@@ -35,3 +35,20 @@ def test_vendor_code_column_guessed_and_supplier_option(client):
     assert excel.guess_mapping(["@id", "name", "vendorCode"])["C"] == "vendor_code"
     sid = suppliers.create("X")
     assert client.patch(f"/api/suppliers/{sid}", json={"clean_names": True}).json()["clean_names"] is True
+
+
+def test_bilingual_price_headers_go_to_ru_and_ua_fields():
+    """2.17.1: прайс сразу на двух языках — русская колонка в поле, украинская в «(укр.)», ничего не теряется."""
+    from promloader.excel import guess_mapping
+    m = guess_mapping(["Артикул", "Название", "Назва", "Цена", "Ціна", "Описание", "Опис"])
+    assert m == {"A": "external_id", "B": "name", "C": "name_ua", "D": "price",
+                 "F": "description", "G": "description_ua"}
+    assert guess_mapping(["Код", "Название RU", "Название UA", "Цена"])["C"] == "name_ua"
+    assert guess_mapping(["Код", "Наименование товара", "Найменування товару"]) == {
+        "A": "external_id", "B": "name", "C": "name_ua"}
+    # «Опис товару» — описание, а не название (из-за слова «товар»)
+    assert guess_mapping(["Артикул", "Опис товару", "Описание товара", "Название"]) == {
+        "A": "external_id", "B": "description_ua", "C": "description", "D": "name"}
+    # одноязычный украинский прайс — как раньше: «Назва» — это название
+    assert guess_mapping(["Артикул", "Назва товару", "Ціна", "Опис товару"]) == {
+        "A": "external_id", "B": "name", "C": "price", "D": "description"}
