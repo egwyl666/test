@@ -411,6 +411,10 @@ async function updateAiModal() {
     return;
   }
   if (seq !== aiEstimateSeq) return;  // пока считали, выбрали другое действие
+  if (e.batch > 1) {
+    $("#ai-eta").textContent = `По ${e.batch} товаров в одном запросе — запросов ${e.requests}, примерно ${Math.max(1, e.minutes)} мин. ` +
+      "Так бесплатного лимита хватает на гораздо большее число товаров. Можно закрыть страницу, работа продолжится.";
+  }
   const model = e.model ? aiModelName(e.model) : "модель выберется автоматически";
   let text;
   if (e.free) {
@@ -418,7 +422,9 @@ async function updateAiModal() {
   } else if (e.total_usd === null) {
     text = `Модель: <b>${esc(model)}</b>. Цена этой модели программе неизвестна — расход будет виден в окне «✨ ИИ» по мере работы.`;
   } else {
-    const per = aiMoney(e.per_request_usd, e.per_request_uah, { withUsd: false });
+    // за один товар: при пачках цена запроса делится на товары пачки
+    const share = e.count ? e.total_usd / e.count : e.per_request_usd;
+    const per = aiMoney(share, e.total_uah !== null && e.count ? e.total_uah / e.count : e.per_request_uah, { withUsd: false });
     text = `Модель: <b>${esc(model)}</b>. Обойдётся не дороже <b>${aiMoney(e.total_usd, e.total_uah)}</b>
       (${per} за товар — ${e.measured ? "средняя цена ваших последних запросов" : "по типичному размеру карточки, точнее станет после первых запросов"};
       товары, которые пропустятся, не оплачиваются). Сменить модель — значок «✨» вверху.`;

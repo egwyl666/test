@@ -261,6 +261,60 @@ def run_detailed(p: dict, action: str, instruction: str = "", transport=None) ->
     return changes, used
 
 
+# ---------- пачка товаров в одном запросе (массовый ИИ) ----------
+# Лимиты бесплатного ключа считаются в запросах, а не в объёме текста: короткие задачи выгодно отправлять пачкой.
+# Поля ответа — плоские «i{номер}_{поле}»: схема ответа остаётся «объект со строками», как у одного товара.
+BATCH = {"keywords": (20, ("keywords",)), "name": (10, ("name",)),
+         "translate_ua": (5, ("name_ua", "description_ua")),
+         "translate_ru": (5, ("name", "description", "name_ua", "description_ua"))}
+
+
+def batch_size(action: str) -> int:
+    return BATCH[action][0] if action in BATCH else 1
+
+
+def build_batch_prompt(items: list[dict], action: str) -> tuple[str, tuple]:
+    fields = BATCH[action][1]
+    blocks = "\n\n".join(f"Товар i{n}:\n{_product_block(p)}" for n, p in enumerate(items))
+    keys = tuple(f"i{n}_{f}" for n in range(len(items)) for f in FIELDS if f in fields)
+    task = (f"{ACTIONS[action][1]}\n\nТоваров {len(items)}, каждый обрабатывай отдельно и независимо. Ответ — для каждого "
+            f"товара i<номер> в полях вида i<номер>_<поле> (например i0_{fields[0]}); поля, которые не меняются, — "
+            "пустая строка. Не переноси данные одного товара в другой.")
+    return f"{blocks}\n\nЗадача: {task}", keys
+
+
+def run_batch(items: list[dict], action: str, transport=None) -> tuple[list, dict]:
+    """Пачка товаров одним запросом. Возвращает список: для каждого товара — изменения (dict) или AIError."""
+    if len(items) == 1 or action not in BATCH:
+        out = []
+        used = {}
+        for p in items:
+            try:
+                changes, used = run_detailed(p, action, transport=transport)
+                out.append(changes)
+            except AIError as exc:
+                if exc.temporary or exc.key_error:
+                    raise
+                out.append(exc)
+        return out, used
+    s = settings()
+    if not s["provider"] or not s["key"]:
+        raise AIError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
+    prompt, keys = build_batch_prompt(items, action)
+    if s["provider"] == "gemini":
+        result, used = _gemini(s, prompt, transport, action, fields=keys)
+    elif s["provider"] == "claude":
+        result, used = _claude(s, prompt, transport, action, fields=keys)
+    else:
+        raise AIError("Неизвестный провайдер ИИ")
+    out = []
+    for n, p in enumerate(items):
+        own = {k[len(f"i{n}_"):]: v for k, v in result.items() if k.startswith(f"i{n}_")}
+        changes = _clean(own, p)
+        out.append(changes or AIError("ИИ не предложил изменений"))
+    return out, used
+
+
 CHAT_SYSTEM = """Ты помогаешь продавцу интернет-магазина на Prom.ua отвечать покупателям в чате.
 Пиши вежливо, коротко (2–4 предложения), по делу, на языке покупателя (украинский или русский).
 Опирайся только на данные товара и переписку: цену, наличие и характеристики не придумывай. Если ответа в данных нет —

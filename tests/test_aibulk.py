@@ -98,3 +98,88 @@ def test_api(client):
     assert client.get("/api/ai/bulk").json()["items"][0]["id"] == r["id"]
     assert client.post(f"/api/ai/bulk/{r['id']}/status", json={"status": "paused"}).json()["status"] == "paused"
     assert client.post("/api/ai/bulk", json={"ids": [pid], "action": "hack"}).status_code == 400
+
+
+# ---------- 2.17.4: пачки товаров в одном запросе ----------
+
+def _batch_server(answer, calls):
+    import json as _json
+
+    import httpx
+
+    def handler(r):
+        if r.method == "GET":
+            return httpx.Response(200, json={"models": [{"name": "models/gemini-3.8-flash",
+                                                          "supportedGenerationMethods": ["generateContent"]}]})
+        body = _json.loads(r.content)
+        props = body["generationConfig"]["responseSchema"]["properties"]
+        calls.append(sorted(props))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": _json.dumps(answer(props))}]}}]})
+    return httpx.MockTransport(handler)
+
+
+def test_keywords_go_in_batches_one_request_per_20(monkeypatch):
+    from promloader import ai, aibulk, db, products
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_key", "k")
+    ids = [products.create({"name": f"Кружка {n}", "price": 10}) for n in range(25)]
+    calls = []
+    transport = _batch_server(lambda props: {k: f"слово {k}" for k in props}, calls)
+    real = ai._gemini_post
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None: real(key, model, body, transport))
+    monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
+    aibulk.create(ids, "keywords")
+    while aibulk.process_one() != "idle":
+        pass
+    assert len(calls) == 2 and len(calls[0]) == 20 and len(calls[1]) == 5   # 25 товаров — 2 запроса
+    assert products.get(ids[0])["keywords"] == "слово i0_keywords"
+    assert products.get(ids[24])["keywords"] == "слово i4_keywords"     # 25-й товар — 5-й во второй пачке
+    est = aibulk.estimate(25, "keywords")
+    assert est["requests"] == 2 and est["batch"] == 20
+
+
+def test_batch_item_without_answer_is_error_others_done(monkeypatch):
+    from promloader import ai, aibulk, db, products
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_key", "k")
+    ids = [products.create({"name": f"Лампа {n}", "price": 10}) for n in range(3)]
+    calls = []
+    transport = _batch_server(lambda props: {k: ("" if k.startswith("i1_") else "лампа, светильник") for k in props}, calls)
+    real = ai._gemini_post
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None: real(key, model, body, transport))
+    monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
+    job = aibulk.create(ids, "keywords")
+    while aibulk.process_one() != "idle":
+        pass
+    assert len(calls) == 1
+    counts = aibulk.get(job["id"])["counts"]
+    assert counts == {"done": 2, "error": 1}
+    assert products.get(ids[1])["keywords"] in (None, "")
+
+
+def test_broken_batch_answer_falls_back_to_one_by_one(monkeypatch):
+    """Ответ на пачку оборвался (не JSON) — товары не теряются, а идут по одному."""
+    import httpx
+
+    from promloader import ai, aibulk, db, products
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_key", "k")
+    ids = [products.create({"name": f"Зонт {n}", "price": 10}) for n in range(3)]
+    calls = []
+
+    def handler(r):
+        import json as _json
+        props = _json.loads(r.content)["generationConfig"]["responseSchema"]["properties"]
+        calls.append(len(props))
+        text = '{"i0_keywords": "обор' if "i0_keywords" in props else _json.dumps({"keywords": "зонт"} | {k: "" for k in props if k != "keywords"})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
+    transport = httpx.MockTransport(handler)
+    real = ai._gemini_post
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None: real(key, model, body, transport))
+    monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
+    job = aibulk.create(ids, "keywords")
+    while aibulk.process_one() != "idle":
+        pass
+    assert calls[0] == 3 and calls[1:] == [5, 5, 5]   # пачка → потом по одному (схема одного товара — 5 полей)
+    assert aibulk.get(job["id"])["counts"] == {"done": 3}, aibulk.get(job["id"])["errors"]
+    assert all(products.get(i)["keywords"] == "зонт" for i in ids)

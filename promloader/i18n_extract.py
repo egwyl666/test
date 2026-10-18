@@ -33,8 +33,9 @@ PY_SKIP_NAMES = {
     "XLSX_TABLES", "QUALITY_LABELS",     # reports.py — заголовки листов Excel
     "MISMATCH_HEADERS", "CAT_HEADERS", "COD_WORDS", "NP_DEFAULTS",                  # categories.py — колонки файла для кабинета Prom
 }
-PY_SKIP_RETURNS = {"build_prompt"}     # ai.py — что возвращается, уходит модели
+PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt"}     # ai.py — что возвращается, уходит модели
 PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
+                 "build_batch_prompt",  # ai.py — задание для модели
                  "daily_summary_text"}  # reports.py — сообщение в Telegram (Telegram — по-русски)
 PY_SKIP_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "send", "notify", "_tg",
                  # регулярные выражения

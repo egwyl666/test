@@ -1,6 +1,6 @@
 """Массовый ИИ: очередь заданий по многим товарам с учётом лимитов бесплатного тарифа.
 
-- товары обрабатываются по одному в фоне, темп — не больше RATE запросов в минуту (настраивается);
+- товары обрабатываются в фоне — по одному или пачкой в одном запросе (ai.BATCH: ключевые слова, названия, переводы), темп — не больше RATE запросов в минуту (настраивается);
 - при превышении лимита у провайдера (429) — пауза на минуту и повтор того же товара;
 - старые значения полей сохраняются: все изменения задания можно откатить одной кнопкой;
 - «только где пусто»: перевод/ключевые слова не трогают товары, где это уже заполнено.
@@ -77,9 +77,12 @@ def estimate(count: int, action: str) -> dict:
     if per is None:
         # авто-модель Gemini ещё ни разу не выбиралась — считаем по цене свежей Flash (её программа и выберет)
         per = aiprice.typical_cost(s["provider"], model or ("gemini-flash" if s["provider"] == "gemini" else ""))
-    total = per * count if per is not None else None
-    minutes = round(count / max(1, rate_per_minute()))
-    return {"count": count, "model": model, "per_request_usd": per, "per_request_uah": aiprice.to_uah(per),
+    size = ai.batch_size(action)
+    requests = -(-count // size)  # пачками: запросов в size раз меньше, чем товаров
+    # замеренная цена — уже за запрос-пачку; типичная — за один товар (пачка дешевле: инструкция одна на всех)
+    total = (per * requests if measured and size > 1 else per * count) if per is not None else None
+    minutes = round(requests / max(1, rate_per_minute()))
+    return {"count": count, "requests": requests, "batch": size, "model": model, "per_request_usd": per, "per_request_uah": aiprice.to_uah(per),
             "total_usd": total, "total_uah": aiprice.to_uah(total), "measured": measured,
             "free": s["provider"] == "gemini" and aiprice.free_tier(), "minutes": minutes}
 
@@ -128,6 +131,19 @@ def _next_item():
            WHERE j.status = 'running' AND i.status = 'pending' ORDER BY j.id, i.id LIMIT 1""")
 
 
+SINGLE = "single"  # пачка не разобралась (ответ оборвался) — эти товары дальше идут по одному
+
+
+def _next_items(limit: int) -> list:
+    first = _next_item()
+    if first is None or limit <= 1 or first["message"] == SINGLE:
+        return [first] if first else []
+    return db.query(
+        """SELECT i.*, j.action, j.instruction, j.only_empty FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
+           WHERE i.job_id = ? AND i.status = 'pending' AND i.message != ? ORDER BY i.id LIMIT ?""",
+        (first["job_id"], SINGLE, limit))
+
+
 def _finish_jobs() -> None:
     with db.tx() as c:
         c.execute("""UPDATE ai_jobs SET status = 'done', updated_at = ? WHERE status = 'running' AND NOT EXISTS
@@ -144,34 +160,25 @@ def _mark(item_id: int, status: str, message: str = "", old=None, new=None) -> N
 last_limit: ai.AIError | None = None  # последний лимит/перегрузка — для паузы и сообщения у задания
 
 
-def process_one(runner=ai.run) -> str:
-    """Обработать один товар. Возвращает 'idle' | 'done' | 'skipped' | 'error' | 'rate_limited'."""
-    item = _next_item()
-    if item is None:
-        _finish_jobs()
-        return "idle"
+def _prepare(item):
+    """Товар для запроса или None (пропущен: удалён, уже заполнено, переводить нечего — запрос не нужен)."""
     try:
         p = products.get(item["product_id"])
     except KeyError:
         _mark(item["id"], "skipped", "товар удалён")
-        return "skipped"
+        return None
     fields = EMPTY_CHECK.get(item["action"])
     if item["only_empty"] and fields and all((p.get(f) or "").strip() for f in fields):
         _mark(item["id"], "skipped", "уже заполнено")
-        return "skipped"
+        return None
     if ai.nothing_to_translate(p, item["action"]):
         _mark(item["id"], "skipped", "нет украинского текста")  # запрос к ИИ не нужен и не оплачивается
-        return "skipped"
-    try:
-        with ai.usage_source("bulk", item["job_id"]):
-            changes = runner(p, item["action"], item["instruction"])
-    except ai.AIError as exc:
-        if exc.temporary:
-            global last_limit
-            last_limit = exc
-            return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим этот же товар
-        _mark(item["id"], "error", str(exc))
-        return "error"
+        return None
+    return p
+
+
+def _apply(item, p: dict, changes: dict) -> None:
+    fields = EMPTY_CHECK.get(item["action"])
     if item["only_empty"] and fields:
         changes = {k: v for k, v in changes.items() if k not in fields or not (p.get(k) or "").strip()}
     old = {k: p.get(k) for k in changes}
@@ -179,7 +186,48 @@ def process_one(runner=ai.run) -> str:
         with changes_log.source(f"ИИ: {ACTION_LABEL.get(item['action'], item['action'])}"):
             products.update(p["id"], changes)
     _mark(item["id"], "done", old=old, new=changes)
-    return "done"
+
+
+def process_one(runner=None) -> str:
+    """Обработать следующий товар — или пачку товаров одним запросом (ключевые слова, названия, переводы: так
+    бесплатного лимита хватает в разы на большее число товаров). runner — свой вызов ИИ для одного товара (тесты).
+    Возвращает 'idle' | 'done' | 'skipped' | 'error' | 'rate_limited'."""
+    global last_limit
+    first = _next_item()
+    if first is None:
+        _finish_jobs()
+        return "idle"
+    size = ai.batch_size(first["action"]) if runner is None else 1
+    batch = [(item, p) for item in _next_items(size) if (p := _prepare(item)) is not None]
+    if not batch:
+        return "skipped"
+    try:
+        with ai.usage_source("bulk", first["job_id"]):
+            if len(batch) == 1:
+                item, p = batch[0]
+                results = [(runner or ai.run)(p, item["action"], item["instruction"])]
+            else:
+                results, _ = ai.run_batch([p for _, p in batch], first["action"])
+    except ai.AIError as exc:
+        if exc.temporary:
+            last_limit = exc
+            return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим эти же товары
+        if len(batch) > 1 and not exc.key_error:
+            # ответ на пачку не разобрался (например, оборвался) — эти товары пойдут по одному, ничего не теряем
+            with db.tx() as c:
+                c.executemany("UPDATE ai_items SET message = ? WHERE id = ?", [(SINGLE, item["id"]) for item, _ in batch])
+            return "error"
+        for item, _ in batch:
+            _mark(item["id"], "error", str(exc))
+        return "error"
+    status = "error"
+    for (item, p), result in zip(batch, results):
+        if isinstance(result, ai.AIError):
+            _mark(item["id"], "error", str(result))
+        else:
+            _apply(item, p, result)
+            status = "done"
+    return status
 
 
 def pause_running(message: str) -> None:
