@@ -122,13 +122,34 @@ def test_tunnel_requires_login_and_secure_cookie(monkeypatch):
     assert c.post("/api/shutdown").status_code == 403  # через туннель тоже «с 127.0.0.1», но это не компьютер
 
 
-def test_tunnel_refused_when_off_or_other_host(monkeypatch):
+def test_tunnel_off_refused_old_address_asks_password(monkeypatch):
     c = tunnel_client(monkeypatch, remote=False)
-    assert c.get("/login").status_code == 403
+    r = c.get("/login")
+    # отказ понятен браузеру: страница с кодировкой, а не JSON без неё (Safari показывал кракозябры)
+    assert r.status_code == 403 and "text/html" in r.headers["content-type"] and "charset=utf-8" in r.headers["content-type"]
+    assert "Доступ с телефона" in r.text
+    api = c.get("/api/meta")
+    assert api.status_code == 403 and "charset=utf-8" in api.headers["content-type"]
     phone.update({"remote": True})
-    # через Cloudflare, но по другому адресу (например, туннель фото или свой домен) — интерфейса нет
-    assert c.get("/login", headers={"host": "other.trycloudflare.com"}).status_code == 403
+    # ссылка от прошлого запуска (её cloudflared ещё жив) — не отказ, а вход по паролю
+    old = c.get("/orders", headers={"host": "old-address.trycloudflare.com"}, follow_redirects=False)
+    assert old.status_code == 303 and old.headers["location"].startswith("/login")
+    assert c.get("/api/meta", headers={"host": "old-address.trycloudflare.com"}).status_code == 401
     assert c.get("/login").status_code == 200
+
+
+def test_stale_cloudflared_is_killed(monkeypatch, data_dir):
+    from promloader import phototunnel
+
+    (data_dir / "tools").mkdir(exist_ok=True)
+    pidfile = data_dir / "tools" / "phone-tunnel.pid"
+    pidfile.write_text("4242")
+    killed = []
+    monkeypatch.setattr(phototunnel, "_pid_alive_cloudflared", lambda pid: pid == 4242)
+    monkeypatch.setattr(phototunnel.os, "kill", lambda pid, sig: killed.append(pid))
+    assert phototunnel.kill_stale("phone-tunnel") and killed == [4242] and not pidfile.exists()
+    pidfile.write_text("777")  # номер достался другой программе — её не трогаем
+    assert not phototunnel.kill_stale("phone-tunnel") and killed == [4242]
 
 
 def test_this_computer_needs_no_password(client):
@@ -189,3 +210,32 @@ def test_unreachable_address_is_not_sent(monkeypatch):
     assert "не открывается" in phone.status()["remote_error"]
     assert phone.keep_tunnel() == "" and closed == [1]  # следующая попытка — через пару минут, не сразу
     phone.tunnel.error = ""
+
+
+def test_dead_tunnel_is_recreated_with_new_address(monkeypatch):
+    """Ошибка 1033: cloudflared жив, но адрес не открывается — после двух проверок адрес пересоздаётся,
+    новый уходит в Telegram."""
+    sent, closed = [], []
+    state = {"url": "https://old-one.trycloudflare.com", "active": True, "reachable": False}
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append(text))
+    monkeypatch.setattr(phone.tunnel, "status", lambda: {"active": state["active"], "url": state["url"], "error": ""})
+    monkeypatch.setattr(phone.tunnel, "check_reachable", lambda: state["reachable"])
+    monkeypatch.setattr(phone.tunnel, "close", lambda: (closed.append(1), state.update(active=False)))
+
+    def ensure():
+        state.update(url="https://new-one.trycloudflare.com", active=True)
+        phone.tunnel.url, phone.tunnel.reachable = state["url"], True
+        return state["url"]
+    monkeypatch.setattr(phone.tunnel, "ensure_url", ensure)
+    for k, v in {"checked": float("-inf"), "fails": 0, "notified": "https://old-one.trycloudflare.com", "next_try": 0.0}.items():
+        monkeypatch.setitem(phone._state, k, v)
+    phone.update({"password": PASSWORD, "remote": True})
+
+    phone.tunnel.url = state["url"]
+    assert phone.keep_tunnel() == "https://old-one.trycloudflare.com" and closed == []  # первая неудача — ждём
+    phone._state["checked"] = float("-inf")
+    assert phone.keep_tunnel() == "https://new-one.trycloudflare.com" and closed == [1]
+    assert len(sent) == 1 and "new-one" in sent[0]
+    # пока проверка не подошла по времени — адрес не трогаем
+    state["reachable"] = False
+    assert phone.keep_tunnel() == "https://new-one.trycloudflare.com" and closed == [1]

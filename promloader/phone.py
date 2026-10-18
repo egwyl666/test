@@ -195,12 +195,11 @@ def client_kind(request, allowed_hosts: set[str]) -> str | None:
     loopback = ip in LOOPBACK or ip.startswith("127.")
     if loopback and "cf-connecting-ip" not in request.headers:
         return "local" if host in allowed_hosts else None
-    if loopback:  # пришло через cloudflared: только наш туннель для телефона и только когда он включён
-        tunnel_host = remote_host()
-        if not remote_enabled() or not tunnel_host:
-            return None
-        # cloudflared передаёт адрес, по которому открыли туннель; если он его заменит адресом программы — тоже наш
-        return "phone" if host in (tunnel_host, "localhost", "127.0.0.1") else None
+    if loopback:  # пришло через cloudflared: только когда доступ из интернета включён, и всегда — с паролем
+        # Адрес не сверяем с текущим: ссылка из Telegram могла остаться от прошлого запуска, а её cloudflared — ещё
+        # жить (Windows не закрывает его вместе с программой). Раньше такой запрос получал непонятный отказ;
+        # вход по паролю защищает одинаково при любом адресе
+        return "phone" if remote_enabled() else None
     if runtime.lan_bound:  # программа слушает домашнюю сеть: заголовку Host здесь верить нельзя
         return "phone" if lan_enabled() else None
     # программа запущена не через START.bat (Docker, свой uvicorn): как раньше, по адресу в Host
@@ -239,7 +238,9 @@ def lan_addresses() -> list[str]:
             continue
         if addr.is_private and not addr.is_loopback and not addr.is_link_local and ip not in result:
             result.append(ip)
-    return result
+    # домашний роутер почти всегда 192.168.*; 172.16–31.* чаще у VPN, Hyper-V и WSL — их ниже
+    order = {"192": 0, "10.": 1}
+    return sorted(result, key=lambda ip: order.get(ip[:3], 2))
 
 
 def lan_urls() -> list[str]:
@@ -264,6 +265,7 @@ def qr_svg(text: str) -> str:
 class PhoneTunnel(phototunnel.Tunnel):
     """Тот же cloudflared, что и для фото, но к самой программе и без закрытия по простою."""
     label = "Программа доступна с телефона"
+    pid_name = "phone-tunnel"
     start_error = "Cloudflare не выдал адрес для телефона. Программа попробует ещё раз через пару минут"
     probe = ("/static/icon.png", 200)
 
@@ -275,7 +277,9 @@ class PhoneTunnel(phototunnel.Tunnel):
 
 tunnel = PhoneTunnel()
 RETRY_SECONDS = 120
-_state = {"next_try": 0.0, "notified": ""}
+HEALTH_SECONDS = 180   # как часто проверять, что адрес Cloudflare действительно открывается
+HEALTH_FAILS = 2       # столько неудачных проверок подряд — и адрес пересоздаётся
+_state = {"next_try": 0.0, "notified": "", "checked": float("-inf"), "fails": 0}
 
 
 def remote_host() -> str:
@@ -295,7 +299,20 @@ def keep_tunnel() -> str:
             tunnel.close()
         return ""
     if tunnel.status()["active"]:
-        return tunnel.url
+        # cloudflared может жить, но потерять связь с Cloudflare (сон компьютера, смена сети) — тогда по адресу
+        # «Ошибка 1033». Процесс при этом не падает, и без проверки программа считала бы адрес рабочим вечно
+        if time.monotonic() - _state["checked"] < HEALTH_SECONDS:
+            return tunnel.url
+        _state["checked"] = time.monotonic()
+        if tunnel.check_reachable():
+            _state["fails"] = 0
+            return tunnel.url
+        _state["fails"] += 1
+        if _state["fails"] < HEALTH_FAILS:
+            return tunnel.url
+        log.warning("Адрес для телефона %s больше не открывается — создаю новый", tunnel.url)
+        _state["fails"] = 0
+        tunnel.close()
     if time.monotonic() < _state["next_try"]:
         return ""
     try:

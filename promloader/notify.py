@@ -9,6 +9,7 @@
 import html
 import json
 import logging
+import re
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -36,7 +37,16 @@ DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_m
 
 
 class NotifyError(Exception):
-    pass
+    def __init__(self, message: str, status: int | None = None, retry_after: int | None = None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+
+    @property
+    def permanent(self) -> bool:
+        """Telegram не примет это сообщение никогда (400 — плохой текст): повторять бессмысленно, а повторы держали
+        бы всю очередь получателя — следующие уведомления приходили через двое суток пачкой."""
+        return self.status == 400
 
 
 def token() -> str:
@@ -65,7 +75,8 @@ def call(bot_token: str, method: str, transport=None, files=None, **payload) -> 
             raise NotifyError("Telegram не принял токен бота — проверьте, что скопировали его целиком")
         if r.status_code == 403:
             raise NotifyError("Получатель заблокировал бота или не нажал «Старт»")
-        raise NotifyError(f"Telegram: {body.get('description', 'ошибка')}")
+        raise NotifyError(f"Telegram: {body.get('description', 'ошибка')}", r.status_code,
+                          (body.get("parameters") or {}).get("retry_after"))
     return body
 
 
@@ -100,8 +111,29 @@ def _migrate_single_chat() -> None:
         db.set_setting("telegram_chat_id", "")
 
 
+# события, появившиеся после того, как получатели уже были добавлены: включаем их всем один раз
+# (иначе новый адрес для телефона не приходил тем, кто подключил Telegram раньше)
+NEW_EVENTS = {1: ["phone", "parcel_waiting", "parcel_refused"]}
+
+
+def _add_new_events() -> None:
+    done = int(db.get_setting("tg_events_version") or 0)
+    latest = max(NEW_EVENTS)
+    if done >= latest:
+        return
+    with db.tx() as c:
+        for r in c.execute("SELECT id, events FROM tg_recipients").fetchall():
+            events = json.loads(r["events"])
+            for version, names in NEW_EVENTS.items():
+                if version > done:
+                    events += [e for e in names if e not in events]
+            c.execute("UPDATE tg_recipients SET events = ? WHERE id = ?", (json.dumps(events), r["id"]))
+        db.set_setting("tg_events_version", str(latest))
+
+
 def recipients() -> list[dict]:
     _migrate_single_chat()
+    _add_new_events()
     return [{**dict(r), "events": json.loads(r["events"])}
             for r in db.query("SELECT * FROM tg_recipients ORDER BY id")]
 
@@ -112,6 +144,7 @@ def add_recipient(chat_id: str, name: str = "", events: list[str] | None = None)
         raise NotifyError("ID чата — это число (например 123456789 или -100123… для группы)")
     chosen = [e for e in (events if events is not None else DEFAULT_EVENTS) if e in EVENTS]
     with db.tx() as c:
+        db.set_setting("tg_events_version", str(max(NEW_EVENTS)))  # у нового получателя события уже свежие
         c.execute("""INSERT INTO tg_recipients (chat_id, name, events, created_at) VALUES (?, ?, ?, ?)
                      ON CONFLICT(chat_id) DO UPDATE SET name = excluded.name""",
                   (chat_id, name.strip() or chat_id, json.dumps(chosen), db.now()))
@@ -142,8 +175,15 @@ def ready() -> bool:
 # ---------- отправка ----------
 
 def send_to(chat_id: str, text: str, transport=None) -> None:
-    call(token(), "sendMessage", transport, chat_id=chat_id, text=text, parse_mode="HTML",
-         disable_web_page_preview=True)
+    try:
+        call(token(), "sendMessage", transport, chat_id=chat_id, text=text[:4000], parse_mode="HTML",
+             disable_web_page_preview=True)
+    except NotifyError as exc:
+        if not exc.permanent:
+            raise
+        # разметка не разобралась (символ «<» в имени, адресе) — то же сообщение простым текстом, без разметки
+        plain = html.unescape(re.sub(r"<[^>]+>", "", text))[:4000]
+        call(token(), "sendMessage", transport, chat_id=chat_id, text=plain, disable_web_page_preview=True)
 
 
 RETRY_SECONDS = (60, 120, 300, 900, 1800, 3600)
@@ -219,8 +259,14 @@ def _flush_round(transport=None) -> int:
         try:
             send_to(r["chat_id"], r["text"], transport)
         except NotifyError as exc:
+            if exc.permanent:  # не держим очередь: это сообщение — в «не доставлено», следующие идут дальше
+                log.warning("Уведомление Telegram для %s отклонено: %s", r["chat_id"], exc)
+                with db.tx() as c:
+                    c.execute("UPDATE tg_outbox SET failed = 1, last_error = ?, attempts = attempts + 1 WHERE id = ?",
+                              (str(exc), r["id"]))
+                continue
             waiting.add(r["chat_id"])
-            _retry_later(r, str(exc))
+            _retry_later(r, str(exc), exc.retry_after)
             continue
         with db.tx() as c:
             c.execute("UPDATE tg_outbox SET sent_at = ?, last_error = '' WHERE id = ?", (db.now(), r["id"]))
@@ -228,14 +274,14 @@ def _flush_round(transport=None) -> int:
     return sent
 
 
-def _retry_later(row, error: str) -> None:
+def _retry_later(row, error: str, retry_after: int | None = None) -> None:
     attempts = row["attempts"] + 1
     created = datetime.fromisoformat(row["created_at"])
     give_up = datetime.now(timezone.utc) - created > timedelta(hours=GIVE_UP_HOURS)
     log.warning("Уведомление Telegram для %s не отправлено (попытка %d): %s", row["chat_id"], attempts, error)
     with db.tx() as c:
         c.execute("UPDATE tg_outbox SET attempts = ?, next_at = ?, last_error = ?, failed = ? WHERE id = ?",
-                  (attempts, _later(RETRY_SECONDS[min(attempts - 1, len(RETRY_SECONDS) - 1)]), error,
+                  (attempts, _later(retry_after or RETRY_SECONDS[min(attempts - 1, len(RETRY_SECONDS) - 1)]), error,
                    1 if give_up else 0, row["id"]))
 
 

@@ -78,7 +78,9 @@ def test_old_single_chat_is_migrated():
     db.set_setting("telegram_chat_id", "555")
     db.set_setting("telegram_chat_name", "Старый")
     db.set_setting("telegram_events", "order")
-    assert [(r["chat_id"], r["name"], r["events"]) for r in notify.recipients()] == [("555", "Старый", ["order"])]
+    # события, появившиеся позже (адрес для телефона, посылки), получатель получает автоматически — один раз
+    assert [(r["chat_id"], r["name"], r["events"]) for r in notify.recipients()] == [
+        ("555", "Старый", ["order", "phone", "parcel_waiting", "parcel_refused"])]
 
 
 def test_bad_token_message(monkeypatch):
@@ -157,3 +159,45 @@ def test_api(client):
     assert client.patch(f"/api/telegram/recipients/{r['id']}", json={"events": ["sync_done"]}).json()["items"][0]["events"] == ["sync_done"]
     assert client.delete(f"/api/telegram/recipients/{r['id']}").json()["items"] == []
     assert client.get("/orders").status_code == 200
+
+
+
+def test_bad_message_does_not_hold_the_queue(monkeypatch):
+    """Сообщение, которое Telegram не примет никогда (400), раньше повторялось двое суток и держало все следующие
+    уведомления получателя — потом они приходили пачкой. Теперь: разметка не разобралась — уходит простым текстом;
+    иначе — помечается «не доставлено», а следующие идут сразу."""
+    db.set_setting("telegram_token", "123:abc")
+    notify.add_recipient("555", "Я", ["order"])
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        if "<broken" in body["text"] and body.get("parse_mode"):
+            return httpx.Response(400, json={"ok": False, "description": "Bad Request: can't parse entities"})
+        if "слишком" in body["text"]:
+            return httpx.Response(400, json={"ok": False, "description": "Bad Request: chat not found"})
+        sent.append(body["text"])
+        return httpx.Response(200, json={"ok": True, "result": {}})
+    real = notify.call
+    monkeypatch.setattr(notify, "call", lambda token, method, transport=None, files=None, **kw: real(
+        token, method, httpx.MockTransport(handler), files, **kw))
+    notify.send("order", "Отделение <broken №1", background=False)
+    notify.send("order", "сломанное: слишком", background=False)
+    notify.send("order", "<b>Новый заказ №7</b>", background=False)
+    assert sent == ["Отделение <broken №1", "<b>Новый заказ №7</b>"]  # простым текстом — как есть
+    state = notify.outbox_state()
+    assert state["pending"] == 0 and state["failed"] == 1
+
+
+def test_retry_after_from_telegram(monkeypatch):
+    db.set_setting("telegram_token", "123:abc")
+    notify.add_recipient("555", "Я", ["order"])
+    real = notify.call
+    monkeypatch.setattr(notify, "call", lambda token, method, transport=None, files=None, **kw: real(
+        token, method, httpx.MockTransport(lambda r: httpx.Response(429, json={
+            "ok": False, "description": "Too Many Requests", "parameters": {"retry_after": 7}})), files, **kw))
+    notify.send("order", "Заказ", background=False)
+    row = db.query_one("SELECT * FROM tg_outbox")
+    from datetime import datetime, timezone
+    left = (datetime.fromisoformat(row["next_at"]) - datetime.now(timezone.utc)).total_seconds()
+    assert row["failed"] == 0 and 0 < left <= 8

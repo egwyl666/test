@@ -21,7 +21,14 @@ router = APIRouter()
 
 @router.get("/api/prom/catalog")
 def prom_catalog_state():
-    return promcatalog.state()
+    return promcatalog.live_state()
+
+
+@router.post("/api/prom/external-ids/dismiss")
+def prom_external_ids_dismiss():
+    """Скрыть старую ошибку записи ID (например, «нет связи» — сеть с тех пор вернулась)."""
+    promcatalog._ext_state(error="")
+    return promcatalog.live_state()
 
 
 @router.get("/api/prom/external-ids")
@@ -45,7 +52,7 @@ async def prom_external_ids_write():
     _background.add(task)
     task.add_done_callback(_background.discard)
     await asyncio.sleep(0.05)
-    return promcatalog.state()
+    return promcatalog.live_state()
 
 
 async def _ext_ids_bg() -> None:
@@ -68,7 +75,7 @@ async def prom_catalog_load():
     _background.add(task)
     task.add_done_callback(_background.discard)
     await asyncio.sleep(0.05)
-    return promcatalog.state()
+    return promcatalog.live_state()
 
 
 async def _catalog_bg() -> None:

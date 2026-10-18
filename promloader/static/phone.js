@@ -10,10 +10,14 @@ function phoneUrl(url) {
       <button class="btn small" data-copy="${esc(url)}">Копировать</button></div></div>`;
 }
 
-function fillPhone(st) {
+// form = false — фоновое обновление: только адреса и состояние. Галочки не трогаем — иначе опрос каждые 3 секунды
+// возвращал их к сохранённым, и переключить «Wi‑Fi / Cloudflare» до «Сохранить» было невозможно
+function fillPhone(st, { form = true } = {}) {
   $("#phone-pass-state").textContent = st.password_set ? "(задан — впишите новый, чтобы сменить)" : "(не задан)";
-  $("#phone-lan").checked = st.lan;
-  $("#phone-remote").checked = st.remote;
+  if (form) {
+    $("#phone-lan").checked = st.lan;
+    $("#phone-remote").checked = st.remote;
+  }
   $("#phone-sign-out").classList.toggle("hidden", !st.password_set);
 
   $("#phone-lan-box").classList.toggle("hidden", !st.lan);
@@ -37,12 +41,12 @@ function fillPhone(st) {
 
   // адрес через Cloudflare появляется не сразу — пока ждём, спрашиваем каждые 3 секунды
   clearTimeout(phonePoll);
-  if (st.remote && st.launcher && !st.remote_active) phonePoll = setTimeout(loadPhone, 3000);
+  if (st.remote && st.launcher && !st.remote_active) phonePoll = setTimeout(() => loadPhone({ form: false }), 3000);
 }
 
-async function loadPhone() {
+async function loadPhone({ form = true } = {}) {
   try {
-    fillPhone(await api("/api/phone"));
+    fillPhone(await api("/api/phone"), { form });
   } catch (err) {
     if (err.status === 403) {  // открыто с телефона: менять доступ можно только на компьютере
       $("#phone-form").classList.add("hidden");

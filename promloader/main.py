@@ -14,6 +14,7 @@ from urllib.parse import urlencode, urlparse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (
     FileResponse,
+    HTMLResponse,
     JSONResponse,
     RedirectResponse,
     Response,
@@ -105,6 +106,8 @@ async def lifespan(app: FastAPI):
     if backup.apply_pending(db.default_dir()):
         log.warning("Данные восстановлены из резервной копии")
     db.init()
+    for name in ("photo-tunnel", "phone-tunnel"):  # cloudflared, оставшийся от прошлого запуска, держал бы старый адрес
+        await asyncio.to_thread(phototunnel.kill_stale, name)
     suppliers.recover()
     fixed = sync.repair_false_success()
     if fixed:
@@ -408,6 +411,13 @@ def _same_origin(origin: str, request: Request) -> bool:
     return any(netloc == h.strip().lower() for h in hosts if h.strip())
 
 
+_REFUSED_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>Prom Loader</title>
+<style>body{font-family:system-ui,sans-serif;background:#f4f5f7;color:#1d2129;margin:0;padding:40px 20px}
+.box{max-width:440px;margin:0 auto;background:#fff;border-radius:10px;padding:24px}</style></head>
+<body><div class="box"><h2>Prom Loader</h2><p>{text}.</p></div></body></html>"""
+
+
 @app.middleware("http")
 async def same_site_only(request: Request, call_next):
     """Защита от чужих сайтов, открытых в том же браузере.
@@ -423,8 +433,12 @@ async def same_site_only(request: Request, call_next):
         if not os.environ.get("APP_PASSWORD"):
             kind = phone.client_kind(request, _allowed_hosts())
             if kind is None:
-                return JSONResponse({"detail": "Программа открывается только по адресу http://localhost. Для доступа с "
-                                               "телефона включите его в «Настройках» → «Доступ с телефона»"}, status_code=403)
+                text = ("Программа открывается только по адресу http://localhost. Для доступа с телефона включите его "
+                        "в «Настройках» → «Доступ с телефона»")
+                if request.method == "GET" and not path.startswith("/api/"):
+                    return HTMLResponse(_REFUSED_PAGE.replace("{text}", text), status_code=403)
+                # с кодировкой: без неё Safari показывал русский текст кракозябрами
+                return JSONResponse({"detail": text}, status_code=403, media_type="application/json; charset=utf-8")
             request.state.access = kind
             if kind == "phone" and not phone.valid_session(request.cookies.get(phone.COOKIE)) \
                     and path not in phone.PUBLIC_PATHS and not path.startswith("/static/"):

@@ -339,6 +339,7 @@ def snapshot():
 
 
 def test_preview_shows_changes_and_writes_nothing():
+    pricing.save_rules([{"markup_percent": 0, "rounding": "none"}])  # цена следует за закупкой
     sid = make_supplier(make_yml(BASE), auto_sync=1, new_status="ready")
     run(sid)
     changed = [("A1", "Кружка белая", "120", "10", "true"),       # цена выросла
@@ -370,3 +371,22 @@ def test_broken_download_keeps_last_good_price_list():
     assert not list(db.suppliers_dir().glob(f"{sid}.new*"))         # временный файл убран
     with pytest.raises(excel.ImportError_):
         suppliers.preview(sid, transport=broken)
+
+
+def test_supplier_update_never_turns_price_into_cost_without_markup_rule():
+    """Без правила наценки обновление прайса меняло цену товара, уже продающегося на Prom, на закупку —
+    следующая отправка выставила бы товар по закупке. Теперь меняется только закупка, цена остаётся."""
+    pricing.save_rules([])
+    sid = make_supplier(make_yml(BASE))
+    run(sid)
+    pid = products_by_sku()["A1"]["id"]
+    with db.tx() as c:
+        c.execute("UPDATE products SET price = 460, status = 'synced', synced_at = ? WHERE id = ?", (db.now(), pid))
+    suppliers.store_source(sid, make_yml([("A1", "Кружка белая", "130", "10", "true")] + BASE[1:]), "feed.xml")
+    run(sid)
+    p = products.get(pid)
+    assert p["cost_price"] == 130 and p["price"] == 460 and p["status"] == "synced"
+    # с правилом наценки цена считается от закупки, как и раньше
+    pricing.save_rules([{"markup_percent": 50, "rounding": "none"}])
+    suppliers.recalc_prices()
+    assert products.get(pid)["price"] == 195

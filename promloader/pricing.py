@@ -146,14 +146,19 @@ class Pricer:
             if price is not None:
                 data["price"], data["currency"] = price, "UAH"
                 return []
-            # без правила: закупка в гривнах — цену не трогаем (её ставили руками или из прайса); закупка в валюте —
-            # цена всегда РРЦ (или закупка) по текущему курсу, иначе при смене курса гривневая цена застыла бы
-            if currency.upper() in rates.LOCAL and data.get("price") is not None \
-                    and (data.get("currency") or "UAH").upper() in rates.LOCAL:
+            # Без правила наценки цену, которая уже есть, не трогаем — ни в гривнах, ни в валюте: раньше товар,
+            # уже продающийся на Prom, при обновлении прайса получал цену = закупке (следующая отправка — продажа
+            # в ноль). Цена по РРЦ или закупке — только товару, у которого цены ещё нет; data["_no_rule"] — метка,
+            # что цена «запасная» и существующую цену товара ею заменять нельзя (suppliers._apply_one)
+            has_price = data.get("price") is not None and (data.get("currency") or "UAH").upper() in rates.LOCAL
+            if currency.upper() in rates.LOCAL and has_price:
                 return []
-            if rrp is not None:
+            if rrp is not None:  # РРЦ — розничная цена поставщика: по ней и по курсу (не закупка)
                 data["price"], data["currency"] = self.to_uah(rrp, currency, supplier_id), "UAH"
                 return ["Нет правила наценки — стоит РРЦ"]
+            if has_price:
+                return ["Нет правила наценки — цена не изменена"]
+            data["_no_rule"] = True
             data["price"], data["currency"] = self.to_uah(cost, currency, supplier_id), "UAH"
             return ["Нет правила наценки — цена равна закупочной"]
         except rates.RateError as exc:

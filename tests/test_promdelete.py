@@ -181,7 +181,8 @@ def test_recreated_product_is_linked_back_to_supplier():
     pid = products.create({"name": "Создан заново", "price": 1, "external_id": old["external_id"]})
     stats = run(sid)["stats"]
     p = products.get(pid)
-    assert p["supplier_id"] == sid and p["price"] == old["price"] and not stats.get("ignored")
+    # без правила наценки цена товара закупкой не затирается — обновилась закупка
+    assert p["supplier_id"] == sid and p["cost_price"] == old["price"] and p["price"] == 1 and not stats.get("ignored")
     assert suppliers.get(sid)["items_deleted"] == 0
 
 
@@ -209,4 +210,4 @@ def test_import_with_supplier_links_products(client):
     main._link_imported(suppliers.get(sid), old["external_id"], pid, item)
     assert products.get(pid)["supplier_id"] == sid and suppliers.get(sid)["items_deleted"] == 0
     run(sid)
-    assert products.get(pid)["price"] == old["price"]
+    assert products.get(pid)["cost_price"] == old["price"] and products.get(pid)["price"] == 5
