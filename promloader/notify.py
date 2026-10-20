@@ -34,9 +34,10 @@ EVENTS = {
     "daily_summary": "сводка за день: заказы, выручка, прибыль",
     "ai_bulk": "массовый ИИ завершён или остановлен",
     "margin_alert": "товар продаётся в минус или ниже минимальной наценки",
+    "prom_sync": "синхронизация с Prom: товары добавили или удалили прямо в кабинете",
 }
 DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_missed", "phone", "parcel_waiting",
-                  "parcel_refused", "daily_summary", "ai_bulk", "margin_alert"]
+                  "parcel_refused", "daily_summary", "ai_bulk", "margin_alert", "prom_sync"]
 
 
 class NotifyError(Exception):
@@ -116,7 +117,7 @@ def _migrate_single_chat() -> None:
 
 # события, появившиеся после того, как получатели уже были добавлены: включаем их всем один раз
 # (иначе новый адрес для телефона не приходил тем, кто подключил Telegram раньше)
-NEW_EVENTS = {1: ["phone", "parcel_waiting", "parcel_refused"], 2: ["daily_summary"], 3: ["ai_bulk"], 4: ["margin_alert"]}
+NEW_EVENTS = {1: ["phone", "parcel_waiting", "parcel_refused"], 2: ["daily_summary"], 3: ["ai_bulk"], 4: ["margin_alert"], 5: ["prom_sync"]}
 
 
 def _add_new_events() -> None:

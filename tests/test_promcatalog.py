@@ -308,3 +308,56 @@ def test_missing_on_prom_is_counted_now_not_remembered(client):
     assert client.get("/api/prom/catalog").json()["missing_on_prom"] == 1
     r = client.post("/api/prom/external-ids/dismiss").json()
     assert r["ext_error"] == ""
+
+
+# ---------- 2.21.0: автосинхронизация с кабинетом Prom ----------
+
+def test_autosync_setting_and_due():
+    from datetime import datetime, timedelta, timezone
+    assert promcatalog.autosync_hours() == 0 and not promcatalog.autosync_due()      # по умолчанию выключено
+    assert promcatalog.set_autosync_hours(2) == 2
+    assert promcatalog.autosync_due()                                               # ещё ни разу не синхронизировали
+    now = datetime.now(timezone.utc)
+    promcatalog._set_state(running=False, finished_at=(now - timedelta(minutes=90)).isoformat())
+    assert not promcatalog.autosync_due(now)                                        # прошло 1,5 часа из 2
+    assert promcatalog.autosync_due(now + timedelta(minutes=31))
+    db.set_setting("prom_token", "")
+    assert not promcatalog.autosync_due(now + timedelta(hours=5))                   # без токена — нет
+    db.set_setting("prom_token", "t")
+    pid = products.create({"name": "Кружка", "price": 10})
+    with db.tx() as c:
+        c.execute("UPDATE products SET status = 'sending' WHERE id = ?", (pid,))
+    assert not promcatalog.autosync_due(now + timedelta(hours=5))                   # идёт отправка — не мешаем
+    import pytest
+    with pytest.raises(ValueError):
+        promcatalog.set_autosync_hours(5)
+
+
+def test_autosync_pulls_products_added_on_prom_and_notifies(monkeypatch):
+    from promloader import notify
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append((event, text)))
+    factory, _ = serve([[prom_product(1), prom_product(2)]])
+    counts = asyncio.run(promcatalog.run_auto(factory))
+    assert counts["created"] == 2 and set(by_ext()) == {"EXT-1", "EXT-2"}
+    assert by_ext()["EXT-1"]["status"] == "synced"
+    assert sent and sent[0][0] == "prom_sync" and "добавили товаров: 2" in sent[0][1]
+    # следующий раз ничего нового — без уведомления; изменённая на Prom цена обновилась
+    factory, _ = serve([[prom_product(1, price=555), prom_product(2)]])
+    asyncio.run(promcatalog.run_auto(factory))
+    assert len(sent) == 1 and by_ext()["EXT-1"]["price"] == 555
+
+
+def test_autosync_api(client):
+    r = client.get("/api/prom/autosync").json()
+    assert r["hours"] == 0 and r["choices"] == [0, 1, 2, 3, 6, 12, 24]
+    assert client.post("/api/prom/autosync", json={"hours": 6}).json()["hours"] == 6
+    assert client.post("/api/prom/autosync", json={"hours": 7}).status_code == 400
+
+
+def test_autosync_event_for_existing_recipients():
+    from promloader import notify
+    with db.tx() as c:
+        c.execute("INSERT INTO tg_recipients (chat_id, name, events, created_at) VALUES ('5', 'x', '[\"order\"]', ?)", (db.now(),))
+    db.set_setting("tg_events_version", "4")
+    assert "prom_sync" in notify.recipients()[0]["events"]

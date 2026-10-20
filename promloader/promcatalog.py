@@ -503,3 +503,74 @@ async def _run(client_factory) -> dict:
         raise
     finally:
         _lock.release()
+
+
+# ---------- автосинхронизация с кабинетом Prom ----------
+# Товары, которые выставили или поменяли прямо в кабинете Prom (минуя программу), сами подтягиваются в программу
+# раз в N часов: та же загрузка каталога, что по кнопке «⬇ Каталог с Prom».
+
+AUTO_HOURS = (0, 1, 2, 3, 6, 12, 24)  # 0 — выключено
+
+
+def autosync_hours() -> int:
+    try:
+        hours = int(db.get_setting("prom_autosync_hours") or 0)
+    except ValueError:
+        return 0
+    return hours if hours in AUTO_HOURS else 0
+
+
+def set_autosync_hours(hours) -> int:
+    try:
+        hours = int(hours)
+    except (TypeError, ValueError):
+        hours = -1
+    if hours not in AUTO_HOURS:
+        raise ValueError("Синхронизация с Prom: выберите выкл. или 1, 2, 3, 6, 12, 24 часа")
+    db.set_setting("prom_autosync_hours", str(hours))
+    return hours
+
+
+def autosync_due(now=None) -> bool:
+    """Пора ли синхронизироваться: включено, есть токен, нет паузы, каталог сейчас не загружается, ничего не
+    отправляется на Prom (иначе товары «в пути» выглядели бы расходящимися) и прошло N часов с прошлой загрузки."""
+    from datetime import datetime, timezone
+
+    from . import config
+    hours = autosync_hours()
+    if not hours or not config.get("prom_token") or db.paused() or _lock.locked():
+        return False
+    if db.query_one("SELECT 1 FROM products WHERE status = 'sending' LIMIT 1"):
+        return False
+    last = state().get("finished_at")
+    if not last:
+        return True
+    try:
+        last_at = datetime.fromisoformat(last)
+    except ValueError:
+        return True
+    now = now or datetime.now(timezone.utc)
+    if last_at.tzinfo is None:
+        last_at = last_at.replace(tzinfo=timezone.utc)
+    return (now - last_at).total_seconds() >= hours * 3600
+
+
+async def run_auto(client_factory) -> dict | None:
+    """Автосинхронизация: загрузить каталог и сообщить, если на Prom вручную добавили или удалили товары."""
+    from . import notify
+    try:
+        counts = await run(client_factory)
+    except PromError as exc:
+        log.warning("Автосинхронизация с Prom: %s", exc)
+        return None
+    _set_state(auto=True)
+    created, missing = counts.get("created", 0), counts.get("missing_on_prom", 0)
+    if created or missing:
+        lines = ["🔄 <b>Синхронизация с Prom</b>"]
+        if created:
+            lines.append(f"На Prom вручную добавили товаров: {created} — теперь они и в программе (статус «На Prom»).")
+        if missing:
+            lines.append(f"Пропали с Prom (удалены в кабинете?): {missing} — в программе у них статус «Ошибка».")
+        notify.send("prom_sync", "\n".join(lines))
+    return counts
+

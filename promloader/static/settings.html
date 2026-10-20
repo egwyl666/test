@@ -126,6 +126,21 @@
         <b>Запускать Prom Loader вместе с Windows</b> <span class="muted">— чтобы расписание работало, даже если вы забыли открыть программу</span></label>
     </div>
 
+    <div class="panel" id="prom-sync">
+      <h2>🔄 Синхронизация с кабинетом Prom</h2>
+      <p class="small muted" style="margin-top:-6px">Если товары выставляют или меняют прямо в кабинете Prom (минуя программу), программа
+        сама подтянет их к себе: новые товары появятся в программе со статусом «На Prom», изменённые цены и наличие
+        обновятся, удалённые на Prom получат статус «Ошибка». Товары с вашими ещё не отправленными правками не
+        перезаписываются. О новых и пропавших товарах придёт уведомление в Telegram.</p>
+      <div class="toolbar">
+        <label class="small">Синхронизировать <select id="ps-hours" style="width:auto">
+          <option value="0">выключено</option><option value="1">каждый час</option><option value="2">каждые 2 часа</option>
+          <option value="3">каждые 3 часа</option><option value="6">каждые 6 часов</option>
+          <option value="12">каждые 12 часов</option><option value="24">раз в сутки</option></select></label>
+        <span class="small muted" id="ps-last"></span>
+      </div>
+    </div>
+
     <div class="panel" id="np">
       <h2>🚚 Новая Почта</h2>
       <p class="small muted" style="margin-top:-4px">ТТН из заказа в один клик (получатель и отделение — из заказа Prom), этикетка
@@ -948,6 +963,24 @@
 
     loadMeta().catch(() => {});
     loadSchedules().catch((err) => toast(`Расписание не загрузилось: ${err.message}`, "error"));
+
+    // ---------- синхронизация с кабинетом Prom ----------
+    function fillPromSync(r) {
+      $("#ps-hours").value = String(r.hours);
+      let text = r.running ? I18N.tr("Идёт синхронизация…") : "";
+      if (!r.running && r.last) {
+        text = `${I18N.tr("Последняя:")} ${formatDate(r.last)} · ${I18N.tr("новых")} ${r.created} · ${I18N.tr("пропало с Prom")} ${r.missing_on_prom}`;
+      }
+      if (r.error) text += ` · ${r.error}`;
+      $("#ps-last").textContent = text;
+    }
+    api("/api/prom/autosync").then(fillPromSync).catch(() => {});
+    $("#ps-hours").addEventListener("change", async (e) => {
+      try {
+        fillPromSync(await api("/api/prom/autosync", { method: "POST", json: { hours: Number(e.target.value) } }));
+        toast(I18N.tr("Сохранено"), "ok");
+      } catch (err) { toast(err.message, "error"); }
+    });
     api("/api/settings").then((s) => { fill(s); fillUpdates(s); fillTelegram(s); fillSupport(s); fillPhotos(s); }).catch((err) => toast(err.message, "error"));
     loadBackups().catch((err) => toast(`Список копий не загрузился: ${err.message}`, "error"));
     loadCloudBackups();

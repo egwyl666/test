@@ -128,7 +128,7 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
                  asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop)),
                  asyncio.create_task(chat_worker(stop)), asyncio.create_task(phone_worker(stop)),
-                 asyncio.create_task(np_worker(stop))]
+                 asyncio.create_task(np_worker(stop)), asyncio.create_task(catalog_worker(stop))]
     try:
         yield
     finally:
@@ -250,6 +250,21 @@ async def np_worker(stop: asyncio.Event) -> None:
             log.exception("Сбой отслеживания посылок")
         try:
             await asyncio.wait_for(stop.wait(), timeout=novaposhta.TRACK_MINUTES * 60)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def catalog_worker(stop: asyncio.Event) -> None:
+    """Автосинхронизация с кабинетом Prom: раз в N часов («Настройки») — загрузка каталога, как по кнопке."""
+    while not stop.is_set():
+        try:
+            if await asyncio.to_thread(promcatalog.autosync_due):
+                await promcatalog.run_auto(sync.make_client)
+        except Exception:
+            log.exception("Сбой автосинхронизации с Prom")
+            promcatalog._set_state(running=False)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
         except asyncio.TimeoutError:
             pass
 

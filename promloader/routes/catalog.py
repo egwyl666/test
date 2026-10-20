@@ -4,6 +4,7 @@ import asyncio
 
 from fastapi import (
     APIRouter,
+    Body,
     HTTPException,
 )
 
@@ -86,3 +87,21 @@ async def _catalog_bg() -> None:
     except Exception as exc:
         log.exception("Сбой загрузки каталога Prom")
         promcatalog._set_state(running=False, error=f"Внутренняя ошибка: {exc}")
+
+
+@router.get("/api/prom/autosync")
+def prom_autosync():
+    st = promcatalog.state()
+    return {"hours": promcatalog.autosync_hours(), "choices": list(promcatalog.AUTO_HOURS),
+            "last": st.get("finished_at"), "error": st.get("error", ""), "running": st.get("running", False),
+            "created": st.get("created", 0), "updated": st.get("updated", 0), "missing_on_prom": st.get("missing_on_prom", 0)}
+
+
+@router.post("/api/prom/autosync")
+def prom_autosync_set(hours: int = Body(..., embed=True)):
+    try:
+        promcatalog.set_autosync_hours(hours)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return prom_autosync()
+
