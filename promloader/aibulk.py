@@ -229,6 +229,8 @@ def _prepare(item):
         return None
     if item["only_empty"] and ai.already_done(p, item["action"]):
         _mark(item["id"], "skipped", "уже заполнено")  # например, украинский текст пришёл со второй ссылки поставщика
+        # «сразу в «Готов»»: товар без ИИ уже готов — его тоже переводим (иначе он остался бы черновиком)
+        _auto_promote(item, [p["id"]])
         return None
     if ai.nothing_to_translate(p, item["action"]):
         _mark(item["id"], "skipped", "нет украинского текста")  # запрос к ИИ не нужен и не оплачивается

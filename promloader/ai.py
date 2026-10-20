@@ -641,6 +641,10 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
                           + (f" — снова можно через {human_wait(min(waits))}" if waits else ""),
                           temporary=True, retry_after=min(waits) if waits else None,
                           quota=next((e.quota for e in reversed(limited) if e.quota), None))
+        if limited and not (last_error and last_error.temporary):
+            # первая модель упёрлась в лимит, а последние просто недоступны ключу (404/403) — это всё равно «подождать»,
+            # а не ошибка товара: иначе массовый ИИ помечал бы ошибкой каждый товар вместо паузы до сброса лимита
+            raise limited[-1]
         raise last_error or AIError("Gemini: не удалось подобрать модель")
     if switch:
         db.set_setting("gemini_model_used", model)
@@ -756,17 +760,21 @@ def _claude(s: dict, prompt: str, transport=None, action: str = "",
     """switch=False — только выбранная модель (проверка моделей не должна переходить на другие)."""
     client = _claude_client(s["key"], transport)
     chain = [s["model"]] + ([m for m in CLAUDE_CHAIN if m != s["model"]] if switch else [])
-    last = None
+    temporary = None  # лимит или перегрузка по дороге: если дальше модели просто недоступны — это всё равно «подождать»
     for model in chain:
         try:
             result = _claude_once(client, s, model, prompt, action, system, fields, has_next=model != chain[-1])
         except _ClaudeSwitch as exc:
-            last = exc.error
+            temporary = temporary or (exc.error if exc.error.temporary else None)
             continue
+        except AIError as exc:
+            if temporary and not exc.temporary and not exc.key_error:
+                raise temporary  # 404 у последней модели не должен превращать лимит в ошибку товара
+            raise
         if switch:
             db.set_setting("claude_model_used", model)
         return result
-    raise last
+    raise AIError("Claude: не удалось подобрать модель")
 
 
 def _claude_once(client, s: dict, model: str, prompt: str, action: str, system: str, fields: tuple,

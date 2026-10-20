@@ -57,3 +57,12 @@ def test_promote_ready_respects_list_filter(client):
     r = client.post("/api/products/promote-ready", json={"filter": {"q": "Лампа"}}).json()
     assert r["moved"] == 1
     assert products.get(a)["status"] == "draft" and products.get(b)["status"] == "ready"
+
+
+def test_too_long_name_is_not_ready(client):
+    """Найдено при проверке: название длиннее 255 символов Prom не примет — такой черновик не «готов»."""
+    long = make(name="Кружка " * 50, name_ua="Кухоль", keywords="кружка")
+    ok = make(name="Кружка", name_ua="Кухоль", keywords="кружка")
+    r = client.post("/api/products/promote-ready", json={"filter": {}}).json()
+    assert r["moved"] == 1
+    assert products.get(ok)["status"] == "ready" and products.get(long)["status"] == "draft"

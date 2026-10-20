@@ -85,27 +85,28 @@ def _network_error(exc: Exception) -> NPError:
     return NPError("Нет связи с Новой Почтой: нет подключения к интернету или сервер недоступен. Программа повторит позже")
 
 
-def _request(send, safe: bool = True):
-    """send() — один HTTP-запрос. Сетевой сбой повторяем NET_RETRIES раз; safe=False — только сбой соединения."""
-    for attempt in range(NET_RETRIES + 1):
+def _request(send, safe: bool = True, retries: int = NET_RETRIES):
+    """send() — один HTTP-запрос. Сетевой сбой повторяем retries раз; safe=False — только сбой соединения."""
+    for attempt in range(retries + 1):
         try:
             return send()
         except (httpx.TransportError, OSError) as exc:
             retryable = safe or isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, OSError))
-            if attempt == NET_RETRIES or not retryable:
+            if attempt == retries or not retryable:
                 raise _network_error(exc) from None
             log.info("Нова Пошта: сбой сети, повтор %s из %s", attempt + 1, NET_RETRIES)
             _sleep(NET_DELAY)
 
 
-def call(model: str, method: str, props: dict | None = None, key: str | None = None, transport=None) -> list:
+def call(model: str, method: str, props: dict | None = None, key: str | None = None, transport=None,
+         retries: int = NET_RETRIES) -> list:
     body = {"apiKey": api_key() if key is None else key, "modelName": model, "calledMethod": method,
             "methodProperties": props or {}}
 
     def send():
         with httpx.Client(timeout=TIMEOUT, transport=transport) as client:
             return client.post(API, json=body)
-    r = _request(send, safe=method not in MUTATING)
+    r = _request(send, safe=method not in MUTATING, retries=retries)
     try:
         data = r.json()
     except ValueError:
@@ -189,7 +190,9 @@ def draft(order_id: int, transport=None) -> dict:
     wh_ref = provider.get("recipient_warehouse_id") or (provider.get("recipient_address") or {}).get("warehouse_id")
     if wh_ref:
         try:
-            found = call("AddressGeneral", "getWarehouses", {"Ref": wh_ref, "Limit": "1"}, transport=transport)
+            # подсказка для формы, а не обязательный шаг: без повторов — окно ТТН не ждёт секунды, если сети нет
+            found = call("AddressGeneral", "getWarehouses", {"Ref": wh_ref, "Limit": "1"}, transport=transport,
+                         retries=0)
         except NPError:
             found = []
         if found:

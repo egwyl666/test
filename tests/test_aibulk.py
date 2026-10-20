@@ -401,3 +401,27 @@ def test_readiness_ai_target_filter(client):
     est = client.post("/api/ai/bulk/estimate", json={"action": "prepare_prom",
                                                      "filter": {"status": "draft", "readiness": "missing_ai"}}).json()
     assert est["count"] == 2
+
+
+def test_auto_promote_also_moves_already_complete_skipped_drafts():
+    """Найдено при проверке: товар, у которого всё уже было (пропущен без ИИ), оставался черновиком,
+    хотя задание «сразу в «Готов к отправке»»."""
+    from promloader import aibulk, products
+    complete = _draft("Готовый", name_ua="Кухоль", keywords="кружка")
+    empty = _draft("Пустой")
+    job = aibulk.create([complete, empty], "prepare_prom", auto_promote=True)
+    while aibulk.process_one(lambda p, a, i="": {"name_ua": "Лампа", "keywords": "лампа"}) != "idle":
+        pass
+    assert products.get(complete)["status"] == "ready" and products.get(empty)["status"] == "ready"
+    assert aibulk.get(job["id"])["promoted"] == 2
+
+
+def test_bulk_pauses_not_errors_when_limit_then_unavailable(monkeypatch):
+    from promloader import ai, aibulk
+    pid = _draft("Кружка")
+    job = aibulk.create([pid], "keywords")
+
+    def limited(p, a, i=""):
+        raise ai.AIError("лимит", temporary=True)
+    assert aibulk.process_one(limited) == "rate_limited"
+    assert aibulk.get(job["id"])["counts"] == {"pending": 1}

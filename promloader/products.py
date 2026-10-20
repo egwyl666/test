@@ -395,7 +395,9 @@ _FILLED = "TRIM(COALESCE(p.{f}, '')) != ''"
 _PHOTO = "EXISTS (SELECT 1 FROM images i WHERE i.product_id = p.id)"
 _HAS_UA = f"{_FILLED.format(f='name_ua')} AND ({_FILLED.format(f='description_ua')} OR NOT {_FILLED.format(f='description')})"
 READINESS = {
-    "ready_to_promote": f"COALESCE(p.price, 0) > 0 AND {_PHOTO} AND {_FILLED.format(f='name')} AND {_HAS_UA} "
+    # длина названия — как в validate(): длиннее 255 символов Prom не примет, «готовым» такой товар не считаем
+    "ready_to_promote": f"COALESCE(p.price, 0) > 0 AND {_PHOTO} AND {_FILLED.format(f='name')} "
+                        f"AND LENGTH(p.name) <= 255 AND {_HAS_UA} "
                         f"AND {_FILLED.format(f='keywords')}",
     "missing_ua": f"NOT ({_HAS_UA})",
     "missing_keywords": f"NOT {_FILLED.format(f='keywords')}",

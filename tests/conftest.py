@@ -44,3 +44,26 @@ def make_image(fmt="PNG", size=(40, 30), color="red") -> bytes:
     buf = io.BytesIO()
     Image.new("RGB", size, color).save(buf, fmt)
     return buf.getvalue()
+
+
+@pytest.fixture(autouse=True)
+def no_live_network(monkeypatch):
+    """Тесты не ходят в настоящий интернет (Prom, Gemini, НП, GitHub…): подменённые сервисы — через MockTransport,
+    адрес TestClient — testserver. Случайный живой запрос — сразу ошибка соединения, а не обращение к Prom."""
+    import httpx
+
+    real = httpx.HTTPTransport.handle_request
+    real_async = httpx.AsyncHTTPTransport.handle_async_request
+    local = {"testserver", "localhost", "127.0.0.1"}
+
+    def handle(self, request):
+        if request.url.host in local:
+            return real(self, request)
+        raise httpx.ConnectError(f"тесты без интернета: {request.url.host}", request=request)
+
+    async def handle_async(self, request):
+        if request.url.host in local:
+            return await real_async(self, request)
+        raise httpx.ConnectError(f"тесты без интернета: {request.url.host}", request=request)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle_async)

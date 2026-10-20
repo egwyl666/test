@@ -643,3 +643,31 @@ def test_keywords_deduplicated_and_trimmed():
     assert changes == {"keywords": "a, b", "name_ua": "Кухоль білий"}
     assert "100 символов" in ai.ACTIONS["name"][1] and "100 символов" in ai.ACTIONS["translate_ua"][1]
     assert "100 символов" in ai.ACTIONS["prepare_prom"][1]
+
+
+# ---------- найдено при проверке: лимит не должен превращаться в ошибку товара ----------
+
+def test_claude_limit_then_missing_models_stays_temporary():
+    """Выбранная модель упёрлась в лимит, а остальные ключу недоступны (404): это «подождать», а не ошибка —
+    иначе массовый ИИ помечал бы ошибкой каждый товар вместо паузы."""
+    use("claude", key="sk-test", model="claude-opus-5-5")
+    transport, _ = claude_chain_server({"claude-opus-5-5": 429, "claude-sonnet-5-5": 404, "claude-haiku-5-5": 404})
+    with pytest.raises(ai.AIError) as err:
+        ai.run(PRODUCT, "keywords", transport=transport)
+    assert err.value.temporary
+
+
+def test_gemini_limit_then_unavailable_models_stays_temporary():
+    use("gemini")
+
+    def handler(r):
+        if r.method == "GET":
+            return httpx.Response(200, json={"models": [{"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
+                                                        for m in ("gemini-3.8-flash", "gemini-3.7-flash")]})
+        model = r.url.path.rsplit("/", 1)[-1].split(":")[0]
+        if model == "gemini-3.8-flash":
+            return httpx.Response(429, json=quota_429("GenerateRequestsPerDayPerProjectPerModel-FreeTier", 20, "60s", model))
+        return httpx.Response(403, json={"error": {"message": "Permission denied on model"}})
+    with pytest.raises(ai.AIError) as err:
+        ai.run(PRODUCT, "improve", transport=httpx.MockTransport(handler))
+    assert err.value.temporary and err.value.retry_after == 60

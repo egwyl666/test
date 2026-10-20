@@ -364,3 +364,15 @@ def test_ttn_status_failure_does_not_fail_ttn(np, client, monkeypatch):
     assert r.status_code == 200 and r.json()["status_updated"] is False and "locked" in r.json()["status_error"]
     r2 = client.post("/api/orders/1001/ttn", json={"set_status": "x"})
     assert r2.status_code == 400   # ТТН уже есть — обычная ошибка создания, не статуса
+
+
+def test_ttn_draft_does_not_wait_when_network_is_down(monkeypatch):
+    """Найдено при проверке: без сети окно «Создать ТТН» открывалось 3+ с — поиск отделения повторялся с паузами."""
+    slept = []
+    monkeypatch.setattr(novaposhta, "_sleep", slept.append)
+    orders.store([prom_order(1001)], notify_new=False)
+    transport, state = _flaky(10)
+    real = httpx.Client
+    monkeypatch.setattr(novaposhta.httpx, "Client", lambda *a, **kw: real(*a, **{**kw, "transport": transport}))
+    d = novaposhta.draft(1001)
+    assert d["last_name"] == "Коваль" and state["n"] == 1 and slept == []

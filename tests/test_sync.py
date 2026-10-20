@@ -176,7 +176,8 @@ def test_fatal_import_marks_error():
 def test_missing_token_fails_job():
     pid = ready_product()
     sync.enqueue([pid])
-    asyncio.run(sync.run_once())  # токен не задан
+    db.set_setting("prom_token", "")  # токен не задан (раньше тест шёл в настоящий Prom с тестовым токеном и ловил 401)
+    asyncio.run(sync.run_once())
     assert job()["status"] == "failed"
     assert "токен" in products.get(pid)["last_error"]
 
