@@ -177,15 +177,17 @@ def test_quick_replies_use_real_order_and_ttn_in_buyer_language():
     assert quick["ttn"]["label"] == "📦 Номер ТТН и статус"
 
 
-def test_quick_replies_russian_buyer_and_order_by_phone():
-    from promloader import chat, orders
+def test_quick_replies_always_ukrainian_and_order_by_phone():
+    """Покупатель пишет по-русски — ответы всё равно по-украински (решение продавца); заказ найден по телефону."""
+    from promloader import ai, chat, orders
     from tests.test_novaposhta import prom_order
     orders.store([prom_order(1002, status="received")], notify_new=False)
     room = _room_with(buyer_text="Здравствуйте, когда отправите заказ?", phone="+380671112233")
     quick = {q["key"]: q for q in chat.quick_replies(room)}
-    assert quick["order"]["text"] == "Ваш заказ №1002: принят, готовим к отправке."
-    assert quick["check"]["text"].startswith("Сейчас")
+    assert quick["order"]["text"] == "Ваше замовлення #1002: прийнято, готуємо до відправлення."
+    assert quick["check"]["text"].startswith("Зараз")
     assert "stock" not in quick and "ttn" not in quick
+    assert "всегда на украинском" in ai.CHAT_SYSTEM
 
 
 def test_ai_draft_gets_order_and_ttn_facts(monkeypatch):

@@ -53,10 +53,11 @@
           <div id="room-product"></div>
           <div class="chat-messages" id="messages"></div>
           <div class="chips chat-templates" id="quick"></div>
-          <div class="chips chat-templates" id="templates">
-            <button class="chip" data-tpl="0">Здравствуйте! Товар в наличии, цена актуальная.</button>
-            <button class="chip" data-tpl="1">Отправим сегодня Новой Почтой.</button>
-            <button class="chip" data-tpl="2">Сейчас уточню на складе и напишу вам.</button>
+          <!-- шаблоны — всегда по-украински (ответы покупателям — на украинском), не переводятся вместе с интерфейсом -->
+          <div class="chips chat-templates" id="templates" translate="no">
+            <button class="chip" data-tpl="0">Вітаємо! Товар у наявності, ціна актуальна.</button>
+            <button class="chip" data-tpl="1">Відправимо сьогодні Новою Поштою.</button>
+            <button class="chip" data-tpl="2">Зараз уточню на складі й напишу вам.</button>
           </div>
           <textarea id="reply" rows="3" placeholder="Ответ покупателю…"></textarea>
           <div class="toolbar" style="margin:8px 0 0">

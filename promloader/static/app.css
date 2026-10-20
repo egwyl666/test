@@ -709,3 +709,10 @@ a.kpi-link:hover { border-color: var(--accent); }
 .phone-url a { word-break: break-all; font-weight: 600; }
 .phone-url .btn { margin-top: 6px; }
 .summary-days { display: inline-flex; flex-wrap: wrap; gap: 6px 10px; }
+/* метка у поля карточки: откуда значение (ИИ, поставщик, вручную…) */
+.origin { display: inline-block; font-size: 11px; font-weight: 500; line-height: 1.5; padding: 0 6px; border-radius: 10px;
+  margin-left: 4px; vertical-align: middle; cursor: help; white-space: nowrap; background: #eef0f3; color: #555; }
+.origin-ai { background: #f1ebff; color: #5b2fc9; }
+.origin-supplier { background: #e8f3ff; color: #1f5fa8; }
+.origin-manual { background: #eaf7ee; color: #23753d; }
+.origin-import, .origin-prom { background: #fff4e3; color: #8a5a00; }

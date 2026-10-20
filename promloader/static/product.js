@@ -7,6 +7,7 @@ const state = {
   id: Number(new URLSearchParams(location.search).get("id")) || null,
   product: null,
   pending: {},        // изменения, ещё не подтверждённые сервером
+  aiFields: new Set(), // поля, заполненные из «✨ ИИ → Применить» и ещё не правленные руками
   saving: null,       // текущий запрос сохранения
   saveTimer: null,
   retryTimer: null,
@@ -166,6 +167,7 @@ function changed(field) {
 
 form.addEventListener("input", (e) => {
   const el = e.target;
+  if (el.name) state.aiFields.delete(el.name);  // поправили руками — это уже ваш текст, а не ИИ
   if (el.name) changed(el.name);
   else if (el.closest(".param-row")) changed("params");
 });
@@ -195,6 +197,12 @@ async function save() {
   const payload = state.pending;
   if (!Object.keys(payload).length) return;
   state.pending = {};
+  // поля из «✨ ИИ → Применить» — сервер запишет в журнал как «ИИ», а не «Вручную»
+  const fromAi = Object.keys(payload).filter((f) => state.aiFields.has(f));
+  if (fromAi.length && state.id) {
+    payload._ai_fields = fromAi;
+    fromAi.forEach((f) => state.aiFields.delete(f));
+  }
   setSaveState("saving", "Сохраняю…");
   state.saving = (async () => {
     try {
@@ -263,8 +271,25 @@ window.addEventListener("beforeunload", (e) => {
 });
 
 // Серверная копия: обновляем служебное, не трогая поля, которые пользователь ещё редактирует.
+// Метка у поля: откуда текущее значение — ИИ, поставщик, вы (по журналу изменений; подробности — во всплывающей подсказке)
+function renderOrigins(p) {
+  for (const old of form.querySelectorAll(".origin")) old.remove();
+  for (const [field, o] of Object.entries(p.origins || {})) {
+    const el = form.elements[field];
+    const label = el && el.closest(".field") && el.closest(".field").querySelector(":scope > span");
+    if (!label) continue;
+    const badge = document.createElement("span");
+    badge.className = `origin origin-${o.kind}`;
+    badge.textContent = I18N.tr((META.origin_labels || {})[o.kind] || o.kind);
+    badge.title = `${I18N.tr(o.source)} · ${formatDate(o.at)}`;
+    badge.translate = true;
+    label.append(" ", badge);
+  }
+}
+
 function applyServer(product) {
   state.product = product;
+  renderOrigins(product);
   const active = document.activeElement;
   for (const el of form.elements) {
     // поле с ошибкой не заменяем старым значением: пользователь должен видеть, что именно не принято
@@ -828,6 +853,7 @@ function showAiResult(changes, usage) {
     for (const [field, value] of Object.entries(changes)) {
       if (!form.elements[field]) continue;
       form.elements[field].value = value;
+      state.aiFields.add(field);
       changed(field);
     }
     // показываем язык, на который переводили: «на украинский» — вкладка UA, «на русский» — RU

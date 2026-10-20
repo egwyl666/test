@@ -44,6 +44,7 @@ def meta(request: Request):
         "access": getattr(request.state, "access", "local"),
         "presence": products.PRESENCE,
         "statuses": products.STATUSES,
+        "origin_labels": products.ORIGIN_LABELS,
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
@@ -142,6 +143,16 @@ def get_product(product_id: int):
 
 @router.patch("/api/products/{product_id}")
 def update_product(product_id: int, data: dict = Body(...)):
+    """_ai_fields — поля, которые пришли из ИИ в карточке («Применить»): в журнале они записываются как «ИИ»,
+    а не «Вручную», — по журналу карточка показывает, где текст писал ИИ."""
+    ai_fields = data.pop("_ai_fields", None)
+    if isinstance(ai_fields, list):
+        ai_part = {k: data.pop(k) for k in [f for f in ai_fields if isinstance(f, str)] if k in data}
+        if ai_part:
+            with changes.source("ИИ (в карточке)"):
+                product = products.update(product_id, ai_part)
+            if not data:
+                return product
     return products.update(product_id, data)
 
 

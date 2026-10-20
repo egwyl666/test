@@ -311,6 +311,7 @@ def get(product_id: int) -> dict:
             p["cost_uah"] = round(p["cost_price"] * rate, 2) if rate else None
         except rates.RateError:
             pass
+    p["origins"] = origins(product_id, p)
     p["supplier"] = None
     if p["supplier_id"]:
         s = db.query_one("SELECT id, name FROM suppliers WHERE id = ?", (p["supplier_id"],))
@@ -321,6 +322,50 @@ def get(product_id: int) -> dict:
 
 
 COMMERCIAL = ("price", "old_price", "cost_price", "rrp", "presence", "quantity", "currency", "cost_currency")
+
+# ---------- откуда значение поля: ИИ, поставщик или вы ----------
+# По журналу изменений: последнее изменение поля и кто его сделал. Поля, которые не менялись, — как товар появился.
+ORIGIN_FIELDS = ("name", "name_ua", "description", "description_ua", "keywords", "price", "old_price", "cost_price",
+                 "rrp", "presence", "quantity", "group_name", "vendor", "country", "barcode", "vendor_code", "unit")
+ORIGIN_LABELS = {"ai": "✨ ИИ", "supplier": "📦 поставщик", "manual": "✍ вручную", "import": "📄 импорт файла",
+                 "prom": "🛒 с Prom", "auto": "⚙ наценка и курс"}
+
+
+def origin_kind(source: str) -> str:
+    s = (source or "").strip()
+    low = s.lower()
+    if "откат" in low:
+        return "manual"          # «ИИ: откат» возвращает прежнее значение — это не текст ИИ
+    if s.startswith(("ИИ", "Массовый ИИ")):
+        return "ai"
+    if s.startswith("Поставщик"):
+        return "supplier"
+    if s.startswith("Импорт файла"):
+        return "import"
+    if s.startswith(("Каталог с Prom", "Prom")):
+        return "prom"
+    if s.startswith(("Пересчёт по наценке", "Курс валют")):
+        return "auto"
+    return "manual"
+
+
+def origins(product_id: int, p: dict | None = None) -> dict:
+    """{поле: {kind, source, at}} — кто последним задал значение поля (только у заполненных полей)."""
+    rows = db.query("""SELECT field, source, at FROM product_changes WHERE id IN (
+                         SELECT MAX(id) FROM product_changes WHERE product_id = ? GROUP BY field)""", (product_id,))
+    last = {r["field"]: r for r in rows}
+    created = last.get("created")
+    p = p or {}
+    out = {}
+    for field in ORIGIN_FIELDS:
+        value = p.get(field)
+        if value is None or value == "":
+            continue
+        r = last.get(field) or created
+        if r is None:
+            continue
+        out[field] = {"kind": origin_kind(r["source"]), "source": r["source"], "at": r["at"]}
+    return out
 
 
 def prom_url(prom_id) -> str:

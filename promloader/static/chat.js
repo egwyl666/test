@@ -68,7 +68,7 @@ function renderRoom(r) {
     order.href = `/orders?q=${r.room.order_id}`;
   }
   $("#room-product").innerHTML = productCard(r.product);
-  // готовые ответы из настоящих данных (наличие, ТТН, статус заказа) — на языке покупателя, без ИИ
+  // готовые ответы из настоящих данных (наличие, ТТН, статус заказа) — по-украински, без ИИ
   $("#quick").innerHTML = (r.quick || []).map((q) =>
     `<button class="chip" data-quick="${esc(q.text)}" title="${esc(q.text)}">${esc(I18N.tr(q.label))}</button>`).join("");
   $("#messages").innerHTML = r.messages.map((m) => {
@@ -110,7 +110,7 @@ $("#q").addEventListener("input", (e) => {
   searchTimer = setTimeout(() => { view.q = e.target.value.trim(); loadRooms(); }, 300);
 });
 
-// шаблон вставляется в том языке, в котором сейчас интерфейс
+// шаблон вставляется как есть — по-украински
 $("#templates").addEventListener("click", (e) => {
   const b = e.target.closest("[data-tpl]");
   if (!b) return;
