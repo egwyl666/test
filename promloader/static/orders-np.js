@@ -56,6 +56,8 @@ async function openTtn(id) {
   $("#ttn-weight").value = d.weight; $("#ttn-cost").value = d.cost; $("#ttn-desc").value = d.description;
   $("#ttn-payer").innerHTML = Object.entries(d.payers).map(([k, v]) => `<option value="${k}" ${k === d.payer ? "selected" : ""}>${esc(v)}</option>`).join("");
   $("#ttn-cod").checked = d.cod; $("#ttn-cod-amount").value = d.cod_amount || d.cost;
+  // «отправить номер в чат» — по умолчанию выключено, выбор запоминается в этом браузере
+  try { $("#ttn-notify").checked = localStorage.getItem("promloader-ttn-notify") === "1"; } catch { $("#ttn-notify").checked = false; }
   showCod();
   $("#ttn-warehouse").innerHTML = d.warehouse_ref ? `<option value="${esc(d.warehouse_ref)}">${esc(d.warehouse)}</option>` : "";
   if (d.city_ref) loadWarehouses(d.city_ref, d.warehouse_ref);
@@ -98,14 +100,17 @@ $("#ttn-go").onclick = () => busy($("#ttn-go"), async () => {
     phone: $("#ttn-phone").value, city_ref: $("#ttn-city").dataset.ref || "", warehouse_ref: $("#ttn-warehouse").value,
     weight: $("#ttn-weight").value.replace(",", "."), cost: $("#ttn-cost").value.replace(",", "."),
     description: $("#ttn-desc").value, payer: $("#ttn-payer").value, cod: $("#ttn-cod").checked,
-    cod_amount: $("#ttn-cod-amount").value.replace(",", "."),
+    cod_amount: $("#ttn-cod-amount").value.replace(",", "."), notify_buyer: $("#ttn-notify").checked,
   };
+  try { localStorage.setItem("promloader-ttn-notify", form.notify_buyer ? "1" : ""); } catch {}
   if (!confirm(`Создать ТТН для заказа №${ttnOrder}? Покупатель получит SMS от Новой Почты.`)) return;
   try {
     const r = await api(`/api/orders/${ttnOrder}/ttn`, { method: "POST", json: form });
     $("#ttn-modal").classList.add("hidden");
     toast(`${I18N.tr("ТТН создана:")} ${r.ttn}`, "ok");
     if (r.prom_error) toast(r.prom_error, "error");
+    if (r.chat_sent) toast(I18N.tr("Номер ТТН отправлен покупателю в чат Prom"), "ok");
+    else if (r.chat_error) toast(r.chat_error, "error");
     await load();
   } catch (err) { toast(err.message, "error"); }
 });

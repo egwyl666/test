@@ -244,3 +244,106 @@ def test_batch_skips_filled_items_without_breaking_batch(monkeypatch):
     # 3 заполненных пропущены без запроса, 3 пустых — одной пачкой
     assert len(calls) == 1 and len(calls[0]) == 6
     assert aibulk.get(job["id"])["counts"] == {"skipped": 3, "done": 3}
+
+
+# ---------- 2.18.0: «Подготовить для Prom», уведомление о завершении ----------
+
+def test_prepare_prom_already_done_and_missing_fields():
+    from promloader import ai
+    full = {"name_ua": "Кухоль", "description": "<p>Кружка</p>", "description_ua": "<p>Кухоль</p>", "keywords": "кружка"}
+    assert ai.already_done(full, "prepare_prom")
+    assert ai.already_done({**full, "description": "", "description_ua": ""}, "prepare_prom")  # описания нет — не нужно
+    assert not ai.already_done({**full, "keywords": ""}, "prepare_prom")
+    assert not ai.already_done({**full, "description_ua": ""}, "prepare_prom")
+    assert ai.missing_fields({**full, "keywords": ""}, "prepare_prom") == ("keywords",)
+    assert ai.missing_fields({"name": "Кружка"}, "prepare_prom") == ("name_ua", "keywords")
+    assert ai.missing_fields({"name": "Кружка", "description": "<p>x</p>"}, "prepare_prom") == (
+        "name_ua", "description_ua", "keywords")
+    assert ai.batch_size("prepare_prom") == 5
+
+
+def test_prepare_prom_batch_requests_only_missing_fields_and_keeps_existing(monkeypatch):
+    """Товар поставщика с украинской ссылкой уже переведён — просим у ИИ только ключевые слова, перевод не трогаем."""
+    import json as _json
+
+    import httpx
+
+    from promloader import ai, aibulk, db, products
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_key", "k")
+    translated = products.create({"name": "Кружка", "name_ua": "Кухоль", "description": "<p>Белая</p>",
+                                  "description_ua": "<p>Біла</p>", "price": 10})
+    raw = products.create({"name": "Лампа", "description": "<p>Настольная</p>", "price": 10})
+    done = products.create({"name": "Зонт", "name_ua": "Парасоля", "keywords": "зонт", "price": 10})
+    calls = []
+
+    def handler(r):
+        props = _json.loads(r.content)["generationConfig"]["responseSchema"]["properties"]
+        calls.append(sorted(props))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": _json.dumps(
+            {k: f"ШІ {k}" for k in props})}]}}]})
+    transport = httpx.MockTransport(handler)
+    real = ai._gemini_post
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None, retry=True: real(key, model, body, transport, retry))
+    monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
+    job = aibulk.create([translated, raw, done], "prepare_prom")
+    while aibulk.process_one() != "idle":
+        pass
+    # один запрос на пачку; у переведённого товара — только keywords, у нового — все три поля
+    assert calls == [sorted(["i0_keywords", "i1_name_ua", "i1_description_ua", "i1_keywords"])]
+    t = products.get(translated)
+    assert (t["name_ua"], t["description_ua"], t["keywords"]) == ("Кухоль", "<p>Біла</p>", "ШІ i0_keywords")
+    r = products.get(raw)
+    assert (r["name_ua"], r["description_ua"], r["keywords"]) == ("ШІ i1_name_ua", "ШІ i1_description_ua", "ШІ i1_keywords")
+    assert aibulk.get(job["id"])["counts"] == {"done": 2, "skipped": 1}
+
+
+def _fill_job(n, action="keywords"):
+    from promloader import aibulk, products
+    ids = [products.create({"name": f"Товар {i}", "price": 10}) for i in range(n)]
+    return aibulk.create(ids, action)
+
+
+def test_notify_when_big_job_finishes(monkeypatch):
+    from promloader import aibulk, notify
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append((event, text)))
+    job = _fill_job(aibulk.NOTIFY_MIN_ITEMS)
+    while aibulk.process_one(lambda p, a, i="": {"keywords": "слово"}) != "idle":
+        pass
+    assert aibulk.get(job["id"])["status"] == "done"
+    assert len(sent) == 1 and sent[0][0] == "ai_bulk"
+    assert "завершён" in sent[0][1] and f"готово: {aibulk.NOTIFY_MIN_ITEMS}" in sent[0][1]
+
+
+def test_no_notify_for_small_job(monkeypatch):
+    from promloader import aibulk, notify
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda *a, **k: sent.append(a))
+    _fill_job(aibulk.NOTIFY_MIN_ITEMS - 1)
+    while aibulk.process_one(lambda p, a, i="": {"keywords": "слово"}) != "idle":
+        pass
+    assert sent == []
+
+
+def test_key_error_stops_job_and_notifies(monkeypatch):
+    from promloader import ai, aibulk, notify
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append((event, text)))
+    job = _fill_job(12)
+
+    def bad_key(p, a, i=""):
+        raise ai.AIError("Google не принял ключ Gemini", key_error=True)
+    assert aibulk.process_one(bad_key) == "error"
+    j = aibulk.get(job["id"])
+    assert j["status"] == "paused" and "ключ" in j["message"] and j["counts"] == {"pending": 12}
+    assert sent and sent[0][0] == "ai_bulk" and "остановлен" in sent[0][1]
+    assert aibulk.process_one(bad_key) == "idle"  # на паузе дальше не тратит запросы
+
+
+def test_ai_bulk_event_added_to_existing_recipients():
+    from promloader import db, notify
+    with db.tx() as c:
+        c.execute("INSERT INTO tg_recipients (chat_id, name, events, created_at) VALUES ('5', 'x', '[\"order\"]', ?)", (db.now(),))
+    db.set_setting("tg_events_version", "2")
+    assert "ai_bulk" in notify.recipients()[0]["events"]

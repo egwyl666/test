@@ -2,7 +2,8 @@
 
 const PAGE = 200;
 // фильтры списка — те же имена, что у /api/products; хранятся и в адресе страницы (?group=…&sort=…)
-const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "prom_category", "cat_mismatch"];
+const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "prom_category", "cat_mismatch",
+                 "readiness"];
 const START = new URLSearchParams(location.search);
 const list = {
   ...Object.fromEntries(FILTERS.map((k) => [k, START.get(k) || ""])),
@@ -57,6 +58,7 @@ async function loadProducts(append = false) {
   list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
   renderChips(data.counts);
   renderRows();
+  if (!append) loadReadiness().catch(() => {});
   // пока товары удаляются с Prom — обновляем список, чтобы было видно, как они уходят
   if (data.counts.deleting) refreshList(5000);
 }
@@ -77,9 +79,49 @@ function renderChips(counts) {
     .join("");
   $$("#chips .chip").forEach((c) => c.addEventListener("click", () => {
     list.status = c.dataset.status;
+    if (list.status !== "draft") list.readiness = "";  // «готовность» — фильтр только по черновикам
     applyFilters();
   }));
 }
+
+// Полоска над черновиками: сколько готовы для Prom (кнопка «В «Готов к отправке»») и чего не хватает остальным.
+// Учитывает остальные фильтры списка (поставщик, поиск, группа). Видна, только когда выбраны «Черновики».
+const READINESS_ORDER = ["missing_ua", "missing_keywords", "missing_price_or_photo"];
+let readinessSeq = 0;
+async function loadReadiness() {
+  const bar = $("#readiness");
+  if (list.status !== "draft") { bar.classList.add("hidden"); return; }
+  const seq = ++readinessSeq;
+  const r = await api(`/api/products/readiness?${new URLSearchParams(filterParams())}`);
+  if (seq !== readinessSeq) return;
+  const pill = (key, n) => `<button class="chip ${list.readiness === key ? "active" : ""}" data-readiness="${key}">${esc(I18N.tr(r.labels[key]))}<b>${n}</b></button>`;
+  bar.innerHTML = `<span class="small muted">Черновики:</span> ${pill("ready_to_promote", r.ready_to_promote)}
+    ${READINESS_ORDER.filter((k) => r[k]).map((k) => pill(k, r[k])).join(" ")}
+    <span class="spacer"></span>
+    ${r.ready_to_promote ? `<button class="btn small primary" id="promote-ready">В «Готов к отправке» (${r.ready_to_promote})</button>` : ""}`;
+  bar.classList.toggle("hidden", !r.drafts);
+}
+$("#readiness").addEventListener("click", (e) => {
+  const pill = e.target.closest("[data-readiness]");
+  if (pill) {
+    list.readiness = list.readiness === pill.dataset.readiness ? "" : pill.dataset.readiness;
+    applyFilters();
+    return;
+  }
+  const btn = e.target.closest("#promote-ready");
+  if (!btn) return;
+  const n = btn.textContent.match(/\d+/)[0];
+  if (!confirm(`Перевести готовые черновики (${n}) в «Готов к отправке»? На Prom они уйдут при следующей отправке.`)) return;
+  busy(btn, async () => {
+    try {
+      const filter = Object.fromEntries(Object.entries(filterParams()).filter(([k]) => !["status", "readiness"].includes(k)));
+      const r = await api("/api/products/promote-ready", { method: "POST", json: { filter } });
+      toast(`В «Готов к отправке»: ${r.moved}`, "ok");
+      if (list.readiness === "ready_to_promote") list.readiness = "";
+      applyFilters();
+    } catch (err) { toast(err.message, "error"); }
+  });
+});
 
 // Закупка в своей валюте и в гривнах по курсу. Нет закупки — курс и наценка на цену не действуют.
 function costCell(p) {
@@ -199,6 +241,9 @@ const FLAG_LABELS = { errors: "с ошибками заполнения", no_pho
   cat_mismatch: "Prom поставил не ту категорию" };
 const ON_PROM_LABELS = { yes: "есть на Prom", no: "нет на Prom" };
 
+const READINESS_FILTER_LABELS = { ready_to_promote: "черновики: готовы для Prom", missing_ua: "черновики: без украинского текста",
+  missing_keywords: "черновики: без ключевых слов", missing_price_or_photo: "черновики: без цены или фото" };
+
 function renderFilterControls() {
   $("#f-group").value = list.group;
   $("#f-presence").value = list.presence;
@@ -218,6 +263,7 @@ function renderFilterControls() {
       : `${I18N.tr("категория Prom:")} ${cat ? cat.caption || "№" + cat.id : "№" + list.prom_category}`]);
   }
   for (const [k, label] of Object.entries(FLAG_LABELS)) if (list[k]) active.push([k, label]);
+  if (list.readiness) active.push(["readiness", READINESS_FILTER_LABELS[list.readiness] || list.readiness]);
   $("#active-filters").innerHTML = active.map(([k, label]) =>
     `<button class="chip active" data-clear="${k}" title="Убрать фильтр">${esc(label)} ×</button>`).join("");
   const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0) + (list.prom_category ? 1 : 0);
@@ -377,7 +423,8 @@ function summarizeResult(r) {
 
 // ---------- массовый ИИ ----------
 
-const AI_BULK = ["translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
+// «Подготовить для Prom» — первым: перевод и ключевые слова одним заданием (и одним запросом на 5 товаров)
+const AI_BULK = ["prepare_prom", "translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
 let aiSel = { ids: [] };
 let aiRate = 8;
 
@@ -397,7 +444,7 @@ let aiEstimateSeq = 0;
 async function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
-  $("#ai-empty-wrap").classList.toggle("hidden", !["translate_ua", "translate_ru", "keywords", "improve"].includes(action));
+  $("#ai-empty-wrap").classList.toggle("hidden", !["prepare_prom", "translate_ua", "translate_ru", "keywords", "improve"].includes(action));
   const minutes = Math.ceil(selectionCount() / aiRate);
   const pace = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
   $("#ai-eta").textContent = pace;

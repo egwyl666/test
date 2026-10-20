@@ -252,3 +252,75 @@ def test_tracking_survives_network_failure(monkeypatch):
     transport, state = _flaky(10)
     assert novaposhta.track(transport=transport) == 0   # не падает, повторит в следующий раз
     assert state["n"] == novaposhta.NET_RETRIES + 1
+
+
+# ---------- 2.18.0: номер ТТН покупателю в чат Prom ----------
+
+def _room(ident, order_id=None, phone=""):
+    with db.tx() as c:
+        c.execute("INSERT INTO chat_rooms (room_ident, buyer_phone, order_id, last_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                  (ident, phone, order_id, db.now(), db.now()))
+
+
+def test_room_for_order_by_order_or_phone():
+    from promloader import chat
+    orders.store([prom_order(1001), prom_order(1002)], notify_new=False)
+    _room("555_abc", order_id=1001)
+    assert chat.room_for_order(1001) == "555_abc"
+    assert chat.room_for_order(1002) is None
+    _room("777_def", phone="+38 (067) 111-22-33")   # тот же телефон, что в заказе
+    assert chat.room_for_order(1002) == "777_def"
+
+
+def test_ttn_with_notify_buyer_sends_chat_message(np, client, monkeypatch):
+    ready_sender()
+    orders.store([prom_order(1001), prom_order(1002)], notify_new=False)
+    _room("555_abc", order_id=1001)
+    calls = []
+
+    def prom(request):
+        calls.append((request.url.path, json.loads(request.content)))
+        if request.url.path.endswith("/chat/send_message"):
+            return httpx.Response(200, json={"status": "success", "data": {"message_id": 9001}})
+        return httpx.Response(200, json={"status": "success"})
+    monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://x", transport=httpx.MockTransport(prom)))
+    form = client.get("/api/orders/1001/ttn/draft").json() | {"notify_buyer": True}
+    r = client.post("/api/orders/1001/ttn", json=form).json()
+    assert r["ttn"] and r["chat_sent"] is True and r["chat_error"] == ""
+    body = next(b for path, b in calls if path.endswith("/chat/send_message"))
+    assert body["user_id"] == "555"
+    assert body["body"] == f"Вітаємо! Ваше замовлення #1001 відправлено Новою Поштою. Номер ТТН: {r['ttn']}"
+
+    # без чата с покупателем: ТТН создана, сообщение — нет, причина в ответе
+    r = client.post("/api/orders/1002/ttn", json=client.get("/api/orders/1002/ttn/draft").json() | {"notify_buyer": True})
+    assert r.status_code == 200
+    r = r.json()
+    assert r["ttn"] and r["chat_sent"] is False and "нет чата" in r["chat_error"]
+
+
+def test_ttn_without_notify_buyer_does_not_touch_chat(np, client, monkeypatch):
+    ready_sender()
+    orders.store([prom_order(1001)], notify_new=False)
+    _room("555_abc", order_id=1001)
+    paths = []
+
+    def prom(request):
+        paths.append(request.url.path)
+        return httpx.Response(200, json={"status": "success"})
+    monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://x", transport=httpx.MockTransport(prom)))
+    r = client.post("/api/orders/1001/ttn", json=client.get("/api/orders/1001/ttn/draft").json()).json()
+    assert "chat_sent" not in r and not any("chat" in p for p in paths)
+
+
+def test_chat_failure_does_not_fail_ttn(np, client, monkeypatch):
+    ready_sender()
+    orders.store([prom_order(1001)], notify_new=False)
+    _room("555_abc", order_id=1001)
+
+    def prom(request):
+        if request.url.path.endswith("/chat/send_message"):
+            return httpx.Response(500, json={"status": "error", "message": "boom"})
+        return httpx.Response(200, json={"status": "success"})
+    monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://x", transport=httpx.MockTransport(prom)))
+    r = client.post("/api/orders/1001/ttn", json=client.get("/api/orders/1001/ttn/draft").json() | {"notify_buyer": True})
+    assert r.status_code == 200 and r.json()["ttn"] and r.json()["chat_sent"] is False and r.json()["chat_error"]

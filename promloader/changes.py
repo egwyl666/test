@@ -25,7 +25,7 @@ LABELS = {
     "group_name": "Группа", "keywords": "Ключевые слова", "params": "Характеристики", "images": "Фото", "videos": "Видео",
     "vendor": "Производитель", "country": "Страна", "barcode": "Штрихкод", "vendor_code": "Артикул поставщика",
     "external_id": "Артикул", "unit": "Ед. изм.", "created": "Создан", "deleted": "Удалён", "prom": "Prom",
-    "target_category_id": "Категория Prom",
+    "target_category_id": "Категория Prom", "status": "Статус",
 }
 # не показываем в журнале: служебные поля
 SKIP = {"status", "supplier_id", "locked_fields", "last_error", "pending_fields", "revision", "updated_at",

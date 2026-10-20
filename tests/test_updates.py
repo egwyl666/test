@@ -41,11 +41,11 @@ def github(version="1.1.0", zip_bytes=None, status=200):
         path = request.url.path
         if status != 200:
             return httpx.Response(status, json={"message": "nope"})
-        if path.endswith("/contents/VERSION"):
+        if path.endswith("/VERSION"):  # /contents/VERSION (API с токеном) или /<repo>/main/VERSION (raw)
             return httpx.Response(200, text=version + "\n")
-        if "/contents/" in path:
+        if "/contents/" in path or path.endswith(".md"):
             return httpx.Response(200, text="# Что нового\n\n## 1.1.0\n\n- Новое\n\n## 1.0.0\n\n- Старое\n")
-        if "/zipball/" in path:
+        if "/zipball/" in path or "/zip/" in path:
             return httpx.Response(200, content=zip_bytes or make_zip(version))
         return httpx.Response(404)
     return httpx.MockTransport(handler), calls
@@ -229,3 +229,43 @@ def test_restore_rejects_foreign_files_and_keeps_update_source(tmp_path):
     assert backup.apply_pending(data_dir)
     db.init(data_dir)
     assert db.get_setting("update_repo") == "owner/real" and db.get_setting("shop_name") == "Мій магазин"
+
+
+# ---------- 2.18.0: без токена — raw/codeload, без лимита API ----------
+
+def test_without_token_check_and_download_avoid_rate_limited_api(tmp_path):
+    app = make_app(tmp_path)
+    transport, calls = github()
+    db.set_setting("github_token", "")
+    info = updater.check(transport, app)
+    assert info["available"] and "Новое" in info["notes"]
+    hosts = {c.url.host for c in calls}
+    assert hosts == {"raw.githubusercontent.com"} and "authorization" not in calls[0].headers
+    assert calls[0].url.path == f"/{updater.DEFAULT_REPO}/main/VERSION"
+    updater._download(transport)
+    assert calls[-1].url.host == "codeload.github.com" and calls[-1].url.path.endswith("/zip/refs/heads/main")
+
+
+def test_api_rate_limit_falls_back_to_raw(tmp_path):
+    app = make_app(tmp_path)
+    db.set_setting("github_token", "tok")
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.host == "api.github.com":
+            return httpx.Response(403, headers={"x-ratelimit-remaining": "0"},
+                                  json={"message": "API rate limit exceeded"})
+        if request.url.path.endswith("/VERSION"):
+            return httpx.Response(200, text="1.1.0\n")
+        return httpx.Response(200, text="# Что нового\n\n## 1.1.0\n\n- Новое\n")
+    info = updater.check(httpx.MockTransport(handler), app)
+    assert info["available"] and info["latest"] == "1.1.0"
+    assert any(c.url.host == "raw.githubusercontent.com" for c in calls)
+
+
+def test_bad_token_is_still_reported(tmp_path):
+    db.set_setting("github_token", "tok")
+    transport = httpx.MockTransport(lambda r: httpx.Response(401, json={"message": "Bad credentials"}))
+    with pytest.raises(updater.UpdateError, match="не принял токен"):
+        updater.check(transport, make_app(tmp_path))

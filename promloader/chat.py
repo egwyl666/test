@@ -12,6 +12,7 @@ Prom отдаёт комнаты (`/chat/rooms`) и историю комнат�
 import asyncio
 import json
 import logging
+import re
 import threading
 from datetime import datetime
 
@@ -226,6 +227,38 @@ async def send(client, room_ident: str, text: str) -> dict:
         c.execute("UPDATE chat_rooms SET last_message = ?, last_at = ?, updated_at = ? WHERE room_ident = ?",
                   (text[:300], now, db.now(), room_ident))
     return {"message_id": message_id}
+
+
+def _digits(value) -> str:
+    return re.sub(r"\D", "", str(value or ""))[-10:]  # 0501234567 и +380501234567 — один номер
+
+
+def room_for_order(order_id: int) -> str | None:
+    """Чат покупателя этого заказа: комната, привязанная к заказу, иначе — комната с тем же телефоном.
+    Написать покупателю первым Prom не даёт: без чата сообщение не отправить."""
+    row = db.query_one("SELECT room_ident FROM chat_rooms WHERE order_id = ? ORDER BY last_at DESC LIMIT 1", (order_id,))
+    if row:
+        return row["room_ident"]
+    order = db.query_one("SELECT data FROM orders WHERE id = ?", (order_id,))
+    phone = _digits(json.loads(order["data"] or "{}").get("phone")) if order else ""
+    if len(phone) < 9:
+        return None
+    for r in db.query("SELECT room_ident, buyer_phone FROM chat_rooms WHERE buyer_phone != '' ORDER BY last_at DESC"):
+        if _digits(r["buyer_phone"]) == phone:
+            return r["room_ident"]
+    return None
+
+
+def ttn_message(order_id: int, ttn: str) -> str:
+    """Текст покупателю — по-украински (язык покупателей Prom)."""
+    return f"Вітаємо! Ваше замовлення #{order_id} відправлено Новою Поштою. Номер ТТН: {ttn}"
+
+
+async def send_ttn(client, order_id: int, ttn: str) -> dict:
+    room = room_for_order(order_id)
+    if not room:
+        raise ChatError("У покупателя этого заказа нет чата с магазином — Prom не даёт написать первым")
+    return await send(client, room, ttn_message(order_id, ttn))
 
 
 async def mark_read(client, room_ident: str) -> int:

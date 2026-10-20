@@ -20,6 +20,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 
@@ -30,6 +31,10 @@ log = logging.getLogger("promloader.updater")
 APP_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_REPO = "egwyl666/test"
 GITHUB_API = os.environ.get("PROMLOADER_GITHUB_API", "https://api.github.com")
+# Без токена — файлы и архив с raw/codeload: у них нет лимита API в 60 запросов в час на адрес. Через API с лимитом
+# проверка после обновлений ловила «403 rate limit exceeded» и писала, что GitHub «не принял токен»
+GITHUB_RAW = os.environ.get("PROMLOADER_GITHUB_RAW", "https://raw.githubusercontent.com")
+GITHUB_CODELOAD = os.environ.get("PROMLOADER_GITHUB_CODELOAD", "https://codeload.github.com")
 BRANCH = "main"
 KEEP = {"data", ".venv", ".git", "__pycache__", ".pytest_cache"}
 RESTART_CODE = 3
@@ -68,13 +73,39 @@ def _repo() -> str:
     return config.get("update_repo") or DEFAULT_REPO
 
 
+def _use_api() -> bool:
+    """Токен задан (закрытый репозиторий) — через API с токеном: у него лимит 5000 запросов в час."""
+    return bool(config.get("github_token"))
+
+
+def _rate_limited(r: httpx.Response) -> bool:
+    return r.status_code in (403, 429) and (r.headers.get("x-ratelimit-remaining") == "0"
+                                             or "rate limit" in r.text.lower())
+
+
+def _raw_cdn(client: httpx.Client, path: str) -> str:
+    r = client.get(f"{GITHUB_RAW}/{_repo()}/{BRANCH}/{quote(path)}")
+    if r.status_code == 404:
+        raise UpdateError("Репозиторий с обновлениями недоступен. Если он закрытый — укажите токен GitHub в «Настройках»")
+    if r.status_code == 429 or r.status_code >= 500:
+        raise UpdateError("GitHub сейчас не отвечает на проверку обновлений — программа повторит позже")
+    if r.status_code >= 400:
+        raise UpdateError(f"GitHub ответил ошибкой HTTP {r.status_code}")
+    return r.text
+
+
 def _raw(client: httpx.Client, path: str) -> str:
+    if not _use_api():
+        return _raw_cdn(client, path)
     r = client.get(f"/repos/{_repo()}/contents/{path}", params={"ref": BRANCH},
                    headers={"Accept": "application/vnd.github.raw"})
     if r.status_code == 404:
         raise UpdateError("Репозиторий с обновлениями недоступен. Если он закрытый — укажите токен GitHub в «Настройках»")
+    if _rate_limited(r):
+        log.info("GitHub API: лимит запросов — проверяю обновление по прямой ссылке")
+        return _raw_cdn(client, path)
     if r.status_code in (401, 403):
-        raise UpdateError("GitHub не принял токен (или превышен лимит запросов). Проверьте токен в «Настройках»")
+        raise UpdateError("GitHub не принял токен. Проверьте токен в «Настройках»")
     if r.status_code >= 400:
         raise UpdateError(f"GitHub ответил ошибкой HTTP {r.status_code}")
     return r.text
@@ -129,7 +160,12 @@ def skipped_version() -> str:
 def _download(transport=None) -> bytes:
     try:
         with _client(transport) as client:
-            r = client.get(f"/repos/{_repo()}/zipball/{BRANCH}")
+            if _use_api():
+                r = client.get(f"/repos/{_repo()}/zipball/{BRANCH}")
+                if _rate_limited(r):
+                    r = client.get(f"{GITHUB_CODELOAD}/{_repo()}/zip/refs/heads/{BRANCH}")
+            else:
+                r = client.get(f"{GITHUB_CODELOAD}/{_repo()}/zip/refs/heads/{BRANCH}")
     except httpx.HTTPError as exc:
         raise UpdateError(f"Не удалось скачать обновление: {exc}")
     if r.status_code >= 400:

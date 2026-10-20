@@ -7,16 +7,20 @@
 """
 
 import json
+import logging
 import time
 
 from . import ai, aiprice, db, products
 from . import changes as changes_log
 
-BULK_ACTIONS = ("improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
+log = logging.getLogger("promloader.aibulk")
+
+BULK_ACTIONS = ("prepare_prom", "improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
 ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 # (что пропускать целиком — ai.already_done; эти поля при «только где пусто» не перезаписываются, если уже заполнены)
-EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",)}
+EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",),
+               "prepare_prom": ("name_ua", "description_ua", "keywords")}
 DEFAULT_RATE = {"gemini": 8, "claude": 30}
 RATE_LIMIT_PAUSE = 60
 MAX_ATTEMPTS = 3
@@ -145,10 +149,44 @@ def _next_items(limit: int) -> list:
         (first["job_id"], SINGLE, limit))
 
 
+NOTIFY_MIN_ITEMS = 10  # о маленьких заданиях не уведомляем: их результат и так видно сразу
+
+
+def _notify_job(job_id: int, stopped: str = "") -> None:
+    """Telegram и push: «Массовый ИИ завершён» (или остановлен) — итоги задания. Не бросает исключений."""
+    from . import notify
+    try:
+        job = get(job_id)
+        if job["total"] < NOTIFY_MIN_ITEMS:
+            return
+        n = job["counts"]
+        head = (f"⛔ <b>Массовый ИИ остановлен: {notify.esc(job['label'])}</b>\n{notify.esc(stopped)}" if stopped
+                else f"✅ <b>Массовый ИИ завершён: {notify.esc(job['label'])}</b>")
+        notify.send("ai_bulk", f"{head}\nТоваров: {job['total']} · готово: {n.get('done', 0)} · "
+                               f"пропущено: {n.get('skipped', 0)} · ошибок: {n.get('error', 0)}")
+    except Exception:
+        log.exception("Уведомление о задании ИИ %s не отправлено", job_id)
+
+
 def _finish_jobs() -> None:
     with db.tx() as c:
-        c.execute("""UPDATE ai_jobs SET status = 'done', updated_at = ? WHERE status = 'running' AND NOT EXISTS
-                     (SELECT 1 FROM ai_items i WHERE i.job_id = ai_jobs.id AND i.status = 'pending')""", (db.now(),))
+        finished = [r["id"] for r in c.execute(
+            """SELECT id FROM ai_jobs WHERE status = 'running' AND NOT EXISTS
+               (SELECT 1 FROM ai_items i WHERE i.job_id = ai_jobs.id AND i.status = 'pending')""").fetchall()]
+        if finished:
+            c.execute(f"UPDATE ai_jobs SET status = 'done', updated_at = ? WHERE id {db.IN_LIST}",
+                      (db.now(), db.as_list(finished)))
+    for job_id in finished:
+        _notify_job(job_id)
+
+
+def _stop_job(job_id: int, message: str) -> None:
+    """Ошибка, которая не пройдёт сама (ключ ИИ не принят): ставим задание на паузу — иначе каждый следующий товар
+    получал бы ту же ошибку — и сообщаем."""
+    with db.tx() as c:
+        c.execute("UPDATE ai_jobs SET status = 'paused', message = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+                  (message, db.now(), job_id))
+    _notify_job(job_id, message)
 
 
 def _mark(item_id: int, status: str, message: str = "", old=None, new=None) -> None:
@@ -203,15 +241,19 @@ def process_one(runner=None) -> str:
         return "skipped"
     try:
         with ai.usage_source("bulk", first["job_id"]):
-            if len(batch) == 1:
+            only_missing = bool(first["only_empty"]) and first["action"] in ai.ONLY_MISSING
+            if len(batch) == 1 and (runner is not None or not only_missing):
                 item, p = batch[0]
                 results = [(runner or ai.run)(p, item["action"], item["instruction"])]
             else:
-                results, _ = ai.run_batch([p for _, p in batch], first["action"])
+                results, _ = ai.run_batch([p for _, p in batch], first["action"], only_missing=only_missing)
     except ai.AIError as exc:
         if exc.temporary:
             last_limit = exc
             return "rate_limited"  # лимит или перегрузка у провайдера — подождём и повторим эти же товары
+        if exc.key_error:
+            _stop_job(first["job_id"], f"{exc}. Исправьте ключ и нажмите «Продолжить»")
+            return "error"
         if len(batch) > 1 and not exc.key_error:
             # ответ на пачку не разобрался (например, оборвался) — эти товары пойдут по одному, ничего не теряем
             with db.tx() as c:

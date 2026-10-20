@@ -50,6 +50,11 @@ ACTIONS = {
     "keywords": ("Ключевые слова",
                  "Заполни поле keywords: 10–15 поисковых запросов, по которым покупатель ищет такой товар на Prom.ua, "
                  "через запятую, на русском и украинском. Остальные поля оставь пустыми."),
+    "prepare_prom": ("Подготовить для Prom (UA + ключевые слова)",
+                     "Подготовь карточку к выгрузке на Prom.ua: переведи название и описание на украинский язык "
+                     "(name_ua и description_ua — перевод живой и грамотный, не дословный, HTML-разметку сохрани) и "
+                     "заполни keywords: 10–15 поисковых запросов, по которым покупатель ищет такой товар на Prom.ua, через "
+                     "запятую, на русском и украинском. Остальные поля оставь пустыми."),
     "custom": ("Своя просьба", ""),
 }
 
@@ -236,6 +241,8 @@ def already_done(p: dict, action: str) -> bool:
                 and (filled("description") or not filled("description_ua")))
     if action == "keywords":
         return filled("keywords")
+    if action == "prepare_prom":
+        return filled("keywords") and filled("name_ua") and (filled("description_ua") or not filled("description"))
     if action == "improve":
         return filled("description")
     return False
@@ -286,26 +293,49 @@ def run_detailed(p: dict, action: str, instruction: str = "", transport=None) ->
 # Поля ответа — плоские «i{номер}_{поле}»: схема ответа остаётся «объект со строками», как у одного товара.
 BATCH = {"keywords": (20, ("keywords",)), "name": (10, ("name",)),
          "translate_ua": (5, ("name_ua", "description_ua")),
-         "translate_ru": (5, ("name", "description", "name_ua", "description_ua"))}
+         "translate_ru": (5, ("name", "description", "name_ua", "description_ua")),
+         "prepare_prom": (5, ("name_ua", "description_ua", "keywords"))}
 
 
 def batch_size(action: str) -> int:
     return BATCH[action][0] if action in BATCH else 1
 
 
-def build_batch_prompt(items: list[dict], action: str) -> tuple[str, tuple]:
+def missing_fields(p: dict, action: str) -> tuple:
+    """Какие поля действия у товара ещё пусты (для «только где пусто»): уже переведённое описание не просим заново —
+    не тратим токены и длину ответа. Описание (укр.) не нужно, если нет и русского описания."""
+    def empty(f):
+        return not (p.get(f) or "").strip()
+    out = []
+    for f in BATCH[action][1]:
+        if f == "description_ua" and empty("description") and empty("description_ua"):
+            continue
+        if empty(f):
+            out.append(f)
+    return tuple(out)
+
+
+ONLY_MISSING = {"prepare_prom"}  # действия, где в пачке у каждого товара просим только недостающие поля
+
+
+def build_batch_prompt(items: list[dict], action: str, only_missing: bool = False) -> tuple[str, tuple]:
     fields = BATCH[action][1]
-    blocks = "\n\n".join(f"Товар i{n}:\n{_product_block(p)}" for n, p in enumerate(items))
-    keys = tuple(f"i{n}_{f}" for n in range(len(items)) for f in FIELDS if f in fields)
+    per_item = [missing_fields(p, action) if only_missing and action in ONLY_MISSING else fields for p in items]
+    blocks = "\n\n".join(
+        f"Товар i{n}:\n{_product_block(p)}"
+        + (f"\nДля этого товара нужны только поля: {', '.join(want)}" if want != fields else "")
+        for n, (p, want) in enumerate(zip(items, per_item)))
+    keys = tuple(f"i{n}_{f}" for n, want in enumerate(per_item) for f in FIELDS if f in want)
     task = (f"{ACTIONS[action][1]}\n\nТоваров {len(items)}, каждый обрабатывай отдельно и независимо. Ответ — для каждого "
             f"товара i<номер> в полях вида i<номер>_<поле> (например i0_{fields[0]}); поля, которые не меняются, — "
             "пустая строка. Не переноси данные одного товара в другой.")
     return f"{blocks}\n\nЗадача: {task}", keys
 
 
-def run_batch(items: list[dict], action: str, transport=None) -> tuple[list, dict]:
-    """Пачка товаров одним запросом. Возвращает список: для каждого товара — изменения (dict) или AIError."""
-    if len(items) == 1 or action not in BATCH:
+def run_batch(items: list[dict], action: str, transport=None, only_missing: bool = False) -> tuple[list, dict]:
+    """Пачка товаров одним запросом. Возвращает список: для каждого товара — изменения (dict) или AIError.
+    only_missing — у каждого товара просить только пустые поля (ONLY_MISSING), даже если товар в пачке один."""
+    if action not in BATCH or (len(items) == 1 and not (only_missing and action in ONLY_MISSING)):
         out = []
         used = {}
         for p in items:
@@ -320,7 +350,7 @@ def run_batch(items: list[dict], action: str, transport=None) -> tuple[list, dic
     s = settings()
     if not s["provider"] or not s["key"]:
         raise AIError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
-    prompt, keys = build_batch_prompt(items, action)
+    prompt, keys = build_batch_prompt(items, action, only_missing)
     if s["provider"] == "gemini":
         result, used = _gemini(s, prompt, transport, action, fields=keys)
     elif s["provider"] == "claude":

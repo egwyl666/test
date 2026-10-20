@@ -1,14 +1,16 @@
 """Новая Почта: настройки отправителя, ТТН из заказа, этикетка, отслеживание."""
 
 import asyncio
+import logging
 
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
 
-from .. import config, db, novaposhta, sync
+from .. import chat, config, db, novaposhta, sync
 from ..prom_api import PromError
 
 router = APIRouter()
+log = logging.getLogger("promloader.novaposhta")
 
 
 def _np(fn, *args):
@@ -105,7 +107,23 @@ async def ttn_create(order_id: int, form: dict = Body(...)):
         with db.tx() as c:
             c.execute("UPDATE shipments SET prom_error = ? WHERE order_id = ?", (error, order_id))
     await asyncio.to_thread(save_error)
-    return {**s, "prom_error": error}
+    result = {**s, "prom_error": error}
+    if form.get("notify_buyer"):
+        # номер ТТН покупателю в чат Prom; не вышло — ТТН всё равно создана, причина — в ответе
+        result["chat_sent"], result["chat_error"] = False, ""
+        if not config.get("prom_token"):
+            result["chat_error"] = "Сообщение покупателю не отправлено: не указан токен Prom"
+        else:
+            try:
+                async with sync.make_client() as client:
+                    await chat.send_ttn(client, order_id, s["ttn"])
+                result["chat_sent"] = True
+            except (chat.ChatError, PromError) as exc:
+                result["chat_error"] = f"Сообщение покупателю не отправлено: {exc}"
+            except Exception as exc:  # чат не должен ломать ответ о созданной ТТН
+                log.exception("ТТН %s: сообщение покупателю не отправлено", s["ttn"])
+                result["chat_error"] = f"Сообщение покупателю не отправлено: {exc}"
+    return result
 
 
 @router.delete("/api/orders/{order_id}/ttn")

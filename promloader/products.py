@@ -387,7 +387,22 @@ def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
 
 
 FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors",
-               "prom_category", "cat_mismatch")
+               "prom_category", "cat_mismatch", "readiness")
+
+# Готовность черновика к Prom (полоска над черновиками): цена, фото, название, украинский текст, ключевые слова.
+# Украинское описание нужно, только если есть русское — без описания товар на Prom тоже выставляется.
+_FILLED = "TRIM(COALESCE(p.{f}, '')) != ''"
+_PHOTO = "EXISTS (SELECT 1 FROM images i WHERE i.product_id = p.id)"
+_HAS_UA = f"{_FILLED.format(f='name_ua')} AND ({_FILLED.format(f='description_ua')} OR NOT {_FILLED.format(f='description')})"
+READINESS = {
+    "ready_to_promote": f"COALESCE(p.price, 0) > 0 AND {_PHOTO} AND {_FILLED.format(f='name')} AND {_HAS_UA} "
+                        f"AND {_FILLED.format(f='keywords')}",
+    "missing_ua": f"NOT ({_HAS_UA})",
+    "missing_keywords": f"NOT {_FILLED.format(f='keywords')}",
+    "missing_price_or_photo": f"(COALESCE(p.price, 0) <= 0 OR NOT {_PHOTO})",
+}
+READINESS_LABELS = {"ready_to_promote": "готовы для Prom", "missing_ua": "без украинского текста",
+                    "missing_keywords": "без ключевых слов", "missing_price_or_photo": "без цены или фото"}
 SORTS = {
     "updated": "p.updated_at DESC, p.id DESC",
     "created": "p.created_at DESC, p.id DESC",
@@ -440,6 +455,8 @@ def _filter_where(flt: dict, with_status: bool = True) -> tuple[str, list]:
         # Prom поставил не ту категорию, которую мы хотим
         where.append("p.target_category_id IS NOT NULL AND p.prom_category_id IS NOT NULL "
                      "AND p.target_category_id != p.prom_category_id")
+    if flt.get("readiness") in READINESS:
+        where.append(f"p.status = 'draft' AND {READINESS[flt['readiness']]}")
     q = flt.get("q") or ""
     if q.strip():
         clause, more = search_clause(q, "p.")
@@ -850,6 +867,36 @@ def set_status(ids: list[int], status: str) -> int:
                 (status, db.now(), pid),
             )
     return len(ids)
+
+
+def readiness(flt: dict | None = None) -> dict:
+    """Сколько черновиков готовы для Prom и чего не хватает остальным — с теми же фильтрами списка (поставщик,
+    поиск, группа…), одним запросом."""
+    flt = {k: v for k, v in (flt or {}).items() if k not in ("status", "readiness", "errors")}
+    clause, args = _filter_where({**flt, "status": "draft"})
+    sums = ", ".join(f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END) AS {key}" for key, cond in READINESS.items())
+    row = db.query_one(f"SELECT COUNT(*) AS drafts, {sums} FROM products p {clause}", args)
+    return {k: int(row[k] or 0) for k in ("drafts", *READINESS)}
+
+
+def promote_ready(flt: dict | None = None) -> int:
+    """Все черновики, готовые для Prom (с фильтрами списка), — в «Готов к отправке», с записью в журнал."""
+    flt = {k: v for k, v in (flt or {}).items() if k not in ("status", "readiness", "errors")}
+    clause, args = _filter_where({**flt, "readiness": "ready_to_promote"})
+    ids = [r["id"] for r in db.query(f"SELECT p.id FROM products p {clause} ORDER BY p.id", args)]
+    if not ids:
+        return 0
+    from . import changes
+    moved = 0
+    with db.tx() as c:
+        for pid in ids:
+            # условие повторяем: пока считали, товар могли изменить или отправить
+            if c.execute("UPDATE products SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'draft'",
+                         (db.now(), pid)).rowcount:
+                changes.record(c, pid, "status", STATUSES["draft"], STATUSES["ready"],
+                               who="Готовность: все подготовленные черновики")
+                moved += 1
+    return moved
 
 
 # ---------- фото ----------

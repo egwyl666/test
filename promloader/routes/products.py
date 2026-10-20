@@ -128,6 +128,13 @@ def create_product(data: dict = Body(default={})):
     return products.get(products.create(data))
 
 
+@router.get("/api/products/readiness")
+def products_readiness(request: Request):
+    """Раньше маршрута /api/products/{product_id}: иначе «readiness» попал бы в него.
+    Полоска над черновиками: готовы для Prom и чего не хватает остальным (с фильтрами списка)."""
+    return {**products.readiness(_list_filter(request)), "labels": products.READINESS_LABELS}
+
+
 @router.get("/api/products/{product_id}")
 def get_product(product_id: int):
     return products.get(product_id)
@@ -302,6 +309,13 @@ def delete_retry(ids: list[int] = Body(..., embed=True)):
 @router.post("/api/products/delete/cancel")
 def delete_cancel(ids: list[int] = Body(..., embed=True)):
     return {"count": promdelete.cancel(ids)}
+
+
+@router.post("/api/products/promote-ready")
+def promote_ready(filter: dict | None = Body(None, embed=True)):
+    """Все готовые для Prom черновики (по фильтрам списка) — в «Готов к отправке»."""
+    moved = products.promote_ready(filter or {})
+    return {"moved": moved, **products.readiness(filter or {})}
 
 
 @router.post("/api/products/status")
