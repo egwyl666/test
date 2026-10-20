@@ -37,7 +37,8 @@ def rate_per_minute() -> int:
     return DEFAULT_RATE.get(ai.settings()["provider"], 8)
 
 
-def create(product_ids: list[int], action: str, instruction: str = "", only_empty: bool = True) -> dict:
+def create(product_ids: list[int], action: str, instruction: str = "", only_empty: bool = True,
+           auto_promote: bool = False) -> dict:
     if action not in BULK_ACTIONS:
         raise BulkError("Неизвестное действие")
     if action == "custom" and not instruction.strip():
@@ -50,8 +51,9 @@ def create(product_ids: list[int], action: str, instruction: str = "", only_empt
     ts = db.now()
     with db.tx() as c:
         job_id = c.execute(
-            "INSERT INTO ai_jobs (action, instruction, only_empty, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (action, instruction.strip(), 1 if only_empty else 0, ts, ts)).lastrowid
+            "INSERT INTO ai_jobs (action, instruction, only_empty, auto_promote, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (action, instruction.strip(), 1 if only_empty else 0, 1 if auto_promote else 0, ts, ts)).lastrowid
         c.executemany("INSERT INTO ai_items (job_id, product_id) VALUES (?, ?)", [(job_id, pid) for pid in ids])
     return get(job_id)
 
@@ -122,6 +124,7 @@ def revert(job_id: int) -> int:
             restored += 1
         except KeyError:
             continue
+    _unpromote(job_id)
     with db.tx() as c:
         c.execute("UPDATE ai_jobs SET status = 'reverted', message = ?, updated_at = ? WHERE id = ?",
                   (f"Откачено изменений: {restored}", db.now(), job_id))
@@ -130,9 +133,26 @@ def revert(job_id: int) -> int:
     return restored
 
 
+def _unpromote(job_id: int) -> int:
+    """Откат задания с «сразу в «Готов к отправке»»: товары, которые задание перевело в «Готов» и которые с тех пор
+    никуда не ушли, — обратно в черновики (без текстов ИИ они могут быть уже не готовы)."""
+    from . import changes
+    rows = db.query("""SELECT p.id FROM products p JOIN ai_items i ON i.product_id = p.id
+                       WHERE i.job_id = ? AND p.status = 'ready' AND (
+                         SELECT ch.source FROM product_changes ch WHERE ch.product_id = p.id AND ch.field = 'status'
+                         ORDER BY ch.id DESC LIMIT 1) = ?""", (job_id, AUTO_PROMOTE_SOURCE))
+    with db.tx() as c:
+        for r in rows:
+            if c.execute("UPDATE products SET status = 'draft', updated_at = ? WHERE id = ? AND status = 'ready'",
+                         (db.now(), r["id"])).rowcount:
+                changes.record(c, r["id"], "status", products.STATUSES["ready"], products.STATUSES["draft"],
+                               who="ИИ: откат")
+    return len(rows)
+
+
 def _next_item():
     return db.query_one(
-        """SELECT i.*, j.action, j.instruction, j.only_empty FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
+        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
            WHERE j.status = 'running' AND i.status = 'pending' ORDER BY j.id, i.id LIMIT 1""")
 
 
@@ -144,7 +164,7 @@ def _next_items(limit: int) -> list:
     if first is None or limit <= 1 or first["message"] == SINGLE:
         return [first] if first else []
     return db.query(
-        """SELECT i.*, j.action, j.instruction, j.only_empty FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
+        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
            WHERE i.job_id = ? AND i.status = 'pending' AND i.message != ? ORDER BY i.id LIMIT ?""",
         (first["job_id"], SINGLE, limit))
 
@@ -162,8 +182,9 @@ def _notify_job(job_id: int, stopped: str = "") -> None:
         n = job["counts"]
         head = (f"⛔ <b>Массовый ИИ остановлен: {notify.esc(job['label'])}</b>\n{notify.esc(stopped)}" if stopped
                 else f"✅ <b>Массовый ИИ завершён: {notify.esc(job['label'])}</b>")
+        promoted = f"\nВ «Готов к отправке»: {job['promoted']}" if job.get("auto_promote") else ""
         notify.send("ai_bulk", f"{head}\nТоваров: {job['total']} · готово: {n.get('done', 0)} · "
-                               f"пропущено: {n.get('skipped', 0)} · ошибок: {n.get('error', 0)}")
+                               f"пропущено: {n.get('skipped', 0)} · ошибок: {n.get('error', 0)}{promoted}")
     except Exception:
         log.exception("Уведомление о задании ИИ %s не отправлено", job_id)
 
@@ -263,13 +284,29 @@ def process_one(runner=None) -> str:
             _mark(item["id"], "error", str(exc))
         return "error"
     status = "error"
+    applied = []
     for (item, p), result in zip(batch, results):
         if isinstance(result, ai.AIError):
             _mark(item["id"], "error", str(result))
         else:
             _apply(item, p, result)
+            applied.append(p["id"])
             status = "done"
+    _auto_promote(first, applied)
     return status
+
+
+AUTO_PROMOTE_SOURCE = "Массовый ИИ: готов к отправке"
+
+
+def _auto_promote(job_item, product_ids: list[int]) -> None:
+    """Задание с «сразу в «Готов к отправке»»: черновики, которые после ИИ стали готовы для Prom, — в «Готов»."""
+    if not job_item["auto_promote"] or not product_ids:
+        return
+    moved = products.promote_if_ready(product_ids, AUTO_PROMOTE_SOURCE)
+    if moved:
+        with db.tx() as c:
+            c.execute("UPDATE ai_jobs SET promoted = promoted + ? WHERE id = ?", (moved, job_item["job_id"]))
 
 
 def pause_running(message: str) -> None:

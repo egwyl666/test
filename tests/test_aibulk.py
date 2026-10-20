@@ -347,3 +347,57 @@ def test_ai_bulk_event_added_to_existing_recipients():
         c.execute("INSERT INTO tg_recipients (chat_id, name, events, created_at) VALUES ('5', 'x', '[\"order\"]', ?)", (db.now(),))
     db.set_setting("tg_events_version", "2")
     assert "ai_bulk" in notify.recipients()[0]["events"]
+
+
+# ---------- 2.19.0: «сразу в «Готов к отправке»» ----------
+
+def _draft(name, **f):
+    from promloader import db, products
+    pid = products.create({"name": name, "price": 100, **f})
+    with db.tx() as c:
+        c.execute("INSERT INTO images (product_id, url) VALUES (?, 'https://x/1.jpg')", (pid,))
+    return pid
+
+
+def test_auto_promote_moves_ready_drafts_and_counts(monkeypatch):
+    from promloader import aibulk, db, notify, products
+    sent = []
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append(text))
+    ids = [_draft(f"Кружка {i}") for i in range(10)]
+    no_photo = products.create({"name": "Без фото", "price": 100})
+    job = aibulk.create(ids + [no_photo], "prepare_prom", auto_promote=True)
+    while aibulk.process_one(lambda p, a, i="": {"name_ua": "Кухоль", "keywords": "кружка"}) != "idle":
+        pass
+    j = aibulk.get(job["id"])
+    assert j["promoted"] == 10 and j["auto_promote"] == 1
+    assert all(products.get(i)["status"] == "ready" for i in ids)
+    assert products.get(no_photo)["status"] == "draft"          # не готов — остаётся черновиком
+    log = db.query("SELECT source FROM product_changes WHERE product_id = ? AND field = 'status'", (ids[0],))
+    assert log[0]["source"] == aibulk.AUTO_PROMOTE_SOURCE
+    assert "В «Готов к отправке»: 10" in sent[-1]
+    # откат задания: тексты ИИ убраны — и товары снова черновики
+    aibulk.revert(job["id"])
+    assert products.get(ids[0])["status"] == "draft" and not products.get(ids[0])["name_ua"]
+
+
+def test_without_auto_promote_status_untouched():
+    from promloader import aibulk, products
+    pid = _draft("Кружка")
+    aibulk.create([pid], "prepare_prom")
+    while aibulk.process_one(lambda p, a, i="": {"name_ua": "Кухоль", "keywords": "кружка"}) != "idle":
+        pass
+    assert products.get(pid)["status"] == "draft"
+
+
+def test_readiness_ai_target_filter(client):
+    """«✨ Заполнить через ИИ»: выборка по фильтру missing_ai — черновики без перевода или ключевых слов."""
+    from promloader import products
+    a = _draft("Без перевода", keywords="k")
+    b = _draft("Без ключевых", name_ua="Є")
+    _draft("Готовый", name_ua="Є", keywords="k")
+    r = client.get("/api/products/readiness").json()
+    assert r["missing_ai"] == 2
+    assert set(products.ids_for_filter({"status": "draft", "readiness": "missing_ai"})) == {a, b}
+    est = client.post("/api/ai/bulk/estimate", json={"action": "prepare_prom",
+                                                     "filter": {"status": "draft", "readiness": "missing_ai"}}).json()
+    assert est["count"] == 2

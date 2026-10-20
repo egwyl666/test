@@ -6,7 +6,7 @@ import logging
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import Response
 
-from .. import chat, config, db, novaposhta, sync
+from .. import chat, config, db, novaposhta, orders, sync
 from ..prom_api import PromError
 
 router = APIRouter()
@@ -108,6 +108,27 @@ async def ttn_create(order_id: int, form: dict = Body(...)):
             c.execute("UPDATE shipments SET prom_error = ? WHERE order_id = ?", (error, order_id))
     await asyncio.to_thread(save_error)
     result = {**s, "prom_error": error}
+    new_status = str(form.get("set_status") or "")
+    if new_status:
+        # статус заказа на Prom тем же шагом (обычно «Принят»); не вышло — ТТН всё равно создана, причина — в ответе
+        result["status_updated"], result["status_error"] = False, ""
+        current = db.query_one("SELECT status FROM orders WHERE id = ?", (order_id,))
+        if new_status not in ("received", "delivered"):
+            result["status_error"] = "Статус заказа не изменён: из окна ТТН можно поставить «Принят» или «Выполнен»"
+        elif current and current["status"] == new_status:
+            result["status_updated"] = True  # уже в этом статусе
+        elif not config.get("prom_token"):
+            result["status_error"] = "Статус заказа не изменён: не указан токен Prom"
+        else:
+            try:
+                async with sync.make_client() as client:
+                    await orders.set_status(client, order_id, new_status)
+                result["status_updated"] = True
+            except PromError as exc:
+                result["status_error"] = f"Статус заказа не изменён: {exc}"
+            except Exception as exc:
+                log.exception("ТТН %s: статус заказа не изменён", s["ttn"])
+                result["status_error"] = f"Статус заказа не изменён: {exc}"
     if form.get("notify_buyer"):
         # номер ТТН покупателю в чат Prom; не вышло — ТТН всё равно создана, причина — в ответе
         result["chat_sent"], result["chat_error"] = False, ""

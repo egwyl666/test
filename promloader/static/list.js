@@ -98,10 +98,24 @@ async function loadReadiness() {
   bar.innerHTML = `<span class="small muted">Черновики:</span> ${pill("ready_to_promote", r.ready_to_promote)}
     ${READINESS_ORDER.filter((k) => r[k]).map((k) => pill(k, r[k])).join(" ")}
     <span class="spacer"></span>
+    ${aiTarget(r) ? `<button class="btn small" id="readiness-ai" data-n="${aiTarget(r)}">✨ Заполнить через ИИ (${aiTarget(r)})</button>` : ""}
     ${r.ready_to_promote ? `<button class="btn small primary" id="promote-ready">В «Готов к отправке» (${r.ready_to_promote})</button>` : ""}`;
   bar.classList.toggle("hidden", !r.drafts);
 }
+// «✨ Заполнить через ИИ»: выбран фильтр «без украинского текста» или «без ключевых слов» — ровно эти черновики,
+// иначе — все черновики, которым не хватает перевода или ключевых слов (вместе с остальными фильтрами списка)
+function aiTarget(r) {
+  if (["missing_ua", "missing_keywords"].includes(list.readiness)) return r[list.readiness];
+  return r.missing_ai || 0;
+}
 $("#readiness").addEventListener("click", (e) => {
+  const ai = e.target.closest("#readiness-ai");
+  if (ai) {
+    const base = Object.fromEntries(Object.entries(filterParams()).filter(([k]) => k !== "readiness"));
+    const readiness = ["missing_ua", "missing_keywords"].includes(list.readiness) ? list.readiness : "missing_ai";
+    openAiModal({ filter: { ...base, status: "draft", readiness } }, { count: Number(ai.dataset.n), action: "prepare_prom" });
+    return;
+  }
   const pill = e.target.closest("[data-readiness]");
   if (pill) {
     list.readiness = list.readiness === pill.dataset.readiness ? "" : pill.dataset.readiness;
@@ -428,14 +442,20 @@ const AI_BULK = ["prepare_prom", "translate_ua", "translate_ru", "improve", "key
 let aiSel = { ids: [] };
 let aiRate = 8;
 
-function openAiModal(sel) {
+let aiCount = 0;
+// opts.count — сколько товаров (запуск из полоски готовности: выборка — фильтр, а не отмеченные строки),
+// opts.action — какое действие выбрать сразу
+function openAiModal(sel, opts = {}) {
   if (!META.ai || !META.ai.enabled) {
     toast("Сначала подключите ИИ в «Настройках» (бесплатно через Google Gemini)", "error");
     return;
   }
   aiSel = sel;
-  $("#ai-count").textContent = selectionCount();
+  aiCount = opts.count ?? selectionCount();
+  $("#ai-count").textContent = aiCount;
   $("#ai-action").innerHTML = AI_BULK.map((k) => `<option value="${k}">${esc(META.ai.actions[k])}</option>`).join("");
+  if (opts.action) $("#ai-action").value = opts.action;
+  $("#ai-auto-promote").checked = $("#ai-action").value === "prepare_prom";
   updateAiModal();
   $("#ai-modal").classList.remove("hidden");
 }
@@ -445,7 +465,8 @@ async function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
   $("#ai-empty-wrap").classList.toggle("hidden", !["prepare_prom", "translate_ua", "translate_ru", "keywords", "improve"].includes(action));
-  const minutes = Math.ceil(selectionCount() / aiRate);
+  const minutes = Math.ceil(aiCount / aiRate);
+  $("#ai-promote-wrap").classList.toggle("hidden", !["prepare_prom", "translate_ua", "keywords"].includes(action));
   const pace = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
   $("#ai-eta").textContent = pace;
   $("#ai-cost").innerHTML = `<span class="muted">Считаю, сколько это будет стоить…</span>`;
@@ -479,12 +500,17 @@ async function updateAiModal() {
   $("#ai-cost").innerHTML = text;
 }
 
-$("#ai-action").addEventListener("change", updateAiModal);
+$("#ai-action").addEventListener("change", () => {
+  // «сразу в «Готов к отправке»» по умолчанию включено для «Подготовить для Prom»
+  $("#ai-auto-promote").checked = $("#ai-action").value === "prepare_prom";
+  updateAiModal();
+});
 $("#ai-cancel-modal").addEventListener("click", () => $("#ai-modal").classList.add("hidden"));
 $("#ai-start").addEventListener("click", async () => {
   try {
     await api("/api/ai/bulk", { method: "POST", json: {
       ...aiSel, action: $("#ai-action").value, instruction: $("#ai-instr").value, only_empty: $("#ai-only-empty").checked,
+      auto_promote: !$("#ai-promote-wrap").classList.contains("hidden") && $("#ai-auto-promote").checked,
     } });
     $("#ai-modal").classList.add("hidden");
     toast("Задание для ИИ запущено", "ok");
@@ -511,7 +537,7 @@ async function loadAiJobs() {
     const c = j.counts;
     const doneCount = (c.done || 0) + (c.skipped || 0) + (c.error || 0);
     const stats = [`${doneCount} из ${j.total}`, c.done ? `изменено ${c.done}` : "", c.skipped ? `пропущено ${c.skipped}` : "",
-      c.error ? `ошибок ${c.error}` : ""].filter(Boolean).map(I18N.tr).join(" · ");
+      c.error ? `ошибок ${c.error}` : "", j.promoted ? `в «Готов к отправке» ${j.promoted}` : ""].filter(Boolean).map(I18N.tr).join(" · ");
     const active = j.status === "running" || j.status === "paused";
     return `<div class="job">
       <span class="badge ${cls}">${label}</span>

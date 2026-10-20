@@ -490,6 +490,31 @@ def summary_time() -> str:
     return value if re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value) else SUMMARY_TIME
 
 
+ALL_DAYS = "1,2,3,4,5,6,7"   # ISO: 1 — понедельник … 7 — воскресенье
+
+
+def summary_days() -> list[int]:
+    """Дни недели, в которые приходит сводка (настройка daily_summary_days)."""
+    raw = db.get_setting("daily_summary_days")
+    if raw == "":
+        return [1, 2, 3, 4, 5, 6, 7]
+    return sorted({int(x) for x in raw.split(",") if x.strip().isdigit() and 1 <= int(x) <= 7})
+
+
+def clean_summary_days(value) -> str:
+    """Список или строка «1,3,5» → «1,3,5». Пустой выбор допустим — сводка не приходит совсем."""
+    items = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    days = set()
+    for x in items:
+        x = str(x).strip()
+        if not x:
+            continue
+        if not x.isdigit() or not 1 <= int(x) <= 7:
+            raise ReportError("Дни сводки — числа от 1 (понедельник) до 7 (воскресенье)")
+        days.add(int(x))
+    return ",".join(str(d) for d in sorted(days)) or "none"
+
+
 def clean_summary_time(value: str) -> str:
     value = str(value or "").strip()
     m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?", value)
@@ -539,6 +564,8 @@ def maybe_daily_summary(now: datetime | None = None) -> bool:
     today = now.date().isoformat()
     if now.strftime("%H:%M") < summary_time() or db.get_setting("daily_summary_sent") == today:
         return False
+    if now.isoweekday() not in summary_days():
+        return False  # в этот день недели сводка выключена (не помечаем «отправлено» — день просто пропускается)
     db.set_setting("daily_summary_sent", today)
     if not any("daily_summary" in r["events"] for r in notify.recipients()):
         return False

@@ -400,6 +400,8 @@ READINESS = {
     "missing_ua": f"NOT ({_HAS_UA})",
     "missing_keywords": f"NOT {_FILLED.format(f='keywords')}",
     "missing_price_or_photo": f"(COALESCE(p.price, 0) <= 0 OR NOT {_PHOTO})",
+    # для «✨ Заполнить через ИИ»: не хватает того, что делает «Подготовить для Prom»
+    "missing_ai": f"(NOT ({_HAS_UA}) OR NOT {_FILLED.format(f='keywords')})",
 }
 READINESS_LABELS = {"ready_to_promote": "готовы для Prom", "missing_ua": "без украинского текста",
                     "missing_keywords": "без ключевых слов", "missing_price_or_photo": "без цены или фото"}
@@ -877,6 +879,23 @@ def readiness(flt: dict | None = None) -> dict:
     sums = ", ".join(f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END) AS {key}" for key, cond in READINESS.items())
     row = db.query_one(f"SELECT COUNT(*) AS drafts, {sums} FROM products p {clause}", args)
     return {k: int(row[k] or 0) for k in ("drafts", *READINESS)}
+
+
+def promote_if_ready(ids: list[int], who: str) -> int:
+    """Из этих товаров — черновики, которые уже готовы для Prom, в «Готов к отправке» (с записью в журнал)."""
+    if not ids:
+        return 0
+    from . import changes
+    moved = 0
+    with db.tx() as c:
+        rows = c.execute(f"SELECT p.id FROM products p WHERE p.id {db.IN_LIST} AND p.status = 'draft' "
+                         f"AND {READINESS['ready_to_promote']}", (db.as_list(ids),)).fetchall()
+        for r in rows:
+            c.execute("UPDATE products SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'draft'",
+                      (db.now(), r["id"]))
+            changes.record(c, r["id"], "status", STATUSES["draft"], STATUSES["ready"], who=who)
+            moved += 1
+    return moved
 
 
 def promote_ready(flt: dict | None = None) -> int:

@@ -196,3 +196,22 @@ def test_daily_summary_time_from_settings(client, monkeypatch):
     assert reports.maybe_daily_summary(now.replace(hour=9, minute=30)) and sent == ["daily_summary"]
     assert client.post("/api/settings", json={"daily_summary_time": "25:00"}).status_code == 400
     assert client.get("/api/settings").json()["daily_summary_time"] == "09:30"
+
+
+def test_daily_summary_only_on_chosen_weekdays(client, monkeypatch):
+    from promloader import notify
+    sent = []
+    monkeypatch.setattr(notify, "recipients", lambda: [{"chat_id": "1", "events": ["daily_summary"]}])
+    monkeypatch.setattr(notify, "send", lambda event, text, background=True: sent.append(event))
+    assert reports.summary_days() == [1, 2, 3, 4, 5, 6, 7]
+    s = client.post("/api/settings", json={"daily_summary_days": [1, 2, 3, 4, 5]}).json()
+    assert s["daily_summary_days"] == [1, 2, 3, 4, 5]
+    saturday = datetime(2026, 10, 24, 21, 30)   # суббота
+    monday = datetime(2026, 10, 26, 21, 30)
+    assert not reports.maybe_daily_summary(saturday) and sent == []
+    assert reports.maybe_daily_summary(monday) and sent == ["daily_summary"]
+    # ни одного дня — сводка не приходит совсем; неверный день — ошибка
+    assert client.post("/api/settings", json={"daily_summary_days": []}).json()["daily_summary_days"] == []
+    assert not reports.maybe_daily_summary(datetime(2026, 10, 27, 21, 30))
+    assert client.post("/api/settings", json={"daily_summary_days": [8]}).status_code == 400
+    assert reports.clean_summary_days("7, 1,1") == "1,7"

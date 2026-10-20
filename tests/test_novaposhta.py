@@ -324,3 +324,43 @@ def test_chat_failure_does_not_fail_ttn(np, client, monkeypatch):
     monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://x", transport=httpx.MockTransport(prom)))
     r = client.post("/api/orders/1001/ttn", json=client.get("/api/orders/1001/ttn/draft").json() | {"notify_buyer": True})
     assert r.status_code == 200 and r.json()["ttn"] and r.json()["chat_sent"] is False and r.json()["chat_error"]
+
+
+# ---------- 2.19.0: статус заказа на Prom при создании ТТН ----------
+
+def test_ttn_can_set_order_status(np, client, monkeypatch):
+    ready_sender()
+    orders.store([prom_order(1001), prom_order(1002, status="delivered")], notify_new=False)
+    calls = []
+
+    def prom(request):
+        calls.append((request.url.path, json.loads(request.content)))
+        if request.url.path.endswith("/orders/set_status"):
+            return httpx.Response(200, json={"processed_ids": [1001]})
+        return httpx.Response(200, json={"status": "success"})
+    monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://x", transport=httpx.MockTransport(prom)))
+    r = client.post("/api/orders/1001/ttn", json=client.get("/api/orders/1001/ttn/draft").json() | {"set_status": "received"}).json()
+    assert r["ttn"] and r["status_updated"] is True and r["status_error"] == ""
+    body = next(b for path, b in calls if path.endswith("/orders/set_status"))
+    assert body["ids"] == [1001] and body["status"] == "received"
+    assert db.query_one("SELECT status FROM orders WHERE id = 1001")["status"] == "received"
+
+    # недопустимый переход (заказ уже выполнен) — ТТН создана, статус нет, причина в ответе
+    r = client.post("/api/orders/1002/ttn", json=client.get("/api/orders/1002/ttn/draft").json() | {"set_status": "received"})
+    assert r.status_code == 200 and r.json()["ttn"] and r.json()["status_updated"] is False
+    assert "нельзя перевести" in r.json()["status_error"]
+
+
+def test_ttn_status_failure_does_not_fail_ttn(np, client, monkeypatch):
+    ready_sender()
+    orders.store([prom_order(1001)], notify_new=False)
+
+    def prom(request):
+        if request.url.path.endswith("/orders/set_status"):
+            return httpx.Response(200, json={"processed_ids": [], "errors": {"1001": "locked"}})
+        return httpx.Response(200, json={"status": "success"})
+    monkeypatch.setattr(sync, "make_client", lambda: PromClient("t", "https://x", transport=httpx.MockTransport(prom)))
+    r = client.post("/api/orders/1001/ttn", json=client.get("/api/orders/1001/ttn/draft").json() | {"set_status": "received"})
+    assert r.status_code == 200 and r.json()["status_updated"] is False and "locked" in r.json()["status_error"]
+    r2 = client.post("/api/orders/1001/ttn", json={"set_status": "x"})
+    assert r2.status_code == 400   # ТТН уже есть — обычная ошибка создания, не статуса

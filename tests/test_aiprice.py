@@ -585,3 +585,61 @@ def test_last_model_still_waits_out_overload(monkeypatch):
     # первая модель — без ожидания, последняя (переключаться некуда) — с повторами RETRY_DELAYS
     assert calls == ["gemini-3.8-flash"] + ["gemini-3.7-flash"] * (len(ai.RETRY_DELAYS) + 1)
     assert slept == list(ai.RETRY_DELAYS)
+
+
+# ---------- 2.19.0: запасные модели Claude на стороне программы ----------
+
+def claude_chain_server(failing: dict):
+    """failing: модель → HTTP-код ответа. Остальные модели отвечают нормально."""
+    seen = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        seen.append(body["model"])
+        code = failing.get(body["model"])
+        if code:
+            kind = {429: "rate_limit_error", 529: "overloaded_error", 404: "not_found_error"}.get(code, "api_error")
+            return httpx2.Response(code, json={"type": "error", "error": {"type": kind, "message": "x"}})
+        return httpx2.Response(200, json={
+            "id": "msg_1", "type": "message", "role": "assistant", "model": body["model"],
+            "content": [{"type": "text", "text": json.dumps({"name": "", "description": "", "name_ua": "",
+                                                             "description_ua": "", "keywords": "кружка"})}],
+            "stop_reason": "end_turn", "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 5}})
+    return httpx2.MockTransport(handler), seen
+
+
+@pytest.mark.parametrize("code", [429, 529, 503, 404])
+def test_claude_falls_back_to_next_model(code):
+    use("claude", key="sk-test", model="claude-opus-5-5")
+    transport, seen = claude_chain_server({"claude-opus-5-5": code})
+    assert ai.run(PRODUCT, "keywords", transport=transport) == {"keywords": "кружка"}
+    assert seen == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    assert db.get_setting("claude_model_used") == "claude-sonnet-5-5"
+    assert db.get_setting("claude_model") == "claude-opus-5-5"   # выбор пользователя не меняется
+
+
+def test_claude_all_models_busy_is_temporary_error():
+    use("claude", key="sk-test", model="claude-opus-5-5")
+    transport, seen = claude_chain_server({m: 429 for m in ("claude-opus-5-5", *ai.CLAUDE_CHAIN)})
+    with pytest.raises(ai.AIError) as err:
+        ai.run(PRODUCT, "keywords", transport=transport)
+    assert err.value.temporary and seen == ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+
+
+def test_claude_bad_request_does_not_switch():
+    use("claude", key="sk-test", model="claude-opus-5-5")
+    transport, seen = claude_chain_server({"claude-opus-5-5": 400})
+    with pytest.raises(ai.AIError, match="отклонил"):
+        ai.run(PRODUCT, "keywords", transport=transport)
+    assert seen == ["claude-opus-5-5"]
+
+
+def test_keywords_deduplicated_and_trimmed():
+    assert ai.clean_keywords("Кружка,  кружка , ЧАШКА; чашка\nкухоль , , кружка.") == "Кружка, ЧАШКА, кухоль"
+    long = ", ".join(f"фраза номер {i}" for i in range(200))
+    out = ai.clean_keywords(long)
+    assert len(out) <= ai.KEYWORDS_MAX and out.endswith(str(out.split("номер ")[-1]))  # обрезано по целой фразе
+    changes = ai._clean({"keywords": "a, A, b", "name_ua": "  Кухоль   білий "}, {})
+    assert changes == {"keywords": "a, b", "name_ua": "Кухоль білий"}
+    assert "100 символов" in ai.ACTIONS["name"][1] and "100 символов" in ai.ACTIONS["translate_ua"][1]
+    assert "100 символов" in ai.ACTIONS["prepare_prom"][1]

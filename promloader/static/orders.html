@@ -104,6 +104,9 @@
       <label class="field hidden" id="ttn-cod-wrap"><span>Сумма наложенного платежа, грн</span><input id="ttn-cod-amount" inputmode="decimal"></label>
       <label class="small" style="display:block;margin-top:6px"><input type="checkbox" id="ttn-notify"> Отправить номер ТТН
         покупателю в чат Prom</label>
+      <label class="field" style="margin-top:6px"><span>Статус заказа на Prom после создания ТТН</span>
+        <select id="ttn-status"><option value="">не менять</option><option value="received">Принят</option>
+          <option value="delivered">Выполнен</option></select></label>
       <p class="small err-text hidden" id="ttn-cod-warn">Заказ не оплачен (наложенный платёж) — без него посылку отдадут бесплатно.</p>
       <div class="toolbar" style="margin:12px 0 0;justify-content:flex-end">
         <button class="btn" id="ttn-close">Отмена</button>

@@ -35,7 +35,8 @@ ACTIONS = {
                 "Остальные поля оставь пустыми."),
     "translate_ua": ("Перевести на украинский",
                      "Переведи название и описание на украинский язык: заполни name_ua и description_ua. "
-                     "Перевод живой и грамотный, не дословный; HTML-разметку сохрани. Остальные поля оставь пустыми."),
+                     "Перевод живой и грамотный, не дословный; HTML-разметку сохрани. name_ua — не длиннее 100 символов, "
+                     "без потери типа товара, бренда и модели. Остальные поля оставь пустыми."),
     "translate_ru": ("Перевести на русский",
                      "Переведи название и описание товара на русский язык и запиши перевод в name и description. "
                      "Исходный текст — украинский: name_ua и description_ua, а если их нет — name и description, когда "
@@ -45,16 +46,17 @@ ACTIONS = {
                      "Перевод живой и грамотный, не дословный; HTML-разметку сохрани. Остальные поля оставь пустыми."),
     "name": ("Улучшить название",
              "Предложи название товара для поиска на Prom.ua в поле name: «Тип товара + бренд/модель + 2–3 ключевые "
-             "характеристики», до 120 символов, без рекламных слов («лучший», «хит», «акция») и без капса. "
+             "характеристики», не длиннее 100 символов (тип товара, бренд и модель не терять), без рекламных слов («лучший», «хит», «акция») и без капса. "
              "Остальные поля оставь пустыми."),
     "keywords": ("Ключевые слова",
-                 "Заполни поле keywords: 10–15 поисковых запросов, по которым покупатель ищет такой товар на Prom.ua, "
-                 "через запятую, на русском и украинском. Остальные поля оставь пустыми."),
+                 "Заполни поле keywords: 10–15 разных поисковых запросов, по которым покупатель ищет такой товар на "
+                 "Prom.ua, через запятую, на русском и украинском, без повторов. Остальные поля оставь пустыми."),
     "prepare_prom": ("Подготовить для Prom (UA + ключевые слова)",
                      "Подготовь карточку к выгрузке на Prom.ua: переведи название и описание на украинский язык "
-                     "(name_ua и description_ua — перевод живой и грамотный, не дословный, HTML-разметку сохрани) и "
-                     "заполни keywords: 10–15 поисковых запросов, по которым покупатель ищет такой товар на Prom.ua, через "
-                     "запятую, на русском и украинском. Остальные поля оставь пустыми."),
+                     "(name_ua и description_ua — перевод живой и грамотный, не дословный, HTML-разметку сохрани; "
+                     "name_ua — не длиннее 100 символов, без потери типа товара, бренда и модели) и "
+                     "заполни keywords: 10–15 разных поисковых запросов, по которым покупатель ищет такой товар на Prom.ua, через "
+                     "запятую, на русском и украинском, без повторов. Остальные поля оставь пустыми."),
     "custom": ("Своя просьба", ""),
 }
 
@@ -209,6 +211,26 @@ def build_prompt(p: dict, action: str, instruction: str = "") -> str:
     return f"{_product_block(p)}\n\nЗадача: {task}"
 
 
+KEYWORDS_MAX = 1000  # Prom обрезает длинные ключевые слова — режем по целым фразам
+
+
+def clean_keywords(value: str) -> str:
+    """Ключевые слова через запятую: без повторов (без учёта регистра, порядок сохраняется), без лишних пробелов,
+    не длиннее KEYWORDS_MAX по целым фразам. ИИ часто повторяет одно и то же по-русски и по-украински."""
+    out, seen, size = [], set(), 0
+    for part in re.split(r"[,;\n]", value or ""):
+        phrase = re.sub(r"\s+", " ", part).strip(" .")
+        key = phrase.lower()
+        if not phrase or key in seen:
+            continue
+        if size + len(phrase) + (2 if out else 0) > KEYWORDS_MAX:
+            break
+        seen.add(key)
+        out.append(phrase)
+        size += len(phrase) + (2 if len(out) > 1 else 0)
+    return ", ".join(out)
+
+
 def _clean(result: dict, p: dict) -> dict:
     """Оставляет только непустые и реально изменённые поля; убирает лишние теги из описаний."""
     changes = {}
@@ -221,6 +243,10 @@ def _clean(result: dict, p: dict) -> dict:
             value = re.sub(r"</?(?!(?:p|ul|li|b|br)\b)[a-z][^>]*>", "", value, flags=re.I)
         else:
             value = re.sub(r"<[^>]+>", "", value).strip()
+        if field == "keywords":
+            value = clean_keywords(value)
+        elif field in ("name", "name_ua"):
+            value = re.sub(r"\s+", " ", value).strip()
         if value != (p.get(field) or "").strip():
             changes[field] = value
     return changes
@@ -712,12 +738,41 @@ def _claude_limit_text(info: dict) -> str:
     return text + ", попробуйте через минуту"
 
 
+# Цепочка запасных моделей Claude (на стороне программы): выбранная → эти по порядку. Как у Gemini: при лимите (429),
+# перегрузке (529/5xx) или «модели нет» (404) пробуем следующую, выбор пользователя в «Настройках» не меняется.
+CLAUDE_CHAIN = ("claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-5-5")
+
+
+class _ClaudeSwitch(Exception):
+    """Эта модель сейчас не может ответить — можно попробовать следующую из цепочки."""
+
+    def __init__(self, error: AIError):
+        super().__init__(str(error))
+        self.error = error
+
+
 def _claude(s: dict, prompt: str, transport=None, action: str = "",
-            system: str = SYSTEM, fields: tuple = FIELDS) -> tuple[dict, dict]:
+            system: str = SYSTEM, fields: tuple = FIELDS, switch: bool = True) -> tuple[dict, dict]:
+    """switch=False — только выбранная модель (проверка моделей не должна переходить на другие)."""
+    client = _claude_client(s["key"], transport)
+    chain = [s["model"]] + ([m for m in CLAUDE_CHAIN if m != s["model"]] if switch else [])
+    last = None
+    for model in chain:
+        try:
+            result = _claude_once(client, s, model, prompt, action, system, fields, has_next=model != chain[-1])
+        except _ClaudeSwitch as exc:
+            last = exc.error
+            continue
+        if switch:
+            db.set_setting("claude_model_used", model)
+        return result
+    raise last
+
+
+def _claude_once(client, s: dict, model: str, prompt: str, action: str, system: str, fields: tuple,
+                 has_next: bool) -> tuple[dict, dict]:
     import anthropic
 
-    client = _claude_client(s["key"], transport)
-    model = s["model"]
     params = dict(
         model=model,
         max_tokens=16000,
@@ -740,9 +795,10 @@ def _claude(s: dict, prompt: str, transport=None, action: str = "",
     if model in FALLBACK_MODELS:
         params.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
 
-    def fail(message: str, temporary: bool = False, exc=None) -> AIError:
+    def fail(message: str, temporary: bool = False, switchable: bool = False) -> Exception:
         _record("claude", model, action, ok=False, error=message)
-        return AIError(message, temporary=temporary)
+        error = AIError(message, temporary=temporary)
+        return _ClaudeSwitch(error) if switchable and has_next else error
 
     def limits_of(exc) -> dict:
         return _claude_limits(exc.response.headers) if getattr(exc, "response", None) is not None else {}
@@ -757,15 +813,15 @@ def _claude(s: dict, prompt: str, transport=None, action: str = "",
     except anthropic.PermissionDeniedError as exc:
         raise fail(f"Claude: нет доступа ({exc.message})")
     except anthropic.NotFoundError:
-        raise fail(f"Claude: модель {model} не найдена — выберите другую в окне «✨ ИИ»")
+        raise fail(f"Claude: модель {model} не найдена — выберите другую в окне «✨ ИИ»", switchable=True)
     except anthropic.RateLimitError as exc:
-        raise fail(_claude_limit_text(limits_of(exc)), temporary=True)
+        raise fail(_claude_limit_text(limits_of(exc)), temporary=True, switchable=True)
     except anthropic.BadRequestError as exc:
         raise fail(f"Claude отклонил запрос: {exc.message}")
     except anthropic.APIStatusError as exc:
         limits_of(exc)
         raise fail(f"Claude: сервер перегружен или недоступен ({exc.status_code}), попробуйте позже",
-                   temporary=exc.status_code >= 500)
+                   temporary=exc.status_code >= 500, switchable=exc.status_code >= 500)
     except anthropic.APIConnectionError:
         raise fail("Нет связи с Claude")
     _claude_limits(raw.headers)
@@ -840,7 +896,7 @@ def check_models(models: list[str], transport=None) -> list[dict]:
                 if s["provider"] == "gemini":
                     _, used = _gemini({**s, "model": model}, CHECK_PROMPT, transport, "check", switch=False)
                 else:
-                    _, used = _claude({**s, "model": model}, CHECK_PROMPT, transport, "check")
+                    _, used = _claude({**s, "model": model}, CHECK_PROMPT, transport, "check", switch=False)
                 out.append({"model": model, "status": "ok", "message": "работает", "cost_usd": used["cost_usd"]})
             except AIError as exc:
                 # статус уже записан вместе с неудачным запросом (aiprice.record); ответ без запроса — ошибка

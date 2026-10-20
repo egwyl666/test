@@ -58,6 +58,8 @@ async function openTtn(id) {
   $("#ttn-cod").checked = d.cod; $("#ttn-cod-amount").value = d.cod_amount || d.cost;
   // «отправить номер в чат» — по умолчанию выключено, выбор запоминается в этом браузере
   try { $("#ttn-notify").checked = localStorage.getItem("promloader-ttn-notify") === "1"; } catch { $("#ttn-notify").checked = false; }
+  // статус заказа после ТТН — по умолчанию «не менять», выбор запоминается в этом браузере
+  try { $("#ttn-status").value = localStorage.getItem("promloader-ttn-status") || ""; } catch { $("#ttn-status").value = ""; }
   showCod();
   $("#ttn-warehouse").innerHTML = d.warehouse_ref ? `<option value="${esc(d.warehouse_ref)}">${esc(d.warehouse)}</option>` : "";
   if (d.city_ref) loadWarehouses(d.city_ref, d.warehouse_ref);
@@ -101,8 +103,12 @@ $("#ttn-go").onclick = () => busy($("#ttn-go"), async () => {
     weight: $("#ttn-weight").value.replace(",", "."), cost: $("#ttn-cost").value.replace(",", "."),
     description: $("#ttn-desc").value, payer: $("#ttn-payer").value, cod: $("#ttn-cod").checked,
     cod_amount: $("#ttn-cod-amount").value.replace(",", "."), notify_buyer: $("#ttn-notify").checked,
+    set_status: $("#ttn-status").value,
   };
-  try { localStorage.setItem("promloader-ttn-notify", form.notify_buyer ? "1" : ""); } catch {}
+  try {
+    localStorage.setItem("promloader-ttn-notify", form.notify_buyer ? "1" : "");
+    localStorage.setItem("promloader-ttn-status", form.set_status);
+  } catch {}
   if (!confirm(`Создать ТТН для заказа №${ttnOrder}? Покупатель получит SMS от Новой Почты.`)) return;
   try {
     const r = await api(`/api/orders/${ttnOrder}/ttn`, { method: "POST", json: form });
@@ -111,6 +117,7 @@ $("#ttn-go").onclick = () => busy($("#ttn-go"), async () => {
     if (r.prom_error) toast(r.prom_error, "error");
     if (r.chat_sent) toast(I18N.tr("Номер ТТН отправлен покупателю в чат Prom"), "ok");
     else if (r.chat_error) toast(r.chat_error, "error");
+    if (r.status_error) toast(r.status_error, "error");
     await load();
   } catch (err) { toast(err.message, "error"); }
 });

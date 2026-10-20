@@ -129,6 +129,8 @@ CREATE TABLE IF NOT EXISTS ai_jobs (
     action       TEXT NOT NULL,
     instruction  TEXT NOT NULL DEFAULT '',
     only_empty   INTEGER NOT NULL DEFAULT 1,
+    auto_promote INTEGER NOT NULL DEFAULT 0,
+    promoted     INTEGER NOT NULL DEFAULT 0,
     status       TEXT NOT NULL DEFAULT 'running',
     message      TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL,
@@ -346,6 +348,10 @@ MIGRATIONS = {
     },
     "supplier_items": {
         "ignored": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "ai_jobs": {
+        "auto_promote": "INTEGER NOT NULL DEFAULT 0",
+        "promoted": "INTEGER NOT NULL DEFAULT 0",
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",

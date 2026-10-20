@@ -35,6 +35,7 @@ def _settings_view() -> dict:
         "telegram_token": config.mask(notify.token()),
         "telegram_event_labels": notify.EVENTS,
         "daily_summary_time": reports.summary_time(),
+        "daily_summary_days": reports.summary_days(),
         "support_token": config.mask(support.channel()["token"]),
         "support_chat_id": support.channel()["chat_id"],
         "auto_update": config.get("auto_update") != "0",
@@ -66,6 +67,11 @@ def save_settings(data: dict = Body(...)):
             db.set_setting("prom_token", data["prom_token"].strip())
         if data.get("telegram_token"):
             db.set_setting("telegram_token", data["telegram_token"].strip())
+        if "daily_summary_days" in data:
+            try:
+                db.set_setting("daily_summary_days", reports.clean_summary_days(data["daily_summary_days"]))
+            except reports.ReportError as exc:
+                raise HTTPException(400, str(exc))
         if "daily_summary_time" in data:
             try:
                 value = reports.clean_summary_time(data["daily_summary_time"])

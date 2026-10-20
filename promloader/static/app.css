@@ -708,3 +708,4 @@ a.kpi-link:hover { border-color: var(--accent); }
 .phone-url img { width: 140px; height: 140px; flex: none; background: #fff; border-radius: 6px; }
 .phone-url a { word-break: break-all; font-weight: 600; }
 .phone-url .btn { margin-top: 6px; }
+.summary-days { display: inline-flex; flex-wrap: wrap; gap: 6px 10px; }
