@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
     name            TEXT NOT NULL,
     url             TEXT NOT NULL DEFAULT '',
     url_ua          TEXT NOT NULL DEFAULT '',
+    auto_pipeline   INTEGER NOT NULL DEFAULT 0,
     source_file     TEXT NOT NULL DEFAULT '',
     source_name     TEXT NOT NULL DEFAULT '',
     sheet           TEXT NOT NULL DEFAULT '',
@@ -361,6 +362,7 @@ MIGRATIONS = {
         "rate_add": "REAL NOT NULL DEFAULT 0",
         "clean_names": "INTEGER NOT NULL DEFAULT 0",
         "url_ua": "TEXT NOT NULL DEFAULT ''",
+        "auto_pipeline": "INTEGER NOT NULL DEFAULT 0",
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",

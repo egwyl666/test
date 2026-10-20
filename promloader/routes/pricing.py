@@ -95,3 +95,17 @@ def apply_pricing():
         result = suppliers.recalc_prices()
     rates.mark_applied()
     return result
+
+
+@router.get("/api/pricing/low-margin")
+def low_margin():
+    """Сторож наценки: товары в продаже ниже минимальной наценки или в минус."""
+    return {"items": products.low_margin(), "min_margin_pct": products.min_margin_pct()}
+
+
+@router.post("/api/pricing/min-margin")
+def set_min_margin(value: float = Body(..., embed=True)):
+    if not -100 < value < 1000:
+        raise HTTPException(400, "Минимальная наценка — число процентов, например 10")
+    db.set_setting("min_margin_pct", f"{value:g}")
+    return low_margin()

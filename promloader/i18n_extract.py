@@ -24,6 +24,7 @@ SQL = re.compile(r"\s*(SELECT|UPDATE|INSERT|DELETE|CREATE|ALTER|WITH)\s", re.I)
 # не интерфейс: служебные модули и куски, которые пользователь не видит как текст программы
 PY_SKIP_MODULES = {"i18n_extract.py", "tray.py", "launcher.py", "__main__.py"}
 PY_SKIP_NAMES = {
+    "STAGE_UA", "STAGE_RU", "ORDER_UA", "ORDER_RU",  # chat.py — фразы покупателю на его языке
     "SYSTEM", "CHECK_PROMPT", "CHAT_SYSTEM",  # ai.py — задания для модели
     "HINTS", "VIDEO_HINT",               # excel.py — распознавание заголовков колонок
     "_presence_words", "CURRENCY_CODES",  # products.py — распознавание значений из прайсов
@@ -38,6 +39,9 @@ PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для моде�
                  "build_batch_prompt",  # ai.py — задание для модели
                  "ttn_message",         # chat.py — сообщение покупателю по-украински
                  "_notify_job",         # aibulk.py — текст в Telegram (Telegram — по-русски)
+                 "_margin_alert",       # suppliers.py — текст в Telegram
+                 "quick_replies",       # chat.py — ответы покупателю на его языке
+                 "_facts",              # chat.py — факты для ИИ (текст модели)
                  "daily_summary_text"}  # reports.py — сообщение в Telegram (Telegram — по-русски)
 PY_SKIP_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "send", "notify", "_tg",
                  # регулярные выражения

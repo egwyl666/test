@@ -199,7 +199,98 @@ def messages(room_ident: str) -> dict:
         msgs.append(d)
     order = db.query_one("SELECT id, status FROM orders WHERE id = ?", (room["order_id"],)) if room["order_id"] else None
     return {"room": {k: room[k] for k in ("room_ident", "buyer_name", "buyer_phone", "unread", "order_id", "product_id")},
-            "product": _product_card(room["product_id"]), "order": dict(order) if order else None, "messages": msgs}
+            "product": _product_card(room["product_id"]), "order": dict(order) if order else None, "messages": msgs,
+            "quick": quick_replies(room_ident)}
+
+
+# ---------- факты для ответа: товар, заказ, посылка ----------
+
+QUICK_LABELS = {"stock": "✅ Наличие и цена", "ttn": "📦 Номер ТТН и статус", "order": "📋 Статус заказа",
+                "check": "⏳ Уточню и напишу"}
+
+
+def _order_for_room(room) -> dict | None:
+    """Заказ этого покупателя: привязанный к чату, иначе — последний заказ с тем же телефоном."""
+    if room["order_id"]:
+        row = db.query_one("SELECT id, status, data FROM orders WHERE id = ?", (room["order_id"],))
+        if row:
+            return dict(row)
+    phone = _digits(room["buyer_phone"])
+    if len(phone) < 9:
+        return None
+    for row in db.query("SELECT id, status, data FROM orders ORDER BY date_created DESC LIMIT 500"):
+        if _digits(json.loads(row["data"] or "{}").get("phone")) == phone:
+            return dict(row)
+    return None
+
+
+def _facts(room_ident: str) -> dict:
+    """Что программа точно знает: товар (наличие, цена), заказ (статус), посылка (ТТН, где она)."""
+    from . import novaposhta, orders
+    room = db.query_one("SELECT * FROM chat_rooms WHERE room_ident = ?", (room_ident,))
+    if room is None:
+        raise KeyError(room_ident)
+    facts: dict = {"ua": True}
+    last_buyer = db.query_one("SELECT body FROM chat_messages WHERE room_ident = ? AND is_my = 0 AND type = 'message' "
+                              "ORDER BY id DESC LIMIT 1", (room_ident,))
+    if last_buyer and last_buyer["body"]:
+        body = last_buyer["body"].lower()
+        # украинские буквы — украинский; русские (ы, э, ё, ъ) или кириллица без украинских букв — русский
+        facts["ua"] = bool(re.search(r"[іїєґ]", body)) or not re.search(r"[а-я]", body)
+    if room["product_id"]:
+        p = db.query_one("SELECT name, name_ua, price, currency, presence, quantity FROM products WHERE id = ?",
+                         (room["product_id"],))
+        if p:
+            facts["product"] = dict(p)
+    order = _order_for_room(room)
+    if order:
+        facts["order"] = {"id": order["id"], "status": order["status"],
+                          "status_label": orders.STATUSES.get(order["status"], order["status"])}
+        s = novaposhta.shipment(order["id"])
+        if s:
+            facts["shipment"] = {"ttn": s["ttn"], "stage": s.get("stage") or "", "status": s.get("status") or ""}
+    return facts
+
+
+STAGE_UA = {"created": "ТТН створено, посилка готується до відправлення", "on_the_way": "посилка в дорозі",
+            "arrived": "посилка вже у відділенні", "received": "посилку отримано", "refused": "відмова / повернення"}
+STAGE_RU = {"created": "ТТН создана, посылка готовится к отправке", "on_the_way": "посылка в пути",
+            "arrived": "посылка уже в отделении", "received": "посылка получена", "refused": "отказ / возврат"}
+ORDER_UA = {"pending": "отримали, скоро підтвердимо", "received": "прийнято, готуємо до відправлення",
+            "delivered": "виконано", "canceled": "скасовано", "paid": "оплачено, готуємо до відправлення"}
+ORDER_RU = {"pending": "получили, скоро подтвердим", "received": "принят, готовим к отправке",
+            "delivered": "выполнен", "canceled": "отменён", "paid": "оплачен, готовим к отправке"}
+
+
+def quick_replies(room_ident: str) -> list[dict]:
+    """Готовые ответы без ИИ — только из настоящих данных, на языке покупателя (по его последнему сообщению)."""
+    try:
+        f = _facts(room_ident)
+    except KeyError:
+        return []
+    ua, out = f["ua"], []
+    p = f.get("product")
+    if p:
+        name = (p["name_ua"] if ua and p["name_ua"] else p["name"]) or ""
+        price = f"{p['price']:g} грн" if p["price"] else ""
+        if p["presence"] == "available":
+            text = (f"Вітаємо! «{name}» є в наявності" if ua else f"Здравствуйте! «{name}» есть в наличии") + \
+                   (f", ціна {price}." if ua and price else f", цена {price}." if price else ".")
+        else:
+            text = f"Вітаємо! На жаль, «{name}» зараз немає в наявності." if ua else \
+                f"Здравствуйте! К сожалению, «{name}» сейчас нет в наличии."
+        out.append({"key": "stock", "text": text})
+    o, s = f.get("order"), f.get("shipment")
+    if s:
+        stage = (STAGE_UA if ua else STAGE_RU).get(s["stage"], s["status"])
+        out.append({"key": "ttn", "text": (f"Ваше замовлення #{o['id']} відправлено Новою Поштою. Номер ТТН: {s['ttn']}"
+                                            if ua else f"Ваш заказ №{o['id']} отправлен Новой Почтой. Номер ТТН: {s['ttn']}")
+                    + (f" ({stage})." if stage else ".")})
+    elif o:
+        state = (ORDER_UA if ua else ORDER_RU).get(o["status"], o["status_label"])
+        out.append({"key": "order", "text": f"Ваше замовлення #{o['id']}: {state}." if ua else f"Ваш заказ №{o['id']}: {state}."})
+    out.append({"key": "check", "text": "Зараз уточню і напишу вам." if ua else "Сейчас уточню и напишу вам."})
+    return [{**x, "label": QUICK_LABELS[x["key"]]} for x in out]
 
 
 # ---------- действия ----------
@@ -291,6 +382,15 @@ def ai_draft(room_ident: str) -> dict:
         qty = f", {full['quantity']} шт." if full["quantity"] else "."
         lines.append(f"Товар: {full['name']}. Цена: {full['price']} {full['currency']}. Наличие: {full['presence']}{qty}"
                      + (f" Характеристики: {params}" if params else ""))
+    facts = _facts(room_ident)
+    if facts.get("order"):
+        o = facts["order"]
+        lines.append(f"Заказ покупателя №{o['id']}: статус «{o['status_label']}».")
+    if facts.get("shipment"):
+        s = facts["shipment"]
+        lines.append(f"Посылка Новой Почтой: ТТН {s['ttn']}, статус: {s['status'] or s['stage']}.")
+    elif facts.get("order"):
+        lines.append("ТТН по заказу ещё нет.")
     lines.append("Переписка (последние сообщения):")
     for m in [m for m in data["messages"] if m["type"] == "message"][-12:]:
         lines.append(f"{'Продавец' if m['is_my'] else 'Покупатель'}: {m['body']}")

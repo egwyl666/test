@@ -72,6 +72,20 @@
       </div>
     </div>
 
+    <div class="panel" id="watch-panel">
+      <h2>📉 Сторож наценки</h2>
+      <p class="small muted" style="margin-top:-4px">Товары в продаже (не черновики), которые продаются в минус или с наценкой
+        меньше минимальной. Чаще всего цена закреплена вручную, а поставщик поднял закупку. Об этом же приходит
+        уведомление после обновления прайса.</p>
+      <div class="toolbar">
+        <label class="small">Минимальная наценка, % <input id="w-min" inputmode="decimal" style="width:80px"></label>
+        <button class="btn small" id="w-save">Сохранить</button>
+        <span class="spacer"></span>
+        <button class="btn small hidden" id="w-recalc">Пересчитать по правилу выбранные</button>
+      </div>
+      <div id="w-list"></div>
+    </div>
+
     <div class="panel">
       <h2>Проверить расчёт</h2>
       <div class="row" style="align-items:flex-end">
@@ -87,6 +101,7 @@
   </main>
 
   <script src="/static/common.js"></script>
+  <script src="/static/margin-watch.js"></script>
   <script>
     let rounding = {};
     let rules = [];

@@ -4,7 +4,8 @@ from promloader import db, products
 
 
 def make(name="Кружка", photo=True, **fields):
-    pid = products.create({"name": name, "price": 100, **fields})
+    # производитель — чтобы короткое тестовое название не попадало в «мало данных — заполнить вручную»
+    pid = products.create({"name": name, "price": 100, "vendor": "Luminarc", **fields})
     if photo:
         with db.tx() as c:
             c.execute("INSERT INTO images (product_id, url) VALUES (?, 'https://x/1.jpg')", (pid,))

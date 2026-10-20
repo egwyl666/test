@@ -387,26 +387,31 @@ def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
 
 
 FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors",
-               "prom_category", "cat_mismatch", "readiness")
+               "prom_category", "cat_mismatch", "readiness", "profit")
 
 # Готовность черновика к Prom (полоска над черновиками): цена, фото, название, украинский текст, ключевые слова.
 # Украинское описание нужно, только если есть русское — без описания товар на Prom тоже выставляется.
 _FILLED = "TRIM(COALESCE(p.{f}, '')) != ''"
 _PHOTO = "EXISTS (SELECT 1 FROM images i WHERE i.product_id = p.id)"
 _HAS_UA = f"{_FILLED.format(f='name_ua')} AND ({_FILLED.format(f='description_ua')} OR NOT {_FILLED.format(f='description')})"
+# мало данных для честного описания — как ai.too_little_data (ИИ не выдумывает: «заполнить вручную»)
+_NEEDS_MANUAL = ("(LENGTH(TRIM(COALESCE(p.description, ''))) < 30 AND LENGTH(TRIM(COALESCE(p.name, ''))) < 15 "
+                 "AND COALESCE(p.params, '[]') IN ('[]', '') AND TRIM(COALESCE(p.vendor, '')) = '')")
 READINESS = {
     # длина названия — как в validate(): длиннее 255 символов Prom не примет, «готовым» такой товар не считаем
     "ready_to_promote": f"COALESCE(p.price, 0) > 0 AND {_PHOTO} AND {_FILLED.format(f='name')} "
-                        f"AND LENGTH(p.name) <= 255 AND {_HAS_UA} "
+                        f"AND LENGTH(p.name) <= 255 AND NOT {_NEEDS_MANUAL} AND {_HAS_UA} "
                         f"AND {_FILLED.format(f='keywords')}",
     "missing_ua": f"NOT ({_HAS_UA})",
     "missing_keywords": f"NOT {_FILLED.format(f='keywords')}",
     "missing_price_or_photo": f"(COALESCE(p.price, 0) <= 0 OR NOT {_PHOTO})",
-    # для «✨ Заполнить через ИИ»: не хватает того, что делает «Подготовить для Prom»
-    "missing_ai": f"(NOT ({_HAS_UA}) OR NOT {_FILLED.format(f='keywords')})",
+    # для «✨ Заполнить через ИИ»: не хватает того, что делает «Подготовить для Prom» (и ИИ есть из чего писать)
+    "missing_ai": f"(NOT ({_HAS_UA}) OR NOT {_FILLED.format(f='keywords')}) AND NOT {_NEEDS_MANUAL}",
+    "needs_manual": _NEEDS_MANUAL,
 }
 READINESS_LABELS = {"ready_to_promote": "готовы для Prom", "missing_ua": "без украинского текста",
-                    "missing_keywords": "без ключевых слов", "missing_price_or_photo": "без цены или фото"}
+                    "missing_keywords": "без ключевых слов", "missing_price_or_photo": "без цены или фото",
+                    "needs_manual": "мало данных — заполнить вручную"}
 SORTS = {
     "updated": "p.updated_at DESC, p.id DESC",
     "created": "p.created_at DESC, p.id DESC",
@@ -482,10 +487,104 @@ def _has_errors(row) -> bool:
 
 def ids_for_filter(flt: dict) -> list[int]:
     """Все товары по фильтру списка («выбрать все N по фильтру»), а не только загруженные на странице."""
+    if flt.get("profit") in PROFIT_FILTERS:
+        return sorted(r["id"] for r in _rows(flt)[0])
     clause, args = _filter_where(flt)
     if flt.get("errors") in _TRUE:
         return [r["id"] for r in db.query(f"{LIST_SELECT} {clause} ORDER BY p.id", args) if _has_errors(r)]
     return [r["id"] for r in db.query(f"SELECT p.id FROM products p {clause} ORDER BY p.id", args)]
+
+
+# ---------- выгода: наценка в гривнах, очередь «сначала выгодные», фильтры ----------
+# Считается в Python: закупка бывает в $/€ и переводится по курсу (свой курс у поставщика) — в SQL этого не сделать.
+PROFIT_SORTS = {"profit_desc", "profit_asc"}
+PROFIT_FILTERS = {"high_profit": "выгодные (в наличии, с фото)", "low_or_negative": "в минусе или ниже минимальной наценки",
+                  "no_cost_or_rrp": "без закупки и РРЦ"}
+MIN_MARGIN_PCT = 10.0
+
+
+def min_margin_pct() -> float:
+    try:
+        return float(db.get_setting("min_margin_pct") or MIN_MARGIN_PCT)
+    except ValueError:
+        return MIN_MARGIN_PCT
+
+
+def margin(p, table) -> tuple[float | None, float | None]:
+    """(наценка в грн, наценка в % к закупке). Без закупки — (None, None): РРЦ — это цена продажи, а не закупка."""
+    cost = _in_uah(table, p["cost_price"], p["cost_currency"], p["supplier_id"]) if p["cost_price"] else None
+    price = _in_uah(table, p["price"], p["currency"] or "UAH", p["supplier_id"]) if p["price"] else None
+    if cost is None or price is None:
+        return None, None
+    m = round(price - cost, 2)
+    return m, (round(m / cost * 100, 1) if cost else None)
+
+
+def _profit_key(p, m) -> tuple:
+    # в наличии и с фото — вперёд (их реально купят), затем наценка в гривнах; без закупки — в конце
+    return (p["presence"] == "available", (p["image_count"] or 0) > 0, m is not None, m or 0.0)
+
+
+def _profit_rows(rows, flt: dict, sort: str) -> list:
+    from . import rates
+    table, minimum = rates.Table(), min_margin_pct()
+    kind = flt.get("profit") or ""
+    out = []
+    for r in rows:
+        m, pct = margin(r, table)
+        if kind == "high_profit" and not (r["presence"] == "available" and r["image_count"] and m is not None
+                                         and m > 0 and (pct is None or pct >= minimum)):
+            continue
+        if kind == "low_or_negative" and not (m is not None and (m <= 0 or (pct is not None and pct < minimum))):
+            continue
+        if kind == "no_cost_or_rrp" and (r["cost_price"] or r["rrp"]):
+            continue
+        out.append((r, m))
+    if sort == "profit_asc":
+        # сначала самые невыгодные: без закупки (непонятно, сколько зарабатываем), затем меньшая наценка
+        out.sort(key=lambda x: (x[1] is not None, x[1] or 0.0, x[0]["id"]))
+    elif sort == "profit_desc" or kind == "high_profit":
+        out.sort(key=lambda x: (_profit_key(x[0], x[1]), -x[0]["id"]), reverse=True)
+    return [r for r, _ in out]
+
+
+WATCH_STATUSES = ("ready", "sending", "synced", "error")  # черновики не продаются — за ними не следим
+
+
+def low_margin(supplier_id: int | None = None, limit: int | None = 200) -> list[dict]:
+    """Сторож наценки: товары в продаже (не черновики), которые продаются в минус или ниже минимальной наценки.
+    Чаще всего — цена закреплена вручную, а поставщик поднял закупку."""
+    from . import rates
+    table, minimum = rates.Table(), min_margin_pct()
+    where = f"WHERE p.status IN ({','.join('?' * len(WATCH_STATUSES))}) AND p.cost_price > 0"
+    args: list = list(WATCH_STATUSES)
+    if supplier_id is not None:
+        where += " AND p.supplier_id = ?"
+        args.append(supplier_id)
+    out = []
+    for r in db.query(f"{LIST_SELECT} {where}", args):
+        m, pct = margin(r, table)
+        if m is None or not (m <= 0 or (pct is not None and pct < minimum)):
+            continue
+        out.append({"id": r["id"], "name": r["name"], "external_id": r["external_id"], "status": r["status"],
+                    "price": r["price"], "cost_uah": _in_uah(table, r["cost_price"], r["cost_currency"], r["supplier_id"]),
+                    "margin_uah": m, "margin_pct": pct, "loss": m <= 0, "supplier_name": r["supplier_name"] or "",
+                    "price_locked": "price" in json.loads(r["locked_fields"] or "[]")})
+    out.sort(key=lambda x: (x["margin_uah"], x["id"]))
+    return out[:limit] if limit else out
+
+
+def profit_order(ids: list[int]) -> list[int]:
+    """Очередь массового ИИ: сначала товары в наличии, с фото и с наибольшей наценкой — их выгоднее подготовить первыми."""
+    if not ids:
+        return []
+    from . import rates
+    table = rates.Table()
+    rows = db.query(f"""SELECT p.id, p.price, p.currency, p.cost_price, p.cost_currency, p.supplier_id, p.presence,
+                               (SELECT COUNT(*) FROM images i WHERE i.product_id = p.id) AS image_count
+                        FROM products p WHERE p.id {db.IN_LIST}""", (db.as_list(ids),))
+    keyed = {r["id"]: _profit_key(r, margin(r, table)[0]) for r in rows}
+    return sorted(ids, key=lambda i: (keyed.get(i, (False, False, False, 0.0)), -i), reverse=True)
 
 
 def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: int = 0) -> tuple[list, int, dict]:
@@ -493,6 +592,17 @@ def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: in
     order = SORTS.get(sort) or SORTS["updated"]
     clause, args = _filter_where(flt)
     count_clause, count_args = _filter_where(flt, with_status=False)
+    if sort in PROFIT_SORTS or flt.get("profit") in PROFIT_FILTERS:
+        all_rows = db.query(f"{LIST_SELECT} {count_clause} ORDER BY {SORTS['updated']}", count_args)
+        if flt.get("errors") in _TRUE:
+            all_rows = [r for r in all_rows if _has_errors(r)]
+        all_rows = _profit_rows(all_rows, flt, sort)
+        counts: dict = {}
+        for r in all_rows:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        matching = [r for r in all_rows if not flt.get("status") or r["status"] == flt["status"]]
+        page = matching[offset:offset + limit] if limit is not None else matching[offset:]
+        return page, len(matching), counts
     if flt.get("errors") in _TRUE:
         # «с ошибками заполнения» — проверка в Python (как в карточке), поэтому страницу режем здесь
         all_rows = [r for r in db.query(f"{LIST_SELECT} {count_clause} ORDER BY {order}", count_args) if _has_errors(r)]

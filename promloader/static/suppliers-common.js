@@ -13,6 +13,8 @@ function runSummary(stats) {
     ["returned", "вернулось"], ["joined", "объединено с другими поставщиками"], ["errors", "с ошибками"],
     ["ignored", "пропущено (удалены вами)"], ["queued", "отправлено на Prom"],
     ["ua_merged", "с украинским текстом из второй ссылки"],
+    ["pipeline_queued", "автоконвейер: отдано ИИ"], ["pipeline_promoted", "автоконвейер: в «Готов к отправке»"],
+    ["pipeline_manual", "мало данных — заполнить вручную"],
   ].filter(([k]) => stats[k]).map(([k, label]) => `${I18N.tr(label)}: ${stats[k]}`);
   if (stats.ua_error) parts.push(`⚠️ ${stats.ua_error}`);
   return parts.join(" · ") || I18N.tr("без изменений");

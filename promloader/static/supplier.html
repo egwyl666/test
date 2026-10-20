@@ -90,6 +90,11 @@
       <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="clean-names">
         Чистить названия от оптовых пометок <span class="muted">— «(50шт)», «(20)» и артикул поставщика («GT-354», «А 777-251»);
         модели производителя (Remax RPP-118) остаются. Для артикула отметьте колонку «Артикул поставщика»</span></label>
+      <label class="small" style="display:block;margin-bottom:6px"><input type="checkbox" id="auto-pipeline">
+        <b>Автоконвейер:</b> после каждого обновления прайса ИИ готовит новые черновики этого поставщика (перевод,
+        ключевые слова, описание, если его нет) и переводит готовые в «Готов к отправке»
+        <span class="muted">— если данных слишком мало, ИИ ничего не выдумывает: товар попадёт в «мало данных — заполнить
+        вручную». На Prom готовые уйдут по расписанию отправки («Настройки»)</span></label>
       <label class="small"><input type="checkbox" id="auto-sync"> Сразу отправлять изменения на Prom
         <span class="muted">(цены и наличие товаров, которые уже на Prom или готовы к отправке)</span></label>
       <div class="toolbar" style="margin:16px 0 0">

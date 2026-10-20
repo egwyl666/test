@@ -45,7 +45,8 @@ def create(product_ids: list[int], action: str, instruction: str = "", only_empt
         raise BulkError("Напишите, что сделать с товарами")
     if not ai.enabled():
         raise BulkError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
-    ids = sorted(set(product_ids))
+    # очередь по выгоде: сначала в наличии, с фото и с большей наценкой — бесплатный лимит ИИ тратится на них первыми
+    ids = products.profit_order(sorted(set(product_ids)))
     if not ids:
         raise BulkError("Не выбрано ни одного товара")
     ts = db.now()
@@ -232,6 +233,10 @@ def _prepare(item):
         # «сразу в «Готов»»: товар без ИИ уже готов — его тоже переводим (иначе он остался бы черновиком)
         _auto_promote(item, [p["id"]])
         return None
+    if item["action"] == "prepare_prom" and ai.too_little_data(p):
+        # не выдумываем по названию «Чехол 123»: товар остаётся в «мало данных — заполнить вручную»
+        _mark(item["id"], "skipped", MANUAL)
+        return None
     if ai.nothing_to_translate(p, item["action"]):
         _mark(item["id"], "skipped", "нет украинского текста")  # запрос к ИИ не нужен и не оплачивается
         return None
@@ -299,6 +304,33 @@ def process_one(runner=None) -> str:
 
 
 AUTO_PROMOTE_SOURCE = "Массовый ИИ: готов к отправке"
+MANUAL = "мало данных — заполнить вручную"
+
+
+def start_pipeline(supplier_id: int) -> dict:
+    """Автоконвейер поставщика: черновики в наличии, которые уже готовы, — сразу в «Готов к отправке»; остальным —
+    задание «Подготовить для Prom» с «сразу в «Готов»». Товары, уже стоящие в очереди ИИ, второй раз не ставим.
+    Возвращает {pipeline_promoted, pipeline_queued, pipeline_manual}."""
+    # одним запросом и только нужные поля: у поставщика бывают тысячи черновиков, конвейер идёт после каждого прайса
+    rows = db.query("""SELECT p.id, p.name, p.name_ua, p.description, p.description_ua, p.keywords, p.params, p.vendor
+                       FROM products p WHERE p.supplier_id = ? AND p.status = 'draft'
+                       AND p.presence = 'available' AND NOT EXISTS (
+                         SELECT 1 FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
+                         WHERE i.product_id = p.id AND i.status = 'pending' AND j.status IN ('running', 'paused'))""",
+                    (supplier_id,))
+    queue, manual, done = [], 0, []
+    for r in rows:
+        p = dict(r)
+        if ai.already_done(p, "prepare_prom"):
+            done.append(p["id"])
+        elif ai.too_little_data(p):
+            manual += 1
+        else:
+            queue.append(p["id"])
+    promoted = products.promote_if_ready(done, AUTO_PROMOTE_SOURCE) if done else 0
+    if queue and ai.enabled():
+        create(queue, "prepare_prom", only_empty=True, auto_promote=True)
+    return {"pipeline_promoted": promoted, "pipeline_queued": len(queue) if ai.enabled() else 0, "pipeline_manual": manual}
 
 
 def _auto_promote(job_item, product_ids: list[int]) -> None:

@@ -22,6 +22,7 @@ function settingsBody() {
     prefix: $("#prefix").value,
     new_status: $("#new-status").value,
     auto_sync: $("#auto-sync").checked,
+    auto_pipeline: $("#auto-pipeline").checked,
     merge_by_barcode: $("#merge-barcode").checked,
     clean_names: $("#clean-names").checked,
     rate_mode: $("#rate-mode").value,
@@ -51,6 +52,7 @@ function fillForm(s) {
   $("#prefix").value = s.prefix;
   $("#new-status").value = s.new_status;
   $("#auto-sync").checked = s.auto_sync;
+  $("#auto-pipeline").checked = s.auto_pipeline;
   $("#merge-barcode").checked = s.merge_by_barcode;
   $("#clean-names").checked = s.clean_names;
   $("#def-group").value = s.defaults.group_name || "";
@@ -205,7 +207,7 @@ async function saveIfDirty() {
     toast("Настройки сохранены", "ok");
   }
 }
-const SETTINGS_FIELDS = "#name, #url, #url-ua, #interval, #missing, #prefix, #new-status, #auto-sync, #merge-barcode, " +
+const SETTINGS_FIELDS = "#name, #url, #url-ua, #interval, #missing, #prefix, #new-status, #auto-sync, #auto-pipeline, #merge-barcode, " +
   "#clean-names, #rate-mode, #rate-value, #def-group, #def-currency";
 const markDirty = (e) => { if (e.target.matches(SETTINGS_FIELDS) || e.target.closest("#mapping")) dirty = true; };
 document.addEventListener("input", markDirty);

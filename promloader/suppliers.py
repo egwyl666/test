@@ -36,7 +36,7 @@ SYNC_FIELDS = (
 )
 EDITABLE = ("name", "url", "sheet", "header_row", "rows", "mapping", "defaults", "prefix", "new_status",
             "missing_action", "auto_sync", "interval_hours", "merge_by_barcode",
-            "rate_mode", "rate_currency", "rate_value", "rate_add", "clean_names", "url_ua")
+            "rate_mode", "rate_currency", "rate_value", "rate_add", "clean_names", "url_ua", "auto_pipeline")
 
 BROKEN_FEED_MIN = 20       # защита включается, если у поставщика было хотя бы столько товаров
 BROKEN_FEED_RATIO = 0.5    # ...и в новом прайсе осталось меньше этой доли
@@ -68,6 +68,7 @@ def _parse(row) -> dict:
     s["auto_sync"] = bool(s["auto_sync"])
     s["merge_by_barcode"] = bool(s.get("merge_by_barcode", 1))
     s["clean_names"] = bool(s.get("clean_names", 0))
+    s["auto_pipeline"] = bool(s.get("auto_pipeline", 0))
     s["running"] = s["id"] in _running
     return s
 
@@ -192,7 +193,7 @@ def update(supplier_id: int, data: dict) -> dict:
             value = max(0.0, value) if math.isfinite(value) else -1
             if value < 0 or value > 24 * 366:
                 raise SupplierError("Интервал обновления — число часов, не больше года")
-        elif key in ("auto_sync", "merge_by_barcode", "clean_names"):
+        elif key in ("auto_sync", "merge_by_barcode", "clean_names", "auto_pipeline"):
             value = 1 if value else 0
         elif key == "rate_mode":
             if value not in ("", "manual", "nbu"):
@@ -758,13 +759,17 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
         rates.prefetch()  # курс — до записи в базу
         items, embedded = _parse_items(s, path)
         ua_merged, ua_error = _merge_ua_safe(s, items, transport)
+        low_before = {x["id"] for x in products.low_margin(supplier_id, limit=None)}
         stats, _ = apply_items(s, items, embedded, run_id, force, changed)
+        _margin_alert(s, low_before)
         if ua_merged is not None:
             stats["ua_merged"] = ua_merged
         if ua_error:
             stats["ua_error"] = ua_error
         if content is not None:
             store_source(supplier_id, content, name)  # прайс разобран и применён — теперь он текущий
+        if s.get("auto_pipeline"):
+            _start_pipeline(s, stats)
     except (SupplierError, excel.ImportError_, rates.RateError) as exc:
         status, message = "failed", str(exc)
     except Exception as exc:
@@ -787,6 +792,33 @@ def _run(s: dict, trigger: str, force: bool, transport) -> dict:
                   (status, json.dumps(stats, ensure_ascii=False), message, db.now(), run_id))
         c.execute("UPDATE suppliers SET next_run_at = ? WHERE id = ?", (_next_run(s["interval_hours"]), supplier_id))
     return _run_dict(db.query_one("SELECT * FROM supplier_runs WHERE id = ?", (run_id,)))
+
+
+def _start_pipeline(s: dict, stats: dict) -> None:
+    """Автоконвейер: после обновления прайса — массовый ИИ «Подготовить для Prom» с «сразу в «Готов к отправке»»
+    для черновиков этого поставщика. Сбой конвейера не портит итог обновления прайса."""
+    from . import aibulk
+    try:
+        info = aibulk.start_pipeline(s["id"])
+        stats.update({k: v for k, v in info.items() if v})
+    except Exception:
+        log.exception("Поставщик %s: автоконвейер", s["id"])
+
+
+def _margin_alert(s: dict, before: set) -> list[dict]:
+    """После обновления прайса: товары в продаже, которые из-за новой закупки стали продаваться в минус или ниже
+    минимальной наценки, — в Telegram и на телефон (событие margin_alert). Только новые, без повторов."""
+    try:
+        fresh = [x for x in products.low_margin(s["id"], limit=None) if x["id"] not in before]
+        if fresh:
+            examples = "\n".join(f"• {notify.esc(x['name'])} — цена {x['price']:g} грн, закупка {x['cost_uah']:g} грн "
+                                  f"({x['margin_pct']:+g}%)" for x in fresh[:5] if x["cost_uah"] is not None)
+            notify.send("margin_alert", f"📉 <b>Поставщик «{notify.esc(s['name'])}»: наценка упала у {len(fresh)} товаров</b>\n"
+                                        f"{examples}\nПроверьте «Наценка» → «Сторож наценки»")
+        return fresh
+    except Exception:
+        log.exception("Поставщик %s: сторож наценки", s["id"])
+        return []
 
 
 def due() -> list[int]:

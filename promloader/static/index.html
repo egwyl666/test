@@ -152,6 +152,12 @@
       <div class="toolbar list-filters" id="filters">
         <select id="f-group" title="Группа"></select>
         <select id="f-presence" title="Наличие"></select>
+        <select id="f-profit" title="Выгода">
+          <option value="">любая выгода</option>
+          <option value="high_profit">выгодные (в наличии, с фото)</option>
+          <option value="low_or_negative">в минусе или ниже минимальной наценки</option>
+          <option value="no_cost_or_rrp">без закупки и РРЦ</option>
+        </select>
         <details class="more-filters">
           <summary class="btn" id="more-filters-label">Ещё фильтры ▾</summary>
           <div class="more-box">
@@ -175,6 +181,8 @@
           <option value="name">по названию</option>
           <option value="price_asc">сначала дешёвые</option>
           <option value="price_desc">сначала дорогие</option>
+          <option value="profit_desc">по выгоде (сначала выгодные)</option>
+          <option value="profit_asc">по выгоде (сначала невыгодные)</option>
           <option value="status">по статусу</option>
         </select>
         <a class="btn" id="export-xlsx" href="/api/products.xlsx" title="Скачать список по текущим фильтрам">⬇ Excel</a>

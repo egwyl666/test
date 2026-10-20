@@ -252,11 +252,12 @@ def test_prepare_prom_already_done_and_missing_fields():
     from promloader import ai
     full = {"name_ua": "Кухоль", "description": "<p>Кружка</p>", "description_ua": "<p>Кухоль</p>", "keywords": "кружка"}
     assert ai.already_done(full, "prepare_prom")
-    assert ai.already_done({**full, "description": "", "description_ua": ""}, "prepare_prom")  # описания нет — не нужно
+    # 2.20.0: описания нет — «Подготовить для Prom» напишет его сам (и перевод)
+    assert not ai.already_done({**full, "description": "", "description_ua": ""}, "prepare_prom")
     assert not ai.already_done({**full, "keywords": ""}, "prepare_prom")
     assert not ai.already_done({**full, "description_ua": ""}, "prepare_prom")
     assert ai.missing_fields({**full, "keywords": ""}, "prepare_prom") == ("keywords",)
-    assert ai.missing_fields({"name": "Кружка"}, "prepare_prom") == ("name_ua", "keywords")
+    assert ai.missing_fields({"name": "Кружка"}, "prepare_prom") == ("description", "name_ua", "description_ua", "keywords")
     assert ai.missing_fields({"name": "Кружка", "description": "<p>x</p>"}, "prepare_prom") == (
         "name_ua", "description_ua", "keywords")
     assert ai.batch_size("prepare_prom") == 5
@@ -272,9 +273,10 @@ def test_prepare_prom_batch_requests_only_missing_fields_and_keeps_existing(monk
     db.set_setting("ai_provider", "gemini")
     db.set_setting("gemini_key", "k")
     translated = products.create({"name": "Кружка", "name_ua": "Кухоль", "description": "<p>Белая</p>",
-                                  "description_ua": "<p>Біла</p>", "price": 10})
-    raw = products.create({"name": "Лампа", "description": "<p>Настольная</p>", "price": 10})
-    done = products.create({"name": "Зонт", "name_ua": "Парасоля", "keywords": "зонт", "price": 10})
+                                  "description_ua": "<p>Біла</p>", "price": 10, "vendor": "Luminarc"})
+    raw = products.create({"name": "Лампа", "description": "<p>Настольная</p>", "price": 10, "vendor": "Philips"})
+    done = products.create({"name": "Зонт", "name_ua": "Парасоля", "keywords": "зонт", "description": "<p>Зонт</p>",
+                            "description_ua": "<p>Парасоля</p>", "price": 10})
     calls = []
 
     def handler(r):
@@ -353,7 +355,7 @@ def test_ai_bulk_event_added_to_existing_recipients():
 
 def _draft(name, **f):
     from promloader import db, products
-    pid = products.create({"name": name, "price": 100, **f})
+    pid = products.create({"name": name, "price": 100, "vendor": "Luminarc", **f})
     with db.tx() as c:
         c.execute("INSERT INTO images (product_id, url) VALUES (?, 'https://x/1.jpg')", (pid,))
     return pid

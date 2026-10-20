@@ -56,7 +56,9 @@ ACTIONS = {
                      "(name_ua и description_ua — перевод живой и грамотный, не дословный, HTML-разметку сохрани; "
                      "name_ua — не длиннее 100 символов, без потери типа товара, бренда и модели) и "
                      "заполни keywords: 10–15 разных поисковых запросов, по которым покупатель ищет такой товар на Prom.ua, через "
-                     "запятую, на русском и украинском, без повторов. Остальные поля оставь пустыми."),
+                     "запятую, на русском и украинском, без повторов. Если описания (description) нет — напиши короткое "
+                     "фактическое описание на русском (2–4 предложения) строго по названию, производителю и характеристикам, "
+                     "ничего не придумывая, и его перевод в description_ua. Остальные поля оставь пустыми."),
     "custom": ("Своя просьба", ""),
 }
 
@@ -268,7 +270,8 @@ def already_done(p: dict, action: str) -> bool:
     if action == "keywords":
         return filled("keywords")
     if action == "prepare_prom":
-        return filled("keywords") and filled("name_ua") and (filled("description_ua") or not filled("description"))
+        # описание тоже: «Подготовить для Prom» пишет его сам, если данных хватает (иначе — «заполнить вручную»)
+        return filled("keywords") and filled("name_ua") and filled("description") and filled("description_ua")
     if action == "improve":
         return filled("description")
     return False
@@ -320,7 +323,7 @@ def run_detailed(p: dict, action: str, instruction: str = "", transport=None) ->
 BATCH = {"keywords": (20, ("keywords",)), "name": (10, ("name",)),
          "translate_ua": (5, ("name_ua", "description_ua")),
          "translate_ru": (5, ("name", "description", "name_ua", "description_ua")),
-         "prepare_prom": (5, ("name_ua", "description_ua", "keywords"))}
+         "prepare_prom": (5, ("description", "name_ua", "description_ua", "keywords"))}
 
 
 def batch_size(action: str) -> int:
@@ -333,12 +336,29 @@ def missing_fields(p: dict, action: str) -> tuple:
     def empty(f):
         return not (p.get(f) or "").strip()
     out = []
+    writes_description = action == "prepare_prom" and empty("description")  # ИИ напишет описание сам
     for f in BATCH[action][1]:
-        if f == "description_ua" and empty("description") and empty("description_ua"):
+        if f == "description" and action != "prepare_prom":
+            continue
+        if f == "description_ua" and empty("description") and empty("description_ua") and not writes_description:
             continue
         if empty(f):
             out.append(f)
     return tuple(out)
+
+
+MIN_DESCRIPTION, MIN_NAME = 30, 15
+
+
+def too_little_data(p: dict) -> bool:
+    """Данных так мало, что честное описание не написать (короткое название вроде «Чехол 123», ни описания, ни
+    характеристик, ни производителя) — ИИ не выдумывает, а товар помечается «заполнить вручную».
+    Та же проверка в SQL — products.READINESS["needs_manual"]."""
+    params = p.get("params")
+    if isinstance(params, str):
+        params = json.loads(params or "[]")
+    return (len((p.get("description") or "").strip()) < MIN_DESCRIPTION and len((p.get("name") or "").strip()) < MIN_NAME
+            and not params and not (p.get("vendor") or "").strip())
 
 
 ONLY_MISSING = {"prepare_prom"}  # действия, где в пачке у каждого товара просим только недостающие поля

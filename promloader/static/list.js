@@ -3,7 +3,7 @@
 const PAGE = 200;
 // фильтры списка — те же имена, что у /api/products; хранятся и в адресе страницы (?group=…&sort=…)
 const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "prom_category", "cat_mismatch",
-                 "readiness"];
+                 "readiness", "profit"];
 const START = new URLSearchParams(location.search);
 const list = {
   ...Object.fromEntries(FILTERS.map((k) => [k, START.get(k) || ""])),
@@ -86,7 +86,7 @@ function renderChips(counts) {
 
 // Полоска над черновиками: сколько готовы для Prom (кнопка «В «Готов к отправке»») и чего не хватает остальным.
 // Учитывает остальные фильтры списка (поставщик, поиск, группа). Видна, только когда выбраны «Черновики».
-const READINESS_ORDER = ["missing_ua", "missing_keywords", "missing_price_or_photo"];
+const READINESS_ORDER = ["missing_ua", "missing_keywords", "missing_price_or_photo", "needs_manual"];
 let readinessSeq = 0;
 async function loadReadiness() {
   const bar = $("#readiness");
@@ -256,11 +256,13 @@ const FLAG_LABELS = { errors: "с ошибками заполнения", no_pho
 const ON_PROM_LABELS = { yes: "есть на Prom", no: "нет на Prom" };
 
 const READINESS_FILTER_LABELS = { ready_to_promote: "черновики: готовы для Prom", missing_ua: "черновики: без украинского текста",
-  missing_keywords: "черновики: без ключевых слов", missing_price_or_photo: "черновики: без цены или фото" };
+  missing_keywords: "черновики: без ключевых слов", missing_price_or_photo: "черновики: без цены или фото",
+  needs_manual: "черновики: мало данных — заполнить вручную" };
 
 function renderFilterControls() {
   $("#f-group").value = list.group;
   $("#f-presence").value = list.presence;
+  $("#f-profit").value = list.profit;
   $("#f-on_prom").value = list.on_prom;
   $("#f-prom_category").value = list.prom_category;
   $("#f-sort").value = list.sort;
@@ -278,6 +280,7 @@ function renderFilterControls() {
   }
   for (const [k, label] of Object.entries(FLAG_LABELS)) if (list[k]) active.push([k, label]);
   if (list.readiness) active.push(["readiness", READINESS_FILTER_LABELS[list.readiness] || list.readiness]);
+  if (list.profit) active.push(["profit", $(`#f-profit option[value="${list.profit}"]`)?.textContent || list.profit]);
   $("#active-filters").innerHTML = active.map(([k, label]) =>
     `<button class="chip active" data-clear="${k}" title="Убрать фильтр">${esc(label)} ×</button>`).join("");
   const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0) + (list.prom_category ? 1 : 0);
@@ -291,6 +294,12 @@ $("#active-filters").addEventListener("click", (e) => {
 });
 $("#f-group").addEventListener("change", (e) => { list.group = e.target.value; applyFilters(); });
 $("#f-presence").addEventListener("change", (e) => { list.presence = e.target.value; applyFilters(); });
+$("#f-profit").addEventListener("change", (e) => {
+  list.profit = e.target.value;
+  // «выгодные» удобнее смотреть сразу по убыванию выгоды, «невыгодные» — по возрастанию
+  if (list.profit && list.sort === "updated") list.sort = list.profit === "high_profit" ? "profit_desc" : "profit_asc";
+  applyFilters();
+});
 $("#f-on_prom").addEventListener("change", (e) => { list.on_prom = e.target.value; applyFilters(); });
 $("#f-prom_category").addEventListener("change", (e) => { list.prom_category = e.target.value; applyFilters(); });
 $("#f-sort").addEventListener("change", (e) => { list.sort = e.target.value; list.items = []; syncUrl(); loadProducts(); });

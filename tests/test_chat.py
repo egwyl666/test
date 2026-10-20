@@ -147,3 +147,62 @@ def test_page_and_rooms_api(client):
     assert client.get("/chat").status_code == 200
     body = client.get("/api/chat/rooms").json()
     assert body["rooms"] == [] and body["unseen"] == 0 and body["enabled"] is True
+
+
+# ---------- 2.20.0: готовые ответы из настоящих данных и ИИ с заказом и ТТН ----------
+
+def _room_with(order_id=None, product_id=None, buyer_text="Добрий день, коли відправите?", phone=""):
+    from promloader import db
+    with db.tx() as c:
+        c.execute("INSERT INTO chat_rooms (room_ident, buyer_phone, order_id, product_id, last_at, updated_at) "
+                  "VALUES ('555_q', ?, ?, ?, ?, ?)", (phone, order_id, product_id, db.now(), db.now()))
+        c.execute("INSERT INTO chat_messages (id, room_ident, sender, body, is_my, created_at, type, status) "
+                  "VALUES (1, '555_q', 'buyer', ?, 0, ?, 'message', '')", (buyer_text, db.now()))
+    return "555_q"
+
+
+def test_quick_replies_use_real_order_and_ttn_in_buyer_language():
+    from promloader import chat, db, orders, products
+    from tests.test_novaposhta import prom_order
+    orders.store([prom_order(1001)], notify_new=False)
+    with db.tx() as c:
+        c.execute("INSERT INTO shipments (order_id, ttn, stage, status, created_at) VALUES "
+                  "(1001, '20450000000001', 'arrived', 'Прибув у відділення', ?)", (db.now(),))
+    pid = products.create({"name": "Кружка белая", "name_ua": "Кухоль білий", "price": 150, "presence": "available"})
+    room = _room_with(order_id=1001, product_id=pid)
+    quick = {q["key"]: q for q in chat.quick_replies(room)}
+    assert "Кухоль білий" in quick["stock"]["text"] and "150 грн" in quick["stock"]["text"]
+    assert "20450000000001" in quick["ttn"]["text"] and "відділенні" in quick["ttn"]["text"]
+    assert quick["check"]["text"].startswith("Зараз")
+    assert quick["ttn"]["label"] == "📦 Номер ТТН и статус"
+
+
+def test_quick_replies_russian_buyer_and_order_by_phone():
+    from promloader import chat, orders
+    from tests.test_novaposhta import prom_order
+    orders.store([prom_order(1002, status="received")], notify_new=False)
+    room = _room_with(buyer_text="Здравствуйте, когда отправите заказ?", phone="+380671112233")
+    quick = {q["key"]: q for q in chat.quick_replies(room)}
+    assert quick["order"]["text"] == "Ваш заказ №1002: принят, готовим к отправке."
+    assert quick["check"]["text"].startswith("Сейчас")
+    assert "stock" not in quick and "ttn" not in quick
+
+
+def test_ai_draft_gets_order_and_ttn_facts(monkeypatch):
+    from promloader import ai, chat, db, orders
+    from tests.test_novaposhta import prom_order
+    orders.store([prom_order(1003)], notify_new=False)
+    with db.tx() as c:
+        c.execute("INSERT INTO shipments (order_id, ttn, stage, status, created_at) VALUES "
+                  "(1003, '20450000000003', 'on_the_way', 'В дорозі', ?)", (db.now(),))
+    room = _room_with(order_id=1003)
+    seen = []
+    monkeypatch.setattr(ai, "chat_reply", lambda context, transport=None: (seen.append(context), ("Відповідь", {}))[1])
+    assert chat.ai_draft(room)["reply"] == "Відповідь"
+    assert "ТТН 20450000000003" in seen[0] and "Заказ покупателя №1003" in seen[0]
+
+
+def test_messages_include_quick(client):
+    room = _room_with()
+    r = client.get(f"/api/chat/rooms/{room}/messages").json()
+    assert [q["key"] for q in r["quick"]] == ["check"]

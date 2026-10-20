@@ -68,6 +68,9 @@ function renderRoom(r) {
     order.href = `/orders?q=${r.room.order_id}`;
   }
   $("#room-product").innerHTML = productCard(r.product);
+  // готовые ответы из настоящих данных (наличие, ТТН, статус заказа) — на языке покупателя, без ИИ
+  $("#quick").innerHTML = (r.quick || []).map((q) =>
+    `<button class="chip" data-quick="${esc(q.text)}" title="${esc(q.text)}">${esc(I18N.tr(q.label))}</button>`).join("");
   $("#messages").innerHTML = r.messages.map((m) => {
     if (m.type === "context") {
       const what = m.context_type === "order" ? `${I18N.tr("Заказ №")}${m.context_id}` : "";
@@ -113,6 +116,14 @@ $("#templates").addEventListener("click", (e) => {
   if (!b) return;
   const t = $("#reply");
   t.value = (t.value.trim() ? t.value.trim() + " " : "") + b.textContent.trim();
+  t.focus();
+});
+
+$("#quick").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-quick]");
+  if (!b) return;
+  const t = $("#reply");
+  t.value = (t.value.trim() ? t.value.trim() + " " : "") + b.dataset.quick;
   t.focus();
 });
 
