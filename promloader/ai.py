@@ -59,6 +59,17 @@ ACTIONS = {
                      "запятую, на русском и украинском, без повторов. Если описания (description) нет — напиши короткое "
                      "фактическое описание на русском (2–4 предложения) строго по названию, производителю и характеристикам, "
                      "ничего не придумывая, и его перевод в description_ua. Остальные поля оставь пустыми."),
+    "from_photo": ("📷 Заполнить по фото (описание + UA + ключи)",
+                   "К товару приложено его главное фото. Данных о товаре мало, поэтому опиши его по фото и по тому, что "
+                   "есть в данных (название, производитель). Можно опираться только на то, что ясно видно на фото: тип "
+                   "товара, цвет, форма, материал на вид, видимые разъёмы, кнопки и детали, надписи на товаре или "
+                   "упаковке. Не придумывай то, чего не видно и нет в данных: ёмкость аккумулятора, мощность, точную "
+                   "модель телефона, размеры, гарантию. Заполни: name — понятное название для Prom.ua (тип товара + "
+                   "бренд/модель, если они есть в данных или видны на фото, + 1–2 видимые характеристики, не длиннее "
+                   "100 символов), description — короткое честное описание на русском (2–5 предложений, HTML <p>/<ul>), "
+                   "name_ua и description_ua — их перевод на украинский (name_ua не длиннее 100 символов), keywords — "
+                   "10–15 разных поисковых запросов через запятую на русском и украинском, без повторов. Если на фото "
+                   "не понять, что это за товар, верни все поля пустыми."),
     "custom": ("Своя просьба", ""),
 }
 
@@ -267,6 +278,9 @@ def already_done(p: dict, action: str) -> bool:
         return (filled("name_ua") and filled("name") and not looks_ukrainian(p["name"])
                 and (not filled("description") or not looks_ukrainian(p["description"]))
                 and (filled("description") or not filled("description_ua")))
+    if action == "from_photo":
+        # по фото заполняем товары, о которых мало данных; уже описанные и переведённые — не трогаем
+        return not too_little_data(p) and filled("name_ua") and filled("description_ua") and filled("keywords")
     if action == "keywords":
         return filled("keywords")
     if action == "prepare_prom":
@@ -295,6 +309,52 @@ def run(p: dict, action: str, instruction: str = "", transport=None) -> dict:
     return run_detailed(p, action, instruction, transport)[0]
 
 
+# ---------- фото товара для «📷 Заполнить по фото» ----------
+PHOTO_MAX_BYTES = 4 * 1024 * 1024   # больше не качаем: фото поставщика бывают по 20 МБ
+PHOTO_SIDE = 1024                   # ИИ хватает 1024 px, а запрос с маленьким фото дешевле и быстрее
+PHOTO_TIMEOUT = 15
+
+
+def product_photo(p: dict, transport=None) -> tuple[str, str]:
+    """Главное фото товара → (mime, base64) — JPEG не больше 1024 px. Нет фото или не скачалось — AIError."""
+    import base64
+    import io as _io
+
+    from PIL import Image
+
+    from . import products as _products
+    rows = _products.image_rows(p["id"]) if p.get("id") else []
+    if not rows:
+        raise AIError("У товара нет фото — заполнить по фото нечего")
+    img = rows[0]
+    try:
+        if img.get("file"):
+            content = (db.uploads_dir() / img["file"]).read_bytes()
+        else:
+            url = _products.image_src(img)
+            if not re.match(r"^https?://", url):
+                raise AIError("Фото товара — не ссылка http/https")
+            content = b""
+            with httpx.Client(timeout=PHOTO_TIMEOUT, follow_redirects=True, transport=transport) as client:
+                with client.stream("GET", url) as r:
+                    if r.status_code >= 400:
+                        raise AIError(f"Фото товара не скачалось (HTTP {r.status_code})")
+                    for chunk in r.iter_bytes():
+                        content += chunk
+                        if len(content) > PHOTO_MAX_BYTES:
+                            raise AIError("Фото товара больше 4 МБ — загрузите фото поменьше")
+        picture = Image.open(_io.BytesIO(content))
+        picture = picture.convert("RGB")
+        picture.thumbnail((PHOTO_SIDE, PHOTO_SIDE))
+        out = _io.BytesIO()
+        picture.save(out, "JPEG", quality=85)
+    except AIError:
+        raise
+    except (OSError, httpx.HTTPError, ValueError) as exc:
+        raise AIError(f"Не удалось прочитать фото товара: {exc}") from None
+    return "image/jpeg", base64.b64encode(out.getvalue()).decode()
+
+
 def run_detailed(p: dict, action: str, instruction: str = "", transport=None) -> tuple[dict, dict]:
     """Изменения и расход запроса: модель, токены, цена (каждый запрос записывается в ai_usage)."""
     s = settings()
@@ -305,10 +365,11 @@ def run_detailed(p: dict, action: str, instruction: str = "", transport=None) ->
     if nothing_to_translate(p, action):
         raise AIError(NOTHING_TO_TRANSLATE)
     prompt = build_prompt(p, action, instruction)
+    image = product_photo(p, transport) if action == "from_photo" else None
     if s["provider"] == "gemini":
-        result, used = _gemini(s, prompt, transport, action)
+        result, used = _gemini(s, prompt, transport, action, image=image)
     elif s["provider"] == "claude":
-        result, used = _claude(s, prompt, transport, action)
+        result, used = _claude(s, prompt, transport, action, image=image)
     else:
         raise AIError("Неизвестный провайдер ИИ")
     changes = _clean(result, p)
@@ -591,12 +652,14 @@ AUTO_TRIES, AUTO_OVERLOADED = 8, 3  # сколько моделей пробов
 
 
 def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool = True,
-            system: str = SYSTEM, fields: tuple = FIELDS) -> tuple[dict, dict]:
+            system: str = SYSTEM, fields: tuple = FIELDS, image: tuple | None = None) -> tuple[dict, dict]:
     """switch=False — только эта модель, без перехода на другие (проверка моделей не должна менять выбор).
-    system и fields — задание и поля ответа: по умолчанию карточка товара, для чата — черновик ответа."""
+    system и fields — задание и поля ответа: по умолчанию карточка товара, для чата — черновик ответа.
+    image — (mime, base64): фото товара для «📷 Заполнить по фото»."""
+    parts = ([{"inline_data": {"mime_type": image[0], "data": image[1]}}] if image else []) + [{"text": prompt}]
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "responseMimeType": "application/json",
             "responseSchema": {
@@ -776,14 +839,16 @@ class _ClaudeSwitch(Exception):
 
 
 def _claude(s: dict, prompt: str, transport=None, action: str = "",
-            system: str = SYSTEM, fields: tuple = FIELDS, switch: bool = True) -> tuple[dict, dict]:
+            system: str = SYSTEM, fields: tuple = FIELDS, switch: bool = True,
+            image: tuple | None = None) -> tuple[dict, dict]:
     """switch=False — только выбранная модель (проверка моделей не должна переходить на другие)."""
     client = _claude_client(s["key"], transport)
     chain = [s["model"]] + ([m for m in CLAUDE_CHAIN if m != s["model"]] if switch else [])
     temporary = None  # лимит или перегрузка по дороге: если дальше модели просто недоступны — это всё равно «подождать»
     for model in chain:
         try:
-            result = _claude_once(client, s, model, prompt, action, system, fields, has_next=model != chain[-1])
+            result = _claude_once(client, s, model, prompt, action, system, fields, has_next=model != chain[-1],
+                                  image=image)
         except _ClaudeSwitch as exc:
             temporary = temporary or (exc.error if exc.error.temporary else None)
             continue
@@ -798,14 +863,16 @@ def _claude(s: dict, prompt: str, transport=None, action: str = "",
 
 
 def _claude_once(client, s: dict, model: str, prompt: str, action: str, system: str, fields: tuple,
-                 has_next: bool) -> tuple[dict, dict]:
+                 has_next: bool, image: tuple | None = None) -> tuple[dict, dict]:
     import anthropic
 
+    content = ([{"type": "image", "source": {"type": "base64", "media_type": image[0], "data": image[1]}},
+                {"type": "text", "text": prompt}] if image else prompt)
     params = dict(
         model=model,
         max_tokens=16000,
         system=system,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[{"role": "user", "content": content}],
         output_config={
             "format": {
                 "type": "json_schema",

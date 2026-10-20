@@ -287,9 +287,47 @@ function renderOrigins(p) {
   }
 }
 
+// Конфликт с кабинетом Prom: поле поменяли и там, и здесь (ещё не отправлено) — сравнение и выбор по каждому полю
+const CONFLICT_LABELS = { name: "Название", name_ua: "Название (укр.)", description: "Описание",
+  description_ua: "Описание (укр.)", price: "Цена", keywords: "Ключевые слова" };
+function renderConflict(p) {
+  const box = $("#conflict-panel");
+  const fields = Object.keys(p.prom_conflict || {});
+  box.classList.toggle("hidden", !fields.length);
+  if (!fields.length) { box.innerHTML = ""; return; }
+  const show = (v) => esc(String(v ?? "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600)) || "—";
+  box.innerHTML = `<h2>⚡ ${esc(I18N.tr("Конфликт с кабинетом Prom"))}</h2>
+    <p class="small muted">${esc(I18N.tr("Эти поля поменяли и в кабинете Prom, и здесь (ваши правки ещё не отправлены). Выберите, что оставить."))}</p>
+    ${fields.map((f) => `<div class="conflict-field"><b>${esc(I18N.tr(CONFLICT_LABELS[f] || f))}</b>
+      <div class="conflict-row">
+        <div><div class="small muted">${esc(I18N.tr("В программе"))}</div><div class="side" translate="no">${show(p[f])}</div>
+          <button type="button" class="btn small" data-conflict="keep" data-field="${f}">${esc(I18N.tr("Оставить как в программе"))}</button></div>
+        <div><div class="small muted">${esc(I18N.tr("В кабинете Prom"))}</div><div class="side" translate="no">${show(p.prom_conflict[f])}</div>
+          <button type="button" class="btn small primary" data-conflict="take" data-field="${f}">${esc(I18N.tr("Взять с Prom"))}</button></div>
+      </div></div>`).join("")}
+    <div class="toolbar" style="margin:6px 0 0">
+      <button type="button" class="btn small" data-conflict="keep">${esc(I18N.tr("Оставить всё как в программе"))}</button>
+      <button type="button" class="btn small primary" data-conflict="take">${esc(I18N.tr("Принять всё с Prom"))}</button>
+    </div>`;
+}
+$("#conflict-panel").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-conflict]");
+  if (!b || !state.id) return;
+  busy(b, async () => {
+    try {
+      const fields = b.dataset.field ? [b.dataset.field] : null;
+      const p = await api(`/api/products/${state.id}/prom-conflict`, { method: "POST", json: { action: b.dataset.conflict, fields } });
+      if (b.dataset.conflict === "take") fillUntouched(p);
+      applyServer(p);
+      toast(I18N.tr("Готово"), "ok");
+    } catch (err) { toast(err.message, "error"); }
+  });
+});
+
 function applyServer(product) {
   state.product = product;
   renderOrigins(product);
+  renderConflict(product);
   const active = document.activeElement;
   for (const el of form.elements) {
     // поле с ошибкой не заменяем старым значением: пользователь должен видеть, что именно не принято

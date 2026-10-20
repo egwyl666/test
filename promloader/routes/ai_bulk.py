@@ -17,8 +17,8 @@ def ai_bulk_jobs():
 @router.post("/api/ai/bulk")
 def ai_bulk_create(action: str = Body(...), instruction: str = Body(""), only_empty: bool = Body(True),
                          ids: list[int] | None = Body(None), filter: dict | None = Body(None),
-                         auto_promote: bool = Body(False)):
-    return aibulk.create(_selected(ids, filter), action, instruction, only_empty, auto_promote)
+                         auto_promote: bool = Body(False), limit: int | None = Body(None, ge=1, le=100000)):
+    return aibulk.create(_selected(ids, filter), action, instruction, only_empty, auto_promote, limit)
 
 
 @router.post("/api/ai/bulk/{job_id}/status")

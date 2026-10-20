@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import re
 import threading
 
 from . import categories, changes, db, products
@@ -109,12 +110,18 @@ def _upsert(p: dict, counts: dict) -> None:
         row = db.query_one("SELECT id FROM products WHERE prom_id = ?", (prom_id,))
         existing = row["id"] if row else None
     if existing:
-        status = db.query_one("SELECT status FROM products WHERE id = ?", (existing,))["status"]
-        if status in ("ready", "error", "sending", "deleting"):
-            # в программе есть неотправленные правки — не затираем их данными с Prom, только связываем
+        cur = db.query_one("SELECT * FROM products WHERE id = ?", (existing,))
+        if cur["status"] in ("ready", "error", "sending", "deleting"):
+            # в программе есть неотправленные правки — не затираем их данными с Prom, только связываем; а то, что за это
+            # время поменяли и в кабинете Prom, — в «конфликт» (решает владелец в карточке), а не молча теряется
+            conflict = _conflicts(cur, data)
+            if len(conflict) > len(json.loads(cur["prom_conflict"] or "{}")):
+                counts["conflicts"] = counts.get("conflicts", 0) + 1
             with db.tx() as c:
-                c.execute("UPDATE products SET prom_id = ?, prom_no_ext = ?, prom_category_id = ? WHERE id = ?",
-                          (prom_id, 0 if external else 1, categories.from_catalog(c, p), existing))
+                c.execute("UPDATE products SET prom_id = ?, prom_no_ext = ?, prom_category_id = ?, prom_conflict = ?, "
+                          "prom_seen = ? WHERE id = ?",
+                          (prom_id, 0 if external else 1, categories.from_catalog(c, p),
+                           json.dumps(conflict, ensure_ascii=False) if conflict else "", _seen(data), existing))
             counts["kept_local"] += 1
             return
         products.update(existing, data, lock=False)
@@ -128,8 +135,46 @@ def _upsert(p: dict, counts: dict) -> None:
     with db.tx() as c:
         # категория Prom — только «что стоит на Prom»; нужную категорию (target) загрузка каталога не трогает
         c.execute("UPDATE products SET prom_id = ?, status = 'synced', synced_at = ?, last_error = '', "
-                  "pending_fields = '[]', prom_no_ext = ?, prom_category_id = ? WHERE id = ?",
-                  (prom_id, db.now(), 0 if external else 1, categories.from_catalog(c, p), pid))
+                  "pending_fields = '[]', prom_no_ext = ?, prom_category_id = ?, prom_seen = ?, prom_conflict = '' "
+                  "WHERE id = ?",
+                  (prom_id, db.now(), 0 if external else 1, categories.from_catalog(c, p), _seen(data), pid))
+
+
+# ---------- конфликты: поменяли и в программе (не отправлено), и в кабинете Prom ----------
+CONFLICT_FIELDS = ("name", "name_ua", "description", "description_ua", "price", "keywords")
+
+
+def _norm(field: str, value):
+    if field == "price":
+        try:
+            return round(float(value), 2) if value not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+    text = str(value or "")
+    if field.startswith("description"):  # Prom переформатирует HTML — сравниваем текст
+        text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _seen(data: dict) -> str:
+    """Что сейчас стоит на Prom по полям конфликта — чтобы в следующий раз понять, меняли ли их в кабинете."""
+    return json.dumps({f: data[f] for f in CONFLICT_FIELDS if f in data}, ensure_ascii=False)
+
+
+def _conflicts(cur, incoming: dict) -> dict:
+    """Поля, которые поменяли в кабинете Prom с прошлой синхронизации и которые расходятся с программой.
+    Без прошлого снимка (первая синхронизация, только что отправили) конфликта нет — сравнивать не с чем."""
+    conflict = json.loads(cur["prom_conflict"] or "{}")
+    seen = json.loads(cur["prom_seen"] or "{}")
+    for f in CONFLICT_FIELDS:
+        if f not in incoming or f not in seen:
+            continue
+        new, was, local = _norm(f, incoming[f]), _norm(f, seen[f]), _norm(f, cur[f])
+        if new != was and new != local:
+            conflict[f] = incoming[f]
+        elif new == local:
+            conflict.pop(f, None)  # в кабинете сделали так же, как у нас — конфликта нет
+    return conflict
 
 
 def _own_id(sku: str, prom_id) -> str:
@@ -426,7 +471,7 @@ def _upsert_page(page: list[dict], counts: dict) -> None:
 async def load(client) -> dict:
     """Проходит весь каталог. client — PromClient."""
     counts = {"seen": 0, "created": 0, "updated": 0, "skipped": 0, "no_external_id": 0, "kept_local": 0,
-              "missing_on_prom": 0}
+              "missing_on_prom": 0, "conflicts": 0}
     seen: set[int] = set()
     last_id = None
     while True:
@@ -564,13 +609,16 @@ async def run_auto(client_factory) -> dict | None:
         log.warning("Автосинхронизация с Prom: %s", exc)
         return None
     _set_state(auto=True)
-    created, missing = counts.get("created", 0), counts.get("missing_on_prom", 0)
-    if created or missing:
+    created, missing, conflicts = counts.get("created", 0), counts.get("missing_on_prom", 0), counts.get("conflicts", 0)
+    if created or missing or conflicts:
         lines = ["🔄 <b>Синхронизация с Prom</b>"]
         if created:
             lines.append(f"На Prom вручную добавили товаров: {created} — теперь они и в программе (статус «На Prom»).")
         if missing:
             lines.append(f"Пропали с Prom (удалены в кабинете?): {missing} — в программе у них статус «Ошибка».")
+        if conflicts:
+            lines.append(f"Конфликты: {conflicts} — товар поменяли и в кабинете Prom, и в программе. Решите в карточке "
+                         "товара («Товары» → «⚡ Конфликты с кабинетом Prom»).")
         notify.send("prom_sync", "\n".join(lines))
     return counts
 

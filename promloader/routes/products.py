@@ -129,6 +129,17 @@ def create_product(data: dict = Body(default={})):
     return products.get(products.create(data))
 
 
+@router.get("/api/products/alerts")
+def products_alerts():
+    """Раньше маршрута /api/products/{product_id}. Конфликты с кабинетом Prom и возможные дубли — для полоски над списком."""
+    return products.list_alerts()
+
+
+@router.post("/api/products/{product_id}/prom-conflict")
+def product_conflict(product_id: int, action: str = Body(...), fields: list[str] | None = Body(None)):
+    return products.resolve_conflict(product_id, action, fields)
+
+
 @router.get("/api/products/readiness")
 def products_readiness(request: Request):
     """Раньше маршрута /api/products/{product_id}: иначе «readiness» попал бы в него.
@@ -221,8 +232,9 @@ def ai_choose(provider: str | None = Body(None), model: str | None = Body(None),
 
 
 @router.post("/api/ai/bulk/estimate")
-def ai_bulk_estimate(action: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
-    return aibulk.estimate(len(_selected(ids, filter)), action)
+def ai_bulk_estimate(action: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None),
+                     limit: int | None = Body(None, ge=1, le=100000)):
+    return aibulk.estimate(len(_selected(ids, filter)), action, limit)
 
 
 @router.post("/api/ai/check")

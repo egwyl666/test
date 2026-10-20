@@ -164,8 +164,10 @@ def _finish_products(job_products: dict, ok: bool, message: str = "", per_produc
                            else f"ошибка: {own_error or message}", who="Prom")
             if ok and not own_error:
                 c.execute(
-                    "UPDATE products SET status = 'synced', last_error = '', synced_at = ?, pending_fields = '[]' "
-                    "WHERE id = ? AND status = 'sending'", (ts, int(pid))
+                    # prom_seen сбрасываем: на Prom теперь наша версия (возможно, с его форматированием) — следующая
+                    # синхронизация запомнит её заново, а не примет за «поменяли в кабинете»
+                    "UPDATE products SET status = 'synced', last_error = '', synced_at = ?, pending_fields = '[]', "
+                    "prom_seen = '' WHERE id = ? AND status = 'sending'", (ts, int(pid))
                 )
             else:
                 c.execute(

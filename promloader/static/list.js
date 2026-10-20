@@ -3,7 +3,7 @@
 const PAGE = 200;
 // фильтры списка — те же имена, что у /api/products; хранятся и в адресе страницы (?group=…&sort=…)
 const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "prom_category", "cat_mismatch",
-                 "readiness", "profit"];
+                 "readiness", "profit", "duplicates", "conflict"];
 const START = new URLSearchParams(location.search);
 const list = {
   ...Object.fromEntries(FILTERS.map((k) => [k, START.get(k) || ""])),
@@ -58,7 +58,10 @@ async function loadProducts(append = false) {
   list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
   renderChips(data.counts);
   renderRows();
-  if (!append) loadReadiness().catch(() => {});
+  if (!append) {
+    loadReadiness().catch(() => {});
+    loadAlerts().catch(() => {});
+  }
   // пока товары удаляются с Prom — обновляем список, чтобы было видно, как они уходят
   if (data.counts.deleting) refreshList(5000);
 }
@@ -84,6 +87,22 @@ function renderChips(counts) {
   }));
 }
 
+// Предупреждения над списком: конфликты с кабинетом Prom (поменяли и там, и в программе) и возможные дубли
+async function loadAlerts() {
+  const r = await api("/api/products/alerts");
+  const chip = (key, label, n, cls) => `<button class="chip ${list[key] ? "active" : ""} ${cls}" data-alert="${key}">${esc(I18N.tr(label))}<b>${n}</b></button>`;
+  const html = [r.conflicts ? chip("conflict", "⚡ Конфликты с кабинетом Prom", r.conflicts, "alert-conflict") : "",
+                r.duplicates ? chip("duplicates", "🔍 Возможные дубли", r.duplicates, "") : ""].join("");
+  $("#list-alerts").innerHTML = html;
+  $("#list-alerts").classList.toggle("hidden", !html && !list.conflict && !list.duplicates);
+}
+$("#list-alerts").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-alert]");
+  if (!b) return;
+  list[b.dataset.alert] = list[b.dataset.alert] ? "" : "1";
+  applyFilters();
+});
+
 // Полоска над черновиками: сколько готовы для Prom (кнопка «В «Готов к отправке»») и чего не хватает остальным.
 // Учитывает остальные фильтры списка (поставщик, поиск, группа). Видна, только когда выбраны «Черновики».
 const READINESS_ORDER = ["missing_ua", "missing_keywords", "missing_price_or_photo", "needs_manual"];
@@ -98,7 +117,9 @@ async function loadReadiness() {
   bar.innerHTML = `<span class="small muted">Черновики:</span> ${pill("ready_to_promote", r.ready_to_promote)}
     ${READINESS_ORDER.filter((k) => r[k]).map((k) => pill(k, r[k])).join(" ")}
     <span class="spacer"></span>
-    ${aiTarget(r) ? `<button class="btn small" id="readiness-ai" data-n="${aiTarget(r)}">✨ Заполнить через ИИ (${aiTarget(r)})</button>` : ""}
+    ${list.readiness === "needs_manual" && r.needs_manual
+      ? `<button class="btn small" id="readiness-photo" data-n="${r.needs_manual}">📷 Заполнить по фото (${r.needs_manual})</button>`
+      : aiTarget(r) ? `<button class="btn small" id="readiness-ai" data-n="${aiTarget(r)}">✨ Заполнить через ИИ (${aiTarget(r)})</button>` : ""}
     ${r.ready_to_promote ? `<button class="btn small primary" id="promote-ready">В «Готов к отправке» (${r.ready_to_promote})</button>` : ""}`;
   bar.classList.toggle("hidden", !r.drafts);
 }
@@ -109,6 +130,13 @@ function aiTarget(r) {
   return r.missing_ai || 0;
 }
 $("#readiness").addEventListener("click", (e) => {
+  const photo = e.target.closest("#readiness-photo");
+  if (photo) {
+    // «мало данных»: ИИ описывает товар по его фото (по одному товару на запрос)
+    const base = Object.fromEntries(Object.entries(filterParams()).filter(([k]) => k !== "readiness"));
+    openAiModal({ filter: { ...base, status: "draft", readiness: "needs_manual" } }, { count: Number(photo.dataset.n), action: "from_photo" });
+    return;
+  }
   const ai = e.target.closest("#readiness-ai");
   if (ai) {
     const base = Object.fromEntries(Object.entries(filterParams()).filter(([k]) => k !== "readiness"));
@@ -186,6 +214,8 @@ function renderRows() {
           : `<a class="name" href="/product?id=${p.id}"><span class="muted">Без названия</span></a>`}
         <div class="small muted"><span translate="no">${esc(p.external_id)}</span> · <span>фото: ${p.image_count}</span>${p.supplier_name ? ` · <span translate="no">${esc(p.supplier_name)}</span>` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
         <div class="show-sm" style="margin-top:4px">${statusBadge(p.status)}</div>
+        ${p.dup ? `<div class="small dup-note">${esc(I18N.tr("дубль по"))} ${esc(I18N.tr(p.dup.kind))}: <span translate="no">${esc(p.dup.key.slice(0, 40))}</span>${p.margin_uah !== null && p.margin_uah !== undefined ? ` · ${esc(I18N.tr("наценка"))} ${esc(formatPrice(p.margin_uah, "UAH"))}` : ""}</div>` : ""}
+        ${p.prom_conflict ? `<div class="small conflict-note">⚡ ${esc(I18N.tr("конфликт с кабинетом Prom — откройте товар"))}</div>` : ""}
         ${problems}${promError}${deleting}
       </td>
       <td class="hide-sm" translate="no">${esc(p.group_name)}</td>
@@ -281,6 +311,8 @@ function renderFilterControls() {
   for (const [k, label] of Object.entries(FLAG_LABELS)) if (list[k]) active.push([k, label]);
   if (list.readiness) active.push(["readiness", READINESS_FILTER_LABELS[list.readiness] || list.readiness]);
   if (list.profit) active.push(["profit", $(`#f-profit option[value="${list.profit}"]`)?.textContent || list.profit]);
+  if (list.conflict) active.push(["conflict", "конфликты с кабинетом Prom"]);
+  if (list.duplicates) active.push(["duplicates", "возможные дубли"]);
   $("#active-filters").innerHTML = active.map(([k, label]) =>
     `<button class="chip active" data-clear="${k}" title="Убрать фильтр">${esc(label)} ×</button>`).join("");
   const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0) + (list.prom_category ? 1 : 0);
@@ -447,11 +479,12 @@ function summarizeResult(r) {
 // ---------- массовый ИИ ----------
 
 // «Подготовить для Prom» — первым: перевод и ключевые слова одним заданием (и одним запросом на 5 товаров)
-const AI_BULK = ["prepare_prom", "translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
+const AI_BULK = ["prepare_prom", "from_photo", "translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
 let aiSel = { ids: [] };
 let aiRate = 8;
 
 let aiCount = 0;
+const aiLimit = () => Number($("#ai-limit").value) || null;
 // opts.count — сколько товаров (запуск из полоски готовности: выборка — фильтр, а не отмеченные строки),
 // opts.action — какое действие выбрать сразу
 function openAiModal(sel, opts = {}) {
@@ -464,7 +497,10 @@ function openAiModal(sel, opts = {}) {
   $("#ai-count").textContent = aiCount;
   $("#ai-action").innerHTML = AI_BULK.map((k) => `<option value="${k}">${esc(META.ai.actions[k])}</option>`).join("");
   if (opts.action) $("#ai-action").value = opts.action;
-  $("#ai-auto-promote").checked = $("#ai-action").value === "prepare_prom";
+  // «первые N по выгоде» — пробный прогон на лучших товарах, а не на всех тысячах; для маленькой выборки не нужен
+  $("#ai-limit").value = "";
+  $("#ai-limit-wrap").classList.toggle("hidden", aiCount <= 20);
+  $("#ai-auto-promote").checked = ["prepare_prom", "from_photo"].includes($("#ai-action").value);
   updateAiModal();
   $("#ai-modal").classList.remove("hidden");
 }
@@ -473,16 +509,18 @@ let aiEstimateSeq = 0;
 async function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
-  $("#ai-empty-wrap").classList.toggle("hidden", !["prepare_prom", "translate_ua", "translate_ru", "keywords", "improve"].includes(action));
-  const minutes = Math.ceil(aiCount / aiRate);
-  $("#ai-promote-wrap").classList.toggle("hidden", !["prepare_prom", "translate_ua", "keywords"].includes(action));
+  $("#ai-empty-wrap").classList.toggle("hidden", !["prepare_prom", "from_photo", "translate_ua", "translate_ru", "keywords", "improve"].includes(action));
+  const count = Math.min(aiCount, aiLimit() || aiCount);
+  $("#ai-count").textContent = count;
+  const minutes = Math.ceil(count / aiRate);
+  $("#ai-promote-wrap").classList.toggle("hidden", !["prepare_prom", "from_photo", "translate_ua", "keywords"].includes(action));
   const pace = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
   $("#ai-eta").textContent = pace;
   $("#ai-cost").innerHTML = `<span class="muted">Считаю, сколько это будет стоить…</span>`;
   const seq = ++aiEstimateSeq;
   let e;
   try {
-    e = await api("/api/ai/bulk/estimate", { method: "POST", json: { ...aiSel, action } });
+    e = await api("/api/ai/bulk/estimate", { method: "POST", json: { ...aiSel, action, limit: aiLimit() } });
   } catch (err) {
     if (seq === aiEstimateSeq) $("#ai-cost").textContent = "";
     return;
@@ -509,9 +547,10 @@ async function updateAiModal() {
   $("#ai-cost").innerHTML = text;
 }
 
+$("#ai-limit").addEventListener("change", updateAiModal);
 $("#ai-action").addEventListener("change", () => {
   // «сразу в «Готов к отправке»» по умолчанию включено для «Подготовить для Prom»
-  $("#ai-auto-promote").checked = $("#ai-action").value === "prepare_prom";
+  $("#ai-auto-promote").checked = ["prepare_prom", "from_photo"].includes($("#ai-action").value);
   updateAiModal();
 });
 $("#ai-cancel-modal").addEventListener("click", () => $("#ai-modal").classList.add("hidden"));
@@ -520,6 +559,7 @@ $("#ai-start").addEventListener("click", async () => {
     await api("/api/ai/bulk", { method: "POST", json: {
       ...aiSel, action: $("#ai-action").value, instruction: $("#ai-instr").value, only_empty: $("#ai-only-empty").checked,
       auto_promote: !$("#ai-promote-wrap").classList.contains("hidden") && $("#ai-auto-promote").checked,
+      limit: aiLimit(),
     } });
     $("#ai-modal").classList.add("hidden");
     toast("Задание для ИИ запущено", "ok");

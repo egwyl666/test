@@ -15,12 +15,14 @@ from . import changes as changes_log
 
 log = logging.getLogger("promloader.aibulk")
 
-BULK_ACTIONS = ("prepare_prom", "improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
+BULK_ACTIONS = ("prepare_prom", "from_photo", "improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
 ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 # (что пропускать целиком — ai.already_done; эти поля при «только где пусто» не перезаписываются, если уже заполнены)
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",),
-               "prepare_prom": ("name_ua", "description_ua", "keywords")}
+               "prepare_prom": ("name_ua", "description_ua", "keywords"),
+               # по фото: название можно улучшить (оно короткое и непонятное), остальное — только если пусто
+               "from_photo": ("description", "name_ua", "description_ua", "keywords")}
 DEFAULT_RATE = {"gemini": 8, "claude": 30}
 RATE_LIMIT_PAUSE = 60
 MAX_ATTEMPTS = 3
@@ -38,7 +40,8 @@ def rate_per_minute() -> int:
 
 
 def create(product_ids: list[int], action: str, instruction: str = "", only_empty: bool = True,
-           auto_promote: bool = False) -> dict:
+           auto_promote: bool = False, limit: int | None = None) -> dict:
+    """limit — только первые N по выгоде (пробный прогон на 20–50 лучших товарах, а не на всех 6000)."""
     if action not in BULK_ACTIONS:
         raise BulkError("Неизвестное действие")
     if action == "custom" and not instruction.strip():
@@ -47,6 +50,8 @@ def create(product_ids: list[int], action: str, instruction: str = "", only_empt
         raise BulkError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
     # очередь по выгоде: сначала в наличии, с фото и с большей наценкой — бесплатный лимит ИИ тратится на них первыми
     ids = products.profit_order(sorted(set(product_ids)))
+    if limit:
+        ids = ids[:max(1, int(limit))]
     if not ids:
         raise BulkError("Не выбрано ни одного товара")
     ts = db.now()
@@ -76,8 +81,10 @@ def get(job_id: int) -> dict:
     return job
 
 
-def estimate(count: int, action: str) -> dict:
+def estimate(count: int, action: str, limit: int | None = None) -> dict:
     """Сколько примерно обойдётся задание: средняя цена последних запросов этой модели, иначе — типичный запрос."""
+    if limit:
+        count = min(count, max(1, int(limit)))
     s = ai.settings()
     model = s["model"] or (db.get_setting("gemini_model_used") if s["provider"] == "gemini" else "")
     per = aiprice.average_cost(s["provider"], model, action) if model else None
@@ -232,6 +239,9 @@ def _prepare(item):
         _mark(item["id"], "skipped", "уже заполнено")  # например, украинский текст пришёл со второй ссылки поставщика
         # «сразу в «Готов»»: товар без ИИ уже готов — его тоже переводим (иначе он остался бы черновиком)
         _auto_promote(item, [p["id"]])
+        return None
+    if item["action"] == "from_photo" and not products.image_rows(p["id"]):
+        _mark(item["id"], "skipped", "нет фото")  # без фото описывать нечего — запрос не тратим
         return None
     if item["action"] == "prepare_prom" and ai.too_little_data(p):
         # не выдумываем по названию «Чехол 123»: товар остаётся в «мало данных — заполнить вручную»

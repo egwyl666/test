@@ -129,6 +129,9 @@
           <textarea id="ai-instr" rows="3" style="min-height:70px" placeholder="Например: добавь в конец описания абзац про бесплатную доставку от 1000 грн"></textarea></label>
         <label class="small" id="ai-empty-wrap" style="display:block;margin-bottom:12px"><input type="checkbox" id="ai-only-empty" checked>
           только товары, где это ещё не заполнено</label>
+        <label class="field" id="ai-limit-wrap" style="margin-bottom:10px"><span>Ограничить первыми N товарами (по выгоде)</span>
+          <select id="ai-limit"><option value="">все</option><option value="20">20</option><option value="50">50</option>
+            <option value="100">100</option><option value="500">500</option></select></label>
         <label class="small" id="ai-promote-wrap" style="display:block;margin-bottom:12px"><input type="checkbox" id="ai-auto-promote">
           Переводить готовые черновики в «Готов к отправке» сразу после обработки</label>
         <p class="small" id="ai-cost"></p>
@@ -148,6 +151,7 @@
         <select id="supplier-filter" style="max-width:220px"></select>
         <input id="search" placeholder="Поиск: название, артикул, группа" style="max-width:300px">
       </div>
+      <div class="chips list-alerts hidden" id="list-alerts"></div>
       <div class="toolbar readiness-bar hidden" id="readiness"></div>
       <div class="toolbar list-filters" id="filters">
         <select id="f-group" title="Группа"></select>

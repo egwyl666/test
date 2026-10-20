@@ -328,6 +328,8 @@ CREATE TABLE IF NOT EXISTS group_categories (
 # Колонки, добавленные после первой версии: для уже существующих баз добавляются через ALTER TABLE.
 MIGRATIONS = {
     "products": {
+        "prom_conflict": "TEXT NOT NULL DEFAULT ''",
+        "prom_seen": "TEXT NOT NULL DEFAULT ''",
         "cost_price": "REAL",
         "rrp": "REAL",
         "supplier_id": "INTEGER REFERENCES suppliers(id) ON DELETE SET NULL",

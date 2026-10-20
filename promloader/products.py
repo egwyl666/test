@@ -312,6 +312,7 @@ def get(product_id: int) -> dict:
         except rates.RateError:
             pass
     p["origins"] = origins(product_id, p)
+    p["prom_conflict"] = json.loads(p.get("prom_conflict") or "{}")
     p["supplier"] = None
     if p["supplier_id"]:
         s = db.query_one("SELECT id, name FROM suppliers WHERE id = ?", (p["supplier_id"],))
@@ -432,7 +433,7 @@ def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
 
 
 FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors",
-               "prom_category", "cat_mismatch", "readiness", "profit")
+               "prom_category", "cat_mismatch", "readiness", "profit", "duplicates", "conflict")
 
 # Готовность черновика к Prom (полоска над черновиками): цена, фото, название, украинский текст, ключевые слова.
 # Украинское описание нужно, только если есть русское — без описания товар на Prom тоже выставляется.
@@ -444,12 +445,12 @@ _NEEDS_MANUAL = ("(LENGTH(TRIM(COALESCE(p.description, ''))) < 30 AND LENGTH(TRI
                  "AND COALESCE(p.params, '[]') IN ('[]', '') AND TRIM(COALESCE(p.vendor, '')) = '')")
 READINESS = {
     # длина названия — как в validate(): длиннее 255 символов Prom не примет, «готовым» такой товар не считаем
-    "ready_to_promote": f"COALESCE(p.price, 0) > 0 AND {_PHOTO} AND {_FILLED.format(f='name')} "
+    "ready_to_promote": f"COALESCE(p.price, 0) >= 1 AND {_PHOTO} AND {_FILLED.format(f='name')} "
                         f"AND LENGTH(p.name) <= 255 AND NOT {_NEEDS_MANUAL} AND {_HAS_UA} "
                         f"AND {_FILLED.format(f='keywords')}",
     "missing_ua": f"NOT ({_HAS_UA})",
     "missing_keywords": f"NOT {_FILLED.format(f='keywords')}",
-    "missing_price_or_photo": f"(COALESCE(p.price, 0) <= 0 OR NOT {_PHOTO})",
+    "missing_price_or_photo": f"(COALESCE(p.price, 0) < 1 OR NOT {_PHOTO})",
     # для «✨ Заполнить через ИИ»: не хватает того, что делает «Подготовить для Prom» (и ИИ есть из чего писать)
     "missing_ai": f"(NOT ({_HAS_UA}) OR NOT {_FILLED.format(f='keywords')}) AND NOT {_NEEDS_MANUAL}",
     "needs_manual": _NEEDS_MANUAL,
@@ -509,6 +510,8 @@ def _filter_where(flt: dict, with_status: bool = True) -> tuple[str, list]:
         # Prom поставил не ту категорию, которую мы хотим
         where.append("p.target_category_id IS NOT NULL AND p.prom_category_id IS NOT NULL "
                      "AND p.target_category_id != p.prom_category_id")
+    if flt.get("conflict") in _TRUE:
+        where.append("p.prom_conflict != ''")
     if flt.get("readiness") in READINESS:
         where.append(f"p.status = 'draft' AND {READINESS[flt['readiness']]}")
     q = flt.get("q") or ""
@@ -532,7 +535,7 @@ def _has_errors(row) -> bool:
 
 def ids_for_filter(flt: dict) -> list[int]:
     """Все товары по фильтру списка («выбрать все N по фильтру»), а не только загруженные на странице."""
-    if flt.get("profit") in PROFIT_FILTERS:
+    if flt.get("profit") in PROFIT_FILTERS or flt.get("duplicates") in _TRUE:
         return sorted(r["id"] for r in _rows(flt)[0])
     clause, args = _filter_where(flt)
     if flt.get("errors") in _TRUE:
@@ -619,6 +622,71 @@ def low_margin(supplier_id: int | None = None, limit: int | None = 200) -> list[
     return out[:limit] if limit else out
 
 
+# ---------- конфликты с кабинетом Prom ----------
+
+def resolve_conflict(product_id: int, action: str, fields: list[str] | None = None) -> dict:
+    """take — взять значения из кабинета Prom; keep — оставить как в программе. fields — какие поля (None — все)."""
+    if action not in ("take", "keep"):
+        raise ProductError("Конфликт: выберите «Взять с Prom» или «Оставить как в программе»")
+    row = db.query_one("SELECT prom_conflict FROM products WHERE id = ?", (product_id,))
+    if row is None:
+        raise KeyError(product_id)
+    conflict = json.loads(row["prom_conflict"] or "{}")
+    chosen = {f: v for f, v in conflict.items() if fields is None or f in fields}
+    if action == "take" and chosen:
+        from . import changes
+        with changes.source("Каталог с Prom (конфликт)"):
+            update(product_id, chosen, lock=False)
+    rest = {f: v for f, v in conflict.items() if f not in chosen}
+    with db.tx() as c:
+        c.execute("UPDATE products SET prom_conflict = ? WHERE id = ?",
+                  (json.dumps(rest, ensure_ascii=False) if rest else "", product_id))
+    return get(product_id)
+
+
+def list_alerts() -> dict:
+    """Предупреждения над списком: конфликты с кабинетом Prom и возможные дубли."""
+    conflicts = db.query_one("SELECT COUNT(*) AS n FROM products WHERE prom_conflict != ''")["n"]
+    return {"conflicts": conflicts, "duplicates": sum(len(g["ids"]) for g in find_duplicates())}
+
+
+# ---------- возможные дубли (один товар у двух поставщиков или дважды в каталоге) ----------
+
+def _norm_code(value) -> str:
+    return re.sub(r"[^0-9a-zа-яіїєґ]", "", str(value or "").lower())
+
+
+def _norm_name(value) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", str(value or "").lower())).strip()
+
+
+def find_duplicates() -> list[dict]:
+    """Группы товаров, похожих на один и тот же: одинаковый штрихкод, код поставщика (от 4 символов) или название.
+    Удаляемые товары не учитываются. Товар попадает в одну группу (первое совпадение: штрихкод → код → название)."""
+    rows = db.query("""SELECT p.id, p.name, p.barcode, p.vendor_code, p.supplier_id, p.status
+                       FROM products p WHERE p.status != 'deleting'""")
+    groups: dict = {}
+    taken: set = set()
+    for kind, keyfn, minimum in (("barcode", lambda r: re.sub(r"\D", "", r["barcode"] or ""), 8),
+                                 ("vendor_code", lambda r: _norm_code(r["vendor_code"]), 4),
+                                 ("name", lambda r: _norm_name(r["name"]), 6)):
+        by_key: dict = {}
+        for r in rows:
+            if r["id"] in taken:
+                continue
+            key = keyfn(r)
+            if len(key) >= minimum:
+                by_key.setdefault(key, []).append(r["id"])
+        for key, ids in by_key.items():
+            if len(ids) > 1:
+                groups[(kind, key)] = ids
+                taken.update(ids)
+    return [{"kind": kind, "key": key, "ids": ids} for (kind, key), ids in groups.items()]
+
+
+DUPLICATE_KINDS = {"barcode": "штрихкод", "vendor_code": "код поставщика", "name": "название"}
+
+
 def profit_order(ids: list[int]) -> list[int]:
     """Очередь массового ИИ: сначала товары в наличии, с фото и с наибольшей наценкой — их выгоднее подготовить первыми."""
     if not ids:
@@ -637,6 +705,22 @@ def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: in
     order = SORTS.get(sort) or SORTS["updated"]
     clause, args = _filter_where(flt)
     count_clause, count_args = _filter_where(flt, with_status=False)
+    if flt.get("duplicates") in _TRUE:
+        # дубли — группами рядом: внутри группы сначала выгодный (его и оставлять), группы — по названию
+        groups = find_duplicates()
+        position = {pid: (gi, n) for gi, g in enumerate(groups) for n, pid in enumerate(g["ids"])}
+        all_rows = [r for r in db.query(f"{LIST_SELECT} {count_clause}", count_args) if r["id"] in position]
+        if flt.get("profit") in PROFIT_FILTERS or sort in PROFIT_SORTS:
+            all_rows = _profit_rows(all_rows, flt, sort)
+        from . import rates
+        table = rates.Table()
+        all_rows.sort(key=lambda r: (position[r["id"]][0], -((margin(r, table)[0]) or -1e12)))
+        counts: dict = {}
+        for r in all_rows:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
+        matching = [r for r in all_rows if not flt.get("status") or r["status"] == flt["status"]]
+        page = matching[offset:offset + limit] if limit is not None else matching[offset:]
+        return page, len(matching), counts
     if sort in PROFIT_SORTS or flt.get("profit") in PROFIT_FILTERS:
         all_rows = db.query(f"{LIST_SELECT} {count_clause} ORDER BY {SORTS['updated']}", count_args)
         if flt.get("errors") in _TRUE:
@@ -683,13 +767,19 @@ def list_products(flt: dict | None = None, sort: str = "updated", limit: int = 2
                   SELECT MAX(id) FROM product_changes WHERE field = 'price' AND product_id IN ({marks})
                   GROUP BY product_id)""", ids)}
     table = rates.Table()
+    dup = {}
+    if (flt or {}).get("duplicates") in _TRUE:  # «дубль по: штрихкод 4820…» — чтобы было видно, что их объединяет
+        dup = {pid: {"group": n, "kind": DUPLICATE_KINDS[g["kind"]], "key": g["key"]}
+               for n, g in enumerate(find_duplicates()) for pid in g["ids"]}
     items = []
     for r in rows:
         p = _row_to_dict(r)
         p["check"] = validate(p, image_count=p["image_count"])
         p["cost_uah"] = _in_uah(table, p["cost_price"], p["cost_currency"], p["supplier_id"])
         p["rrp_uah"] = _in_uah(table, p["rrp"], p["cost_currency"], p["supplier_id"])
+        p["margin_uah"] = margin(r, table)[0]
         p["price_change"] = last_price.get(p["id"])
+        p["dup"] = dup.get(p["id"])
         items.append(p)
     return {"items": items, "total": total, "counts": counts}
 
@@ -723,6 +813,9 @@ def looks_ukrainian(text: str) -> bool:
     return bool(_UA_ONLY.search(text or "")) and not _RU_ONLY.search(text or "")
 
 
+MIN_PRICE = 1.0  # цена в гривнах ниже этого — почти наверняка ошибка
+
+
 def validate(p: dict, image_count: int | None = None) -> dict:
     """errors — отправлять нельзя; warnings — можно, но карточка будет слабой."""
     errors, warnings = [], []
@@ -735,6 +828,9 @@ def validate(p: dict, image_count: int | None = None) -> dict:
         errors.append("Не указана цена")
     elif price <= 0:
         errors.append("Цена должна быть больше нуля")
+    elif price < MIN_PRICE and (p.get("currency") or "UAH").upper() in ("UAH", "ГРН"):
+        # 0,1 грн почти всегда ошибка (опт в другой колонке, правка в кабинете, лишняя запятая) — на Prom не пускаем
+        errors.append("Цена меньше 1 грн — похоже на ошибку, проверьте цену")
     cost = p.get("cost_price")
     if cost is not None and price is not None and price < cost:
         warnings.append("Цена ниже закупочной")

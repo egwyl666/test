@@ -716,3 +716,12 @@ a.kpi-link:hover { border-color: var(--accent); }
 .origin-supplier { background: #e8f3ff; color: #1f5fa8; }
 .origin-manual { background: #eaf7ee; color: #23753d; }
 .origin-import, .origin-prom { background: #fff4e3; color: #8a5a00; }
+.list-alerts { margin: 0 0 8px; }
+.chip.alert-conflict { border-color: #e0a100; background: #fff7e0; }
+.chip.alert-conflict.active { background: #8a5a00; border-color: #8a5a00; color: #fff; }
+.dup-note { color: #1f5fa8; margin-top: 2px; }
+.conflict-note { color: #8a5a00; margin-top: 2px; }
+.conflict-panel { border: 2px solid #e0a100; background: #fffaf0; }
+.conflict-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
+.conflict-row .side { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-height: 160px; overflow: auto; }
+@media (max-width: 640px) { .conflict-row { grid-template-columns: 1fr; } }
