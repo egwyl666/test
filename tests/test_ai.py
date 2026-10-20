@@ -211,11 +211,12 @@ def test_removed_model_switches_to_auto():
     assert calls == ["gemini-2.5-flash", "gemini-3.8-flash"] and db.get_setting("gemini_model") == ""
 
 
-def test_overloaded_model_retried_then_next_model():
+def test_overloaded_model_switches_to_next_model_at_once():
+    """2.17.5: перегруженную модель не пережидаем (раньше 3 попытки и 11 с), если есть на что переключиться."""
     use("gemini")
     transport, calls = gemini_server({"gemini-3.8-flash": 503})
     ai.run(PRODUCT, "improve", transport=transport)
-    assert calls == ["gemini-3.8-flash"] * 3 + ["gemini-2.0-flash-001"]
+    assert calls == ["gemini-3.8-flash", "gemini-2.0-flash-001"]
 
 
 def test_overload_everywhere_is_temporary_error():

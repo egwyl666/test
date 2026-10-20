@@ -15,6 +15,7 @@ from . import changes as changes_log
 BULK_ACTIONS = ("improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
 ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
+# (что пропускать целиком — ai.already_done; эти поля при «только где пусто» не перезаписываются, если уже заполнены)
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",)}
 DEFAULT_RATE = {"gemini": 8, "claude": 30}
 RATE_LIMIT_PAUSE = 60
@@ -167,9 +168,8 @@ def _prepare(item):
     except KeyError:
         _mark(item["id"], "skipped", "товар удалён")
         return None
-    fields = EMPTY_CHECK.get(item["action"])
-    if item["only_empty"] and fields and all((p.get(f) or "").strip() for f in fields):
-        _mark(item["id"], "skipped", "уже заполнено")
+    if item["only_empty"] and ai.already_done(p, item["action"]):
+        _mark(item["id"], "skipped", "уже заполнено")  # например, украинский текст пришёл со второй ссылки поставщика
         return None
     if ai.nothing_to_translate(p, item["action"]):
         _mark(item["id"], "skipped", "нет украинского текста")  # запрос к ИИ не нужен и не оплачивается

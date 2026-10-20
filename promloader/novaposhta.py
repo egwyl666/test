@@ -16,6 +16,7 @@ methodProperties} → {success, data, errors, warnings}.
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -59,15 +60,56 @@ def setting(key: str) -> str:
     return db.get_setting(key) or NP_DEFAULTS.get(key, "")
 
 
+NET_RETRIES = 2          # повторов при сбое сети (getaddrinfo failed, WinError 10013 — бывает на Windows кратко)
+NET_DELAY = 1.5          # секунд между попытками
+# методы, которые что-то создают или удаляют: их повторяем, только если запрос точно не ушёл (не удалось
+# соединиться), — иначе после обрыва ответа можно создать вторую ТТН
+MUTATING = {"save", "delete", "update"}
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _network_error(exc: Exception) -> NPError:
+    """Понятный текст вместо «[WinError 10013] An attempt was made…» — без адресов и ключа."""
+    text = str(exc)
+    if "getaddrinfo" in text or "11001" in text or "Name or service not known" in text:
+        return NPError("Нет связи с Новой Почтой: компьютер не нашёл её сервер (нет интернета или DNS). "
+                       "Программа повторит позже")
+    if "10013" in text or "forbidden by its access permissions" in text:
+        return NPError("Нет связи с Новой Почтой: Windows не пустила программу в интернет — проверьте антивирус "
+                       "или брандмауэр. Программа повторит позже")
+    if isinstance(exc, httpx.TimeoutException):
+        return NPError("Нет связи с Новой Почтой: сервер не ответил вовремя. Программа повторит позже")
+    return NPError("Нет связи с Новой Почтой: нет подключения к интернету или сервер недоступен. Программа повторит позже")
+
+
+def _request(send, safe: bool = True):
+    """send() — один HTTP-запрос. Сетевой сбой повторяем NET_RETRIES раз; safe=False — только сбой соединения."""
+    for attempt in range(NET_RETRIES + 1):
+        try:
+            return send()
+        except (httpx.TransportError, OSError) as exc:
+            retryable = safe or isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, OSError))
+            if attempt == NET_RETRIES or not retryable:
+                raise _network_error(exc) from None
+            log.info("Нова Пошта: сбой сети, повтор %s из %s", attempt + 1, NET_RETRIES)
+            _sleep(NET_DELAY)
+
+
 def call(model: str, method: str, props: dict | None = None, key: str | None = None, transport=None) -> list:
     body = {"apiKey": api_key() if key is None else key, "modelName": model, "calledMethod": method,
             "methodProperties": props or {}}
-    try:
+
+    def send():
         with httpx.Client(timeout=TIMEOUT, transport=transport) as client:
-            r = client.post(API, json=body)
+            return client.post(API, json=body)
+    r = _request(send, safe=method not in MUTATING)
+    try:
         data = r.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise NPError(f"Нет связи с Новой Почтой: {exc}")
+    except ValueError:
+        raise NPError(f"Нова Пошта ответила не по форме (HTTP {r.status_code}) — попробуйте позже")
     if not data.get("success"):
         errors = "; ".join(str(e) for e in (data.get("errors") or [])) or f"ошибка {r.status_code}"
         raise NPError(f"Нова Пошта: {errors}")
@@ -260,11 +302,10 @@ def label_pdf(order_id: int, transport=None) -> bytes:
         raise NPError("У заказа нет ТТН")
     if not api_key():
         raise NPError("Для печати нужен ключ API Новой Почты в «Настройках»")
-    try:
+    def send():
         with httpx.Client(timeout=TIMEOUT, follow_redirects=True, transport=transport) as client:
-            r = client.get(LABEL_URL.format(number=s["ttn"], key=api_key()))
-    except httpx.HTTPError as exc:
-        raise NPError(f"Нет связи с Новой Почтой: {exc}")
+            return client.get(LABEL_URL.format(number=s["ttn"], key=api_key()))
+    r = _request(send)
     if r.status_code != 200 or not r.content.startswith(b"%PDF"):
         raise NPError("Нова Пошта не отдала этикетку — откройте ТТН в кабинете Новой Почты")
     return r.content

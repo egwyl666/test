@@ -221,6 +221,26 @@ def _clean(result: dict, p: dict) -> dict:
     return changes
 
 
+def already_done(p: dict, action: str) -> bool:
+    """Для режима «только где пусто»: результат действия у товара уже есть — запрос к ИИ не нужен.
+    translate_ua: есть украинское название и, если есть описание, украинское описание (так бывает у поставщиков
+    со второй, украинской ссылкой). translate_ru: русский текст уже есть рядом с украинским."""
+    def filled(f):
+        return bool((p.get(f) or "").strip())
+    if action == "translate_ua":
+        return filled("name_ua") and (filled("description_ua") or not filled("description"))
+    if action == "translate_ru":
+        from .products import looks_ukrainian
+        return (filled("name_ua") and filled("name") and not looks_ukrainian(p["name"])
+                and (not filled("description") or not looks_ukrainian(p["description"]))
+                and (filled("description") or not filled("description_ua")))
+    if action == "keywords":
+        return filled("keywords")
+    if action == "improve":
+        return filled("description")
+    return False
+
+
 NOTHING_TO_TRANSLATE = "Нет украинского названия и описания — переводить на русский нечего"
 
 
@@ -414,8 +434,9 @@ def _gemini_client(key: str, transport=None) -> httpx.Client:
     return httpx.Client(base_url=GEMINI_BASE, headers={"x-goog-api-key": key}, timeout=TIMEOUT, transport=transport)
 
 
-def _gemini_post(key: str, model: str, body: dict, transport=None) -> httpx.Response:
-    for delay in (*RETRY_DELAYS, None):
+def _gemini_post(key: str, model: str, body: dict, transport=None, retry: bool = True) -> httpx.Response:
+    """retry=False — перегрузку (5xx) не пережидать: есть другая модель, на неё переключаемся сразу, а не через 11 с."""
+    for delay in ((*RETRY_DELAYS, None) if retry else (None,)):
         try:
             with _gemini_client(key, transport) as client:
                 r = client.post(f"/models/{model}:generateContent", json=body)
@@ -529,7 +550,10 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
         if model in tried:
             continue
         tried.append(model)
-        r = _gemini_post(s["key"], model, body, transport)
+        # пережидать перегрузку этой модели стоит, только если переключиться больше не на что
+        has_next = (switch and overloaded < AUTO_OVERLOADED and len(tried) < AUTO_TRIES
+                    and bool(candidates or (not widened and others())))
+        r = _gemini_post(s["key"], model, body, transport, retry=not has_next)
         if r.status_code < 400:
             break
         last_error = _gemini_error(r, model, s["key"])

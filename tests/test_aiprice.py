@@ -549,3 +549,39 @@ def test_auto_switches_on_any_limit_overload_or_no_access(status, body, monkeypa
         return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps({"description": "<p>Да</p>"})}]}}]})
     assert ai.run(PRODUCT, "improve", transport=httpx.MockTransport(handler)) == {"description": "<p>Да</p>"}
     assert calls == ["gemini-3.8-flash", "gemini-3.7-flash"]
+
+
+# ---------- 2.17.5: перегрузка — сразу на другую модель, без ожидания ----------
+
+def _overload_server(overloaded, calls):
+    def handler(r):
+        if r.method == "GET":
+            return httpx.Response(200, json={"models": [{"name": f"models/{m}", "supportedGenerationMethods": ["generateContent"]}
+                                                        for m in ("gemini-3.8-flash", "gemini-3.7-flash")]})
+        model = r.url.path.rsplit("/", 1)[-1].split(":")[0]
+        calls.append(model)
+        if model in overloaded:
+            return httpx.Response(503, json={"error": {"message": "overloaded"}})
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": json.dumps({"description": "<p>Да</p>"})}]}}]})
+    return httpx.MockTransport(handler)
+
+
+def test_overloaded_model_switches_immediately_without_retry_delays(monkeypatch):
+    slept = []
+    monkeypatch.setattr(ai, "_sleep", slept.append)
+    use("gemini")
+    calls = []
+    assert ai.run(PRODUCT, "improve", transport=_overload_server({"gemini-3.8-flash"}, calls)) == {"description": "<p>Да</p>"}
+    assert calls == ["gemini-3.8-flash", "gemini-3.7-flash"] and slept == []   # раньше: 3 запроса и 11 с ожидания
+
+
+def test_last_model_still_waits_out_overload(monkeypatch):
+    slept = []
+    monkeypatch.setattr(ai, "_sleep", slept.append)
+    use("gemini")
+    calls = []
+    with pytest.raises(ai.AIError, match="перегружен"):
+        ai.run(PRODUCT, "improve", transport=_overload_server({"gemini-3.8-flash", "gemini-3.7-flash"}, calls))
+    # первая модель — без ожидания, последняя (переключаться некуда) — с повторами RETRY_DELAYS
+    assert calls == ["gemini-3.8-flash"] + ["gemini-3.7-flash"] * (len(ai.RETRY_DELAYS) + 1)
+    assert slept == list(ai.RETRY_DELAYS)

@@ -397,7 +397,7 @@ let aiEstimateSeq = 0;
 async function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
-  $("#ai-empty-wrap").classList.toggle("hidden", !["translate_ua", "keywords", "improve"].includes(action));
+  $("#ai-empty-wrap").classList.toggle("hidden", !["translate_ua", "translate_ru", "keywords", "improve"].includes(action));
   const minutes = Math.ceil(selectionCount() / aiRate);
   const pace = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
   $("#ai-eta").textContent = pace;

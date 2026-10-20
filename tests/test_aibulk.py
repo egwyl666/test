@@ -126,7 +126,7 @@ def test_keywords_go_in_batches_one_request_per_20(monkeypatch):
     calls = []
     transport = _batch_server(lambda props: {k: f"слово {k}" for k in props}, calls)
     real = ai._gemini_post
-    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None: real(key, model, body, transport))
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None, retry=True: real(key, model, body, transport, retry))
     monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
     aibulk.create(ids, "keywords")
     while aibulk.process_one() != "idle":
@@ -146,7 +146,7 @@ def test_batch_item_without_answer_is_error_others_done(monkeypatch):
     calls = []
     transport = _batch_server(lambda props: {k: ("" if k.startswith("i1_") else "лампа, светильник") for k in props}, calls)
     real = ai._gemini_post
-    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None: real(key, model, body, transport))
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None, retry=True: real(key, model, body, transport, retry))
     monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
     job = aibulk.create(ids, "keywords")
     while aibulk.process_one() != "idle":
@@ -175,7 +175,7 @@ def test_broken_batch_answer_falls_back_to_one_by_one(monkeypatch):
         return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": text}]}}]})
     transport = httpx.MockTransport(handler)
     real = ai._gemini_post
-    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None: real(key, model, body, transport))
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None, retry=True: real(key, model, body, transport, retry))
     monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
     job = aibulk.create(ids, "keywords")
     while aibulk.process_one() != "idle":
@@ -183,3 +183,64 @@ def test_broken_batch_answer_falls_back_to_one_by_one(monkeypatch):
     assert calls[0] == 3 and calls[1:] == [5, 5, 5]   # пачка → потом по одному (схема одного товара — 5 полей)
     assert aibulk.get(job["id"])["counts"] == {"done": 3}, aibulk.get(job["id"])["errors"]
     assert all(products.get(i)["keywords"] == "зонт" for i in ids)
+
+
+def test_already_translated_products_are_skipped_without_requests():
+    """2.17.5: украинский текст уже пришёл со второй ссылки поставщика — «Перевести на украинский» его пропускает
+    и не тратит запрос; пачка из остальных товаров собирается как обычно."""
+    from promloader import ai, aibulk, products
+    done = products.create({"name": "Кружка", "name_ua": "Кухоль", "description": "<p>Белая</p>",
+                            "description_ua": "<p>Біла</p>", "price": 10})
+    no_desc = products.create({"name": "Лампа", "name_ua": "Лампа настільна", "price": 10})  # описания нет — нечего
+    half = products.create({"name": "Зонт", "name_ua": "Парасоля", "description": "<p>Большой</p>", "price": 10})
+    empty = products.create({"name": "Самокат", "price": 10})
+    assert ai.already_done(products.get(done), "translate_ua") and ai.already_done(products.get(no_desc), "translate_ua")
+    assert not ai.already_done(products.get(half), "translate_ua") and not ai.already_done(products.get(empty), "translate_ua")
+    seen = []
+
+    def runner(p, action, instruction=""):
+        seen.append(p["id"])
+        return {"description_ua": "<p>Переклад</p>"} | ({} if p.get("name_ua") else {"name_ua": "Самокат"})
+    job = aibulk.create([done, no_desc, half, empty], "translate_ua")
+    while aibulk.process_one(runner) != "idle":
+        pass
+    assert sorted(seen) == sorted([half, empty])
+    assert aibulk.get(job["id"])["counts"] == {"skipped": 2, "done": 2}
+    assert products.get(half)["name_ua"] == "Парасоля"   # заполненное поле не перезаписано
+
+
+def test_translate_ru_skips_products_that_already_have_russian_text():
+    from promloader import ai, products
+    both = products.get(products.create({"name": "Кружка белая", "name_ua": "Кухоль білий", "price": 10}))
+    ua_only = products.get(products.create({"name": "Кухоль білий", "price": 10}))
+    assert ai.already_done(both, "translate_ru") and not ai.already_done(ua_only, "translate_ru")
+
+
+def test_batch_skips_filled_items_without_breaking_batch(monkeypatch):
+    import json as _json
+
+    import httpx
+
+    from promloader import ai, aibulk, db, products
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_key", "k")
+    ids = [products.create({"name": f"Товар {n}", "price": 10, **({"name_ua": "Є", "description_ua": "<p>Є</p>",
+                                                                   "description": "<p>Есть</p>"} if n % 2 else {})})
+           for n in range(6)]
+    calls = []
+
+    def handler(r):
+        props = _json.loads(r.content)["generationConfig"]["responseSchema"]["properties"]
+        calls.append(sorted(props))
+        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{"text": _json.dumps(
+            {k: "Переклад" for k in props})}]}}]})
+    transport = httpx.MockTransport(handler)
+    real = ai._gemini_post
+    monkeypatch.setattr(ai, "_gemini_post", lambda key, model, body, t=None, retry=True: real(key, model, body, transport, retry))
+    monkeypatch.setattr(ai, "gemini_models", lambda key, t=None: ["gemini-3.8-flash"])
+    job = aibulk.create(ids, "translate_ua")
+    while aibulk.process_one() != "idle":
+        pass
+    # 3 заполненных пропущены без запроса, 3 пустых — одной пачкой
+    assert len(calls) == 1 and len(calls[0]) == 6
+    assert aibulk.get(job["id"])["counts"] == {"skipped": 3, "done": 3}

@@ -196,3 +196,59 @@ def test_np_error_is_readable(monkeypatch):
     monkeypatch.setattr(novaposhta.httpx, "Client", lambda *a, **kw: real(*a, **{**kw, "transport": t}))
     with pytest.raises(novaposhta.NPError, match="Нова Пошта: API key expired"):
         novaposhta.check("x")
+
+
+# ---------- 2.17.5: сбои сети на Windows — короткий повтор и понятный текст ----------
+
+def _flaky(fails, exc_type=httpx.ConnectError, message="[Errno 11001] getaddrinfo failed"):
+    state = {"n": 0}
+
+    def handler(request):
+        state["n"] += 1
+        if state["n"] <= fails:
+            raise exc_type(message, request=request)
+        return httpx.Response(200, json={"success": True, "data": [{"Ref": "c1", "Description": "Київ"}]})
+    return httpx.MockTransport(handler), state
+
+
+def test_network_blip_is_retried(monkeypatch):
+    monkeypatch.setattr(novaposhta, "_sleep", lambda s: None)
+    db.set_setting("np_api_key", "k")
+    transport, state = _flaky(2)
+    assert novaposhta.call("Address", "getCities", {}, transport=transport)[0]["Ref"] == "c1"
+    assert state["n"] == 3   # две неудачи + удачная попытка
+
+
+def test_network_failure_gives_readable_message(monkeypatch):
+    monkeypatch.setattr(novaposhta, "_sleep", lambda s: None)
+    transport, state = _flaky(10, message="[WinError 10013] An attempt was made to access a socket in a way forbidden")
+    with pytest.raises(novaposhta.NPError) as err:
+        novaposhta.call("Address", "getCities", {}, key="secret-key", transport=transport)
+    assert state["n"] == novaposhta.NET_RETRIES + 1
+    text = str(err.value)
+    assert "антивирус" in text and "WinError" not in text and "secret-key" not in text
+    transport, _ = _flaky(10)
+    with pytest.raises(novaposhta.NPError, match="не нашёл её сервер"):
+        novaposhta.call("Address", "getCities", {}, transport=transport)
+
+
+def test_creating_waybill_is_not_retried_after_request_may_have_been_sent(monkeypatch):
+    """Ответ на «создать ТТН» оборвался — повтор мог бы создать вторую ТТН: не повторяем."""
+    monkeypatch.setattr(novaposhta, "_sleep", lambda s: None)
+    transport, state = _flaky(10, httpx.ReadTimeout, "timed out")
+    with pytest.raises(novaposhta.NPError, match="не ответил вовремя"):
+        novaposhta.call("InternetDocument", "save", {}, transport=transport)
+    assert state["n"] == 1
+    transport, state = _flaky(1)   # а если соединиться не удалось — запрос не ушёл, повторить можно
+    novaposhta.call("InternetDocument", "save", {}, transport=transport)
+    assert state["n"] == 2
+
+
+def test_tracking_survives_network_failure(monkeypatch):
+    monkeypatch.setattr(novaposhta, "_sleep", lambda s: None)
+    with db.tx() as c:
+        c.execute("INSERT INTO shipments (order_id, ttn, stage, created_at) VALUES (1, '20450000000001', 'on_the_way', ?)",
+                  (db.now(),))
+    transport, state = _flaky(10)
+    assert novaposhta.track(transport=transport) == 0   # не падает, повторит в следующий раз
+    assert state["n"] == novaposhta.NET_RETRIES + 1
