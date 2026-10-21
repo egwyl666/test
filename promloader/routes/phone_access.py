@@ -1,11 +1,10 @@
-"""Доступ с телефона: вход по паролю, настройки, QR-код."""
+"""Доступ с телефона: настройки, QR-код. Вход — routes/accounts.py."""
 
 
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from .. import phone, runtime
-from ..web import _page, log
+from .. import phone, runtime, users
 
 router = APIRouter()
 
@@ -14,38 +13,6 @@ def _this_computer_only(request: Request) -> None:
     """Пароль и сам доступ меняются только на компьютере: вошедший телефон не может их поменять или отключить."""
     if getattr(request.state, "access", "local") != "local":
         raise HTTPException(403, "Доступ с телефона настраивается только на самом компьютере")
-
-
-@router.get("/login", include_in_schema=False)
-def login_page():
-    return _page("login.html")()
-
-
-@router.post("/api/login")
-def login(request: Request, data: dict = Body(...)):
-    if getattr(request.state, "access", "local") == "local":
-        return {"ok": True, "next": phone.safe_next(data.get("next"))}  # с этого компьютера пароль не нужен
-    if not phone.password_set():
-        raise HTTPException(400, "Доступ с телефона не настроен")
-    who = phone.client_key(request)
-    if phone.limiter.blocked(who):
-        raise HTTPException(429, "Слишком много неудачных попыток — подождите 15 минут")
-    if not phone.check_password(str(data.get("password") or "")):
-        phone.limiter.failed(who)
-        log.warning("Неверный пароль входа с телефона (%s)", who)
-        raise HTTPException(400, "Неверный пароль")
-    response = JSONResponse({"ok": True, "next": phone.safe_next(data.get("next"))})
-    secure = request.url.scheme == "https" or "cf-connecting-ip" in request.headers  # через Cloudflare — https
-    response.set_cookie(phone.COOKIE, phone.make_session(), max_age=phone.SESSION_DAYS * 86400, httponly=True,
-                        samesite="lax", secure=secure)
-    return response
-
-
-@router.post("/api/logout")
-def logout():
-    response = JSONResponse({"ok": True})
-    response.delete_cookie(phone.COOKIE)
-    return response
 
 
 @router.get("/api/phone")
@@ -64,9 +31,15 @@ def phone_save(request: Request, data: dict = Body(...)):
 
 @router.post("/api/phone/sign-out-all")
 def phone_sign_out_all(request: Request):
+    """Все входы всех пользователей (потерян телефон) — кроме этого компьютера: он сразу входит заново."""
     _this_computer_only(request)
     phone.sign_out_everywhere()
-    return {"ok": True}
+    response = JSONResponse({"ok": True})
+    user = getattr(request.state, "user", None)
+    if user:
+        response.set_cookie(users.COOKIE, users.make_session(user["id"]), max_age=users.SESSION_DAYS * 86400,
+                            httponly=True, samesite="lax")
+    return response
 
 
 @router.get("/api/phone/qr.svg")

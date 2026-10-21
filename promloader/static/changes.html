@@ -85,7 +85,7 @@
         : `<span class="muted">удалён</span>`;
       return `<tr><td class="small nowrap ch-at">${esc(formatDate(r.at))}</td><td class="ch-product">${product}</td>` +
         `<td class="ch-field">${esc(labels[r.field] || r.field)}</td><td class="ch-old">${cell(r.old)}</td>` +
-        `<td class="ch-new">${cell(r.new)}${diff(r)}</td><td class="small ch-who">${esc(r.source)}</td>` +
+        `<td class="ch-new">${cell(r.new)}${diff(r)}</td><td class="small ch-who">${esc(r.source)}${r.user ? `<div class="muted">👤 <span translate="no">${esc(r.user)}</span></div>` : ""}</td>` +
         `<td class="ch-act">${r.revertable ? `<button class="btn small" data-revert="${r.id}" title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : ""}</td></tr>`;
     }
 

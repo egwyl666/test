@@ -1,4 +1,4 @@
-// «Настройки» → «Доступ с телефона»: пароль, Wi‑Fi, адрес через Cloudflare, ссылки с QR-кодами.
+// «Настройки» → «Доступ с телефона»: Wi‑Fi, адрес через Cloudflare, ссылки с QR-кодами.
 // Адреса — данные (translate="no"); QR рисует программа (/api/phone/qr.svg), только на этом компьютере.
 
 let phonePoll = null;
@@ -13,7 +13,6 @@ function phoneUrl(url) {
 // form = false — фоновое обновление: только адреса и состояние. Галочки не трогаем — иначе опрос каждые 3 секунды
 // возвращал их к сохранённым, и переключить «Wi‑Fi / Cloudflare» до «Сохранить» было невозможно
 function fillPhone(st, { form = true } = {}) {
-  $("#phone-pass-state").textContent = st.password_set ? "(задан — впишите новый, чтобы сменить)" : "(не задан)";
   if (form) {
     $("#phone-lan").checked = st.lan;
     $("#phone-remote").checked = st.remote;
@@ -68,11 +67,8 @@ async function waitRestart() {
 
 $("#phone-save").onclick = () => busy($("#phone-save"), async () => {
   const data = { lan: $("#phone-lan").checked, remote: $("#phone-remote").checked };
-  const password = $("#phone-password").value;
-  if (password) data.password = password;
   try {
     const st = await api("/api/phone", { method: "POST", json: data });
-    $("#phone-password").value = "";
     fillPhone(st);
     if (st.restarting) {
       $("#phone-result").textContent = I18N.tr("Программа перезапускается…");
@@ -87,10 +83,10 @@ $("#phone-save").onclick = () => busy($("#phone-save"), async () => {
 });
 
 $("#phone-sign-out").onclick = () => busy($("#phone-sign-out"), async () => {
-  if (!confirm("Выйти на всех телефонах? Чтобы снова открыть программу, на телефоне понадобится ввести пароль.")) return;
+  if (!confirm("Выйти на всех устройствах? Все пользователи (кроме вас на этом компьютере) должны будут снова ввести логин и пароль.")) return;
   try {
     await api("/api/phone/sign-out-all", { method: "POST" });
-    toast(I18N.tr("Все телефоны вышли из программы"), "ok");
+    toast(I18N.tr("Все устройства вышли из программы"), "ok");
   } catch (err) { toast(err.message, "error"); }
 });
 

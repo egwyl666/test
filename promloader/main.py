@@ -26,6 +26,7 @@ from . import (
     aibulk,
     autostart,
     backup,
+    changes,
     cloudbackup,
     chat,
     config,
@@ -48,6 +49,7 @@ from . import (
     support,
     sync,
     updater,
+    users,
 )
 from .prom_api import PromError
 from .routes import ROUTERS
@@ -108,6 +110,7 @@ async def lifespan(app: FastAPI):
     if backup.apply_pending(db.default_dir()):
         log.warning("Данные восстановлены из резервной копии")
     db.init()
+    users.service_token()  # ключ для значка у часов («Перезапустить», «Выключить») — до первого его запроса
     for name in ("photo-tunnel", "phone-tunnel"):  # cloudflared, оставшийся от прошлого запуска, держал бы старый адрес
         await asyncio.to_thread(phototunnel.kill_stale, name)
     suppliers.recover()
@@ -436,40 +439,88 @@ _REFUSED_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <body><div class="box"><h2>Prom Loader</h2><p>{text}.</p></div></body></html>"""
 
 
+# без входа: страницы входа и первого запуска, их запросы, значок и файлы приложения на телефоне
+PUBLIC_PATHS = {"/login", "/setup", "/api/login", "/api/logout", "/api/setup", "/api/password/reset-code",
+                "/api/password/reset", "/favicon.ico", "/manifest.webmanifest", "/sw.js"}
+
+
+def _refused(request: Request, text: str, status: int = 403, **extra):
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return HTMLResponse(_REFUSED_PAGE.replace("{text}", text), status_code=status)
+    # с кодировкой: без неё Safari показывал русский текст кракозябрами
+    return JSONResponse({"detail": text, **extra}, status_code=status, media_type="application/json; charset=utf-8")
+
+
+def _next_url(request: Request) -> str:
+    return request.url.path + (f"?{request.url.query}" if request.url.query else "")
+
+
+def _sign_in_gate(request: Request, access: str):
+    """Вход по логину и паролю — для всех, в том числе на самом компьютере. Пока пользователей нет (первый запуск
+    или обновление со старой версии), программа просит создать администратора — но только на самом компьютере
+    (или за паролем APP_PASSWORD на сервере): иначе любой в домашней сети успел бы стать администратором первым."""
+    path = request.url.path
+    user = users.session_user(request.cookies.get(users.COOKIE))
+    request.state.user = user
+    if user is None:
+        if path in PUBLIC_PATHS or path.startswith("/static/") or users.service_ok(request):
+            return None
+        no_users = not users.any_users()
+        if no_users and access != "local":
+            return _refused(request, "Программу ещё не настроили: откройте её на компьютере, где она установлена, и "
+                                     "создайте пароль администратора", setup=True)
+        if request.method == "GET" and not path.startswith("/api/"):
+            return RedirectResponse(("/setup?" if no_users else "/login?") + urlencode({"next": _next_url(request)}), 303)
+        text = "Сначала создайте пароль администратора" if no_users else "Нужно войти — введите логин и пароль"
+        return JSONResponse({"detail": text, "login": True, "setup": no_users}, status_code=401)
+    if path in PUBLIC_PATHS or path.startswith("/static/"):
+        return None  # вход, выход, сброс пароля — и тем, кто уже вошёл (любой роли)
+    perm = users.required(request.method, path)
+    if not users.can(user, perm):
+        log.info("Нет прав (%s): %s %s — %s", perm, request.method, path, user["login"])
+        needed = ", ".join(users.PERM_LABELS.get(x, x) for x in ((perm,) if isinstance(perm, str) else perm))
+        return _refused(request, f"Недостаточно прав ({needed}). Ваша роль — "
+                                 f"«{user['role_label']}». Обратитесь к администратору программы", forbidden=True)
+    return None
+
+
 @app.middleware("http")
 async def same_site_only(request: Request, call_next):
-    """Защита от чужих сайтов, открытых в том же браузере.
+    """Защита от чужих сайтов, открытых в том же браузере, и вход по логину и паролю.
 
     - Программа отвечает только по своему адресу (localhost). Это закрывает «DNS rebinding»: чужой сайт не может
       прочитать, например, резервную копию с токенами. Если интерфейс открыт по сети и закрыт паролем
       (APP_PASSWORD), адрес не проверяется; другие адреса можно разрешить в PROMLOADER_ALLOWED_HOSTS.
     - Изменяющие запросы (POST/PUT/PATCH/DELETE) принимаются только со страниц самой программы: браузер
       сообщает, откуда запрос (Origin, Sec-Fetch-Site), и запрос с чужого сайта отклоняется.
+    - Всё, кроме фото и фида для Prom, — только после входа, и только то, что разрешает роль пользователя.
     """
     path = request.url.path
-    if not path.startswith(OPEN_PATHS):
-        if not os.environ.get("APP_PASSWORD"):
-            kind = phone.client_kind(request, _allowed_hosts())
-            if kind is None:
-                text = ("Программа открывается только по адресу http://localhost. Для доступа с телефона включите его "
-                        "в «Настройках» → «Доступ с телефона»")
-                if request.method == "GET" and not path.startswith("/api/"):
-                    return HTMLResponse(_REFUSED_PAGE.replace("{text}", text), status_code=403)
-                # с кодировкой: без неё Safari показывал русский текст кракозябрами
-                return JSONResponse({"detail": text}, status_code=403, media_type="application/json; charset=utf-8")
-            request.state.access = kind
-            if kind == "phone" and not phone.valid_session(request.cookies.get(phone.COOKIE)) \
-                    and path not in phone.PUBLIC_PATHS and not path.startswith("/static/"):
-                if request.method == "GET" and not path.startswith("/api/"):
-                    return RedirectResponse("/login?" + urlencode({"next": path + (f"?{request.url.query}" if request.url.query else "")}), 303)
-                return JSONResponse({"detail": "Нужно войти — введите пароль для доступа с телефона", "login": True}, status_code=401)
-        if request.method in UNSAFE_METHODS:
-            origin = request.headers.get("origin")
-            site = request.headers.get("sec-fetch-site", "")
-            if site == "cross-site" or (origin is not None and not _same_origin(origin, request)):
-                log.warning("Отклонён запрос %s %s с чужой страницы (%s)", request.method, path, origin or site)
-                return JSONResponse({"detail": "Запрос отклонён: он пришёл не со страницы программы"}, status_code=403)
-    return await call_next(request)
+    if path.startswith(OPEN_PATHS):
+        return await call_next(request)
+    if os.environ.get("APP_PASSWORD"):
+        access = "local"  # сервер за паролем APP_PASSWORD (basic_auth ниже): дальше — вход пользователя
+    else:
+        access = phone.client_kind(request, _allowed_hosts())
+        if access is None:
+            return _refused(request, "Программа открывается только по адресу http://localhost. Для доступа с телефона "
+                                     "включите его в «Настройках» → «Доступ с телефона»")
+    request.state.access = access
+    if request.method in UNSAFE_METHODS:
+        origin = request.headers.get("origin")
+        site = request.headers.get("sec-fetch-site", "")
+        if site == "cross-site" or (origin is not None and not _same_origin(origin, request)):
+            log.warning("Отклонён запрос %s %s с чужой страницы (%s)", request.method, path, origin or site)
+            return JSONResponse({"detail": "Запрос отклонён: он пришёл не со страницы программы"}, status_code=403)
+    refused = _sign_in_gate(request, access)
+    if refused is not None:
+        return refused
+    user = request.state.user
+    token = changes._user.set((user["name"] or user["login"]) if user else "")
+    try:
+        return await call_next(request)
+    finally:
+        changes._user.reset(token)
 
 
 # перебор пароля APP_PASSWORD (сервер в сети, Docker): 5 неверных с одного адреса за 5 минут — пауза
@@ -515,6 +566,7 @@ async def basic_auth(request: Request, call_next):
 @app.exception_handler(support.SupportError)
 @app.exception_handler(autostart.AutostartError)
 @app.exception_handler(phone.PhoneError)
+@app.exception_handler(users.UserError)
 async def user_error(request: Request, exc: Exception):
     body = {"detail": str(exc)}
     if getattr(exc, "field", None):

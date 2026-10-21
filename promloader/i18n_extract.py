@@ -33,6 +33,7 @@ PY_SKIP_NAMES = {
     "task",                              # ai.py — просьба пользователя для модели
     "XLSX_TABLES", "QUALITY_LABELS",     # reports.py — заголовки листов Excel
     "MISMATCH_HEADERS", "CAT_HEADERS", "COD_WORDS", "NP_DEFAULTS",                  # categories.py — колонки файла для кабинета Prom
+    "RESET_FILE",                        # users.py — имя файла с кодом сброса пароля
 }
 PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt"}     # ai.py — что возвращается, уходит модели
 PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
@@ -47,7 +48,9 @@ PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для моде�
 PY_SKIP_CALLS = {"debug", "info", "warning", "error", "exception", "critical", "send", "notify", "_tg",
                  # регулярные выражения
                  "compile", "search", "match", "fullmatch", "sub", "split", "findall", "finditer",
-                 "maketrans", "writerow"}  # writerow — заголовки CSV для Excel остаются русскими
+                 "maketrans", "writerow",
+                 "LoginLimiter",  # что подбирают — только для журнала и Telegram
+                 "write_text"}    # users.py — файл с кодом сброса в папке с данными  # writerow — заголовки CSV для Excel остаются русскими
 
 
 def norm(text: str) -> str:

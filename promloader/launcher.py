@@ -29,8 +29,8 @@ def running_at(port: int) -> bool:
         r = httpx.get(f"http://{HOST}:{port}/api/meta", timeout=1.5)
     except httpx.HTTPError:
         return False
-    if r.status_code == 401:  # включён пароль (APP_PASSWORD)
-        return "Prom Loader" in r.headers.get("www-authenticate", "")
+    if r.status_code == 401:  # включён пароль (APP_PASSWORD) или нужно войти в программу
+        return "Prom Loader" in r.headers.get("www-authenticate", "") or '"login"' in r.text
     return r.status_code == 200 and '"presence"' in r.text
 
 

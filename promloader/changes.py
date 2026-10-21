@@ -17,6 +17,9 @@ from . import db
 KEEP_DAYS = 180
 MAX_TEXT = 400
 _source: contextvars.ContextVar[str] = contextvars.ContextVar("change_source", default="Вручную")
+# кто вошёл в программу: ставит проверка входа на время запроса (main.py) — фоновые задачи, запущенные из
+# запроса, наследуют его, а работа по расписанию остаётся без имени
+_user: contextvars.ContextVar[str] = contextvars.ContextVar("change_user", default="")
 
 LABELS = {
     "price": "Цена", "old_price": "Старая цена", "cost_price": "Закупка", "cost_currency": "Валюта закупки",
@@ -63,8 +66,8 @@ def record(c, product_id: int, field: str, old="", new="", who: str | None = Non
     if field == "target_category_id":  # название, а не номер; номер — в скобках, по нему «↩ Вернуть»
         from .categories import label
         old, new = label(old), label(new)
-    c.execute("INSERT INTO product_changes (product_id, at, source, field, old, new) VALUES (?, ?, ?, ?, ?, ?)",
-              (product_id, db.now(), who or _source.get(), field, _text(old), _text(new)))
+    c.execute("INSERT INTO product_changes (product_id, at, source, field, old, new, user) VALUES (?, ?, ?, ?, ?, ?, ?)",
+              (product_id, db.now(), who or _source.get(), field, _text(old), _text(new), _user.get()))
 
 
 def record_diff(c, product_id: int, before, fields: dict) -> None:

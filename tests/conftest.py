@@ -30,8 +30,34 @@ def offline_nbu(monkeypatch):
     monkeypatch.setattr(rates, "nbu", lambda code, transport=None: {"rate": 40.0, "date": "2026-10-04", "stale": False})
 
 
+ADMIN_LOGIN, ADMIN_PASSWORD = "admin", "admin-password-1"
+
+
+def sign_in(c, login: str = ADMIN_LOGIN, password: str = ADMIN_PASSWORD, role: str = "admin"):
+    """Завести пользователя (если его ещё нет) и войти им в этот TestClient."""
+    from promloader import users
+
+    if db.query_one("SELECT 1 FROM users WHERE login = ?", (login,)) is None:
+        users.create(login, password, role)
+    r = c.post("/api/login", json={"login": login, "password": password})
+    assert r.status_code == 200, r.text
+    return c
+
+
 @pytest.fixture
 def client(data_dir):
+    """Программа, в которую уже вошёл администратор (с 2.23.0 вход нужен и на самом компьютере)."""
+    from fastapi.testclient import TestClient
+
+    from promloader.main import app
+
+    with TestClient(app) as c:
+        yield sign_in(c)
+
+
+@pytest.fixture
+def anon(data_dir):
+    """Программа без входа."""
     from fastapi.testclient import TestClient
 
     from promloader.main import app

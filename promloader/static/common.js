@@ -25,9 +25,9 @@ async function api(path, options = {}) {
   const text = await response.text();
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!response.ok) {
-    // вход с телефона истёк или ещё не выполнен — на страницу входа, потом обратно сюда
+    // вход истёк или ещё не выполнен — на страницу входа (или создания администратора), потом обратно сюда
     if (response.status === 401 && body && body.login) {
-      location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+      location.href = `${body.setup ? "/setup" : "/login"}?next=${encodeURIComponent(location.pathname + location.search)}`;
     }
     let detail = body && body.detail !== undefined ? body.detail : body;
     if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
@@ -51,7 +51,7 @@ async function loadMeta() {
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
   const chatLink = document.querySelector('.topbar nav a[href="/chat"]');
   if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
-  showLogout();
+  renderUserMenu();
   return META;
 }
 
@@ -384,20 +384,88 @@ function renderNav() {
 
 function initNav() { renderNav(); }
 
-// С телефона (вход по паролю) в меню есть «Выйти»; на самом компьютере выходить не из чего.
-function showLogout() {
-  const nav = document.querySelector(".topbar nav");
-  if (!nav || META.access !== "phone" || nav.querySelector("[data-logout]")) return;
-  const a = document.createElement("a");
-  a.href = "/login";
-  a.dataset.logout = "1";
-  a.textContent = "Выйти";
-  a.onclick = async (e) => {
+// Разделы меню, которые роли не открыть (сервер всё равно не пустит), — не показываем.
+const NAV_PERMS = { "/settings": "admin", "/support": "admin", "/import": "catalog" };
+
+function can(perm) {
+  return !!(META.me && (META.me.perms || []).includes(perm));
+}
+
+function applyNavPerms() {
+  if (!META.me) return;
+  document.querySelectorAll(".topbar nav a[href]").forEach((a) => {
+    const perm = NAV_PERMS[a.getAttribute("href")];
+    if (perm) a.classList.toggle("hidden", !can(perm));
+  });
+  document.body.dataset.role = META.me.role;
+  // кнопки, которые роли всё равно не разрешены (сервер ответит «Недостаточно прав»), — прячем: класс на body
+  // действует и на то, что страница дорисует потом (полоска готовности, окна)
+  for (const p of ["catalog", "ai", "orders", "chat", "admin"]) document.body.classList.toggle(`no-${p}`, !can(p));
+}
+
+// 👤 в шапке: кто вошёл, смена своего пароля, «Пользователи» (администратору) и «Выйти».
+function renderUserMenu() {
+  applyNavPerms();
+  const bar = document.querySelector(".topbar");
+  const me = META.me;
+  if (!bar || !me || document.getElementById("user-menu")) return;
+  let right = bar.querySelector(".right");
+  if (!right) {
+    right = document.createElement("div");
+    right.className = "right";
+    bar.appendChild(right);
+  }
+  const box = document.createElement("details");
+  box.id = "user-menu";
+  box.className = "user-menu";
+  box.innerHTML = `<summary title="${esc(me.role_label)}">👤 <span translate="no">${esc(me.name || me.login)}</span> ▾</summary>
+    <div class="user-menu-list">
+      <div class="small muted"><span translate="no">${esc(me.login)}</span> · ${esc(me.role_label)}</div>
+      <button type="button" class="btn small" data-act="password">Сменить пароль</button>
+      ${can("admin") ? `<a class="btn small" href="/settings#users">Пользователи</a>` : ""}
+      <button type="button" class="btn small" data-act="logout">Выйти</button>
+    </div>`;
+  box.addEventListener("click", async (e) => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (act === "logout") {
+      await api("/api/logout", { method: "POST" }).catch(() => {});
+      location.href = "/login";
+    } else if (act === "password") {
+      box.open = false;
+      openPasswordWindow();
+    }
+  });
+  document.addEventListener("click", (e) => { if (!box.contains(e.target)) box.open = false; });
+  right.appendChild(box);
+}
+
+function openPasswordWindow() {
+  const box = document.createElement("div");
+  box.className = "modal";
+  box.innerHTML = `<form class="modal-box" style="max-width:420px">
+    <h2>Сменить пароль</h2>
+    <label class="field"><span>Текущий пароль</span><input name="old" type="password" autocomplete="current-password" required></label>
+    <label class="field"><span>Новый пароль</span><input name="new" type="password" autocomplete="new-password" placeholder="не меньше 8 символов" required></label>
+    <label class="field"><span>Новый пароль ещё раз</span><input name="new2" type="password" autocomplete="new-password" required></label>
+    <p class="small muted">На других устройствах нужно будет войти заново.</p>
+    <div class="toolbar"><button class="btn primary" type="submit">Сохранить</button><button class="btn" type="button" data-close>Отмена</button></div>
+  </form>`;
+  const close = () => box.remove();
+  box.querySelector("[data-close]").onclick = close;
+  box.addEventListener("click", (e) => { if (e.target === box) close(); });
+  const form = box.querySelector("form");
+  form.addEventListener("submit", (e) => {
     e.preventDefault();
-    await api("/api/logout", { method: "POST" }).catch(() => {});
-    location.href = "/login";
-  };
-  nav.appendChild(a);
+    busy(form.querySelector("[type=submit]"), async () => {
+      try {
+        await api("/api/me/password", { method: "POST", json: { old: form.old.value, new: form.new.value, new2: form.new2.value } });
+        toast("Пароль изменён", "ok");
+        close();
+      } catch (err) { toast(err.message, "error"); }
+    });
+  });
+  document.body.appendChild(box);
+  form.old.focus();
 }
 
 // Перетаскивание файлов на всю страницу.

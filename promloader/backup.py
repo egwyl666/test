@@ -184,7 +184,7 @@ def stage_restore_stream(source) -> None:
 
 # настройки этого компьютера: восстановление копии их не меняет (в том числе пароль и доступ с телефона)
 DEVICE_SETTINGS = ("update_repo", "github_token", "auto_update", "phone_lan", "phone_remote", "phone_password_hash",
-                   "phone_secret", "backup_cloud", "backup_cloud_prefix", "paused", "backup_password")
+                   "phone_secret", "backup_cloud", "backup_cloud_prefix", "paused", "backup_password", "auth_secret")
 # токены и ключи этого компьютера: если в восстановленной копии их нет (облачная копия — без секретов), остаются свои
 KEEP_IF_MISSING = ("prom_token", "feed_key", "gemini_key", "anthropic_key", "telegram_token", "support_token",
                    "r2_access_key_id", "r2_secret_access_key", "push_vapid_private", "np_api_key")
@@ -201,6 +201,43 @@ def _device_settings(data_dir: Path) -> dict:
                                  keys).fetchall())
     except sqlite3.DatabaseError:
         return {}
+    finally:
+        conn.close()
+
+
+def _device_users(data_dir: Path) -> tuple[str, list]:
+    """Пользователи программы до восстановления: (CREATE TABLE, строки)."""
+    path = data_dir / DB_NAME
+    if not path.exists():
+        return "", []
+    conn = sqlite3.connect(path)
+    try:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()
+        return (row[0], conn.execute("SELECT * FROM users").fetchall()) if row else ("", [])
+    except sqlite3.DatabaseError:
+        return "", []
+    finally:
+        conn.close()
+
+
+def _restore_users(data_dir: Path, kept: tuple[str, list]) -> None:
+    """Копия старше 2.23.0 (в ней ещё нет пользователей): оставляем нынешних — иначе после восстановления пришлось
+    бы заново создавать администратора и всех остальных. Если пользователи в копии есть — действуют они."""
+    ddl, rows = kept
+    if not rows:
+        return
+    conn = sqlite3.connect(data_dir / DB_NAME)
+    try:
+        with conn:
+            has_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").fetchone()
+            if has_table and conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                return
+            if not has_table:
+                conn.execute(ddl)
+            marks = ",".join("?" * len(rows[0]))
+            conn.executemany(f"INSERT INTO users VALUES ({marks})", rows)
+    except sqlite3.DatabaseError as exc:
+        log.warning("Не удалось вернуть пользователей после восстановления: %s", exc)
     finally:
         conn.close()
 
@@ -291,6 +328,7 @@ def apply_pending(data_dir: Path) -> bool:
         return False
     # откуда брать обновления — настройка этого компьютера, а не копии (копию мог подложить кто угодно)
     kept = _device_settings(data_dir)
+    kept_users = _device_users(data_dir)
     root = data_dir.resolve()
     with zipfile.ZipFile(pending) as z:
         for folder in FOLDERS:
@@ -303,6 +341,7 @@ def apply_pending(data_dir: Path) -> bool:
                 continue
             z.extract(info, data_dir)
     _restore_device_settings(data_dir, kept)
+    _restore_users(data_dir, kept_users)
     _apply_restored_secrets(data_dir)
     normalize_paths(data_dir / DB_NAME)
     pending.unlink()

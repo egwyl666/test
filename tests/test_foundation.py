@@ -55,7 +55,8 @@ def test_app_password_brute_force_is_paused(monkeypatch):
     assert len(sent) == 1 and "203.0.113.9" in sent[0]
     # другой адрес не заблокирован
     other = TestClient(main.app, client=("203.0.113.10", 5000))
-    assert other.get("/api/meta", auth=("admin", "правильний")).status_code == 200
+    r = other.get("/api/meta", auth=("admin", "правильний"))
+    assert r.status_code == 401 and r.json()["setup"] is True  # пароль сервера принят — дальше вход пользователя
     main.basic_limiter.reset()
 
 

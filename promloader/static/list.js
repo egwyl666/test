@@ -118,8 +118,8 @@ async function loadReadiness() {
     ${READINESS_ORDER.filter((k) => r[k]).map((k) => pill(k, r[k])).join(" ")}
     <span class="spacer"></span>
     ${list.readiness === "needs_manual" && r.needs_manual
-      ? `<button class="btn small" id="readiness-photo" data-n="${r.needs_manual}">📷 Заполнить по фото (${r.needs_manual})</button>`
-      : aiTarget(r) ? `<button class="btn small" id="readiness-ai" data-n="${aiTarget(r)}">✨ Заполнить через ИИ (${aiTarget(r)})</button>` : ""}
+      ? `<button class="btn small" id="readiness-photo" data-perm="ai" data-n="${r.needs_manual}">📷 Заполнить по фото (${r.needs_manual})</button>`
+      : aiTarget(r) ? `<button class="btn small" id="readiness-ai" data-perm="ai" data-n="${aiTarget(r)}">✨ Заполнить через ИИ (${aiTarget(r)})</button>` : ""}
     ${r.ready_to_promote ? `<button class="btn small primary" id="promote-ready">В «Готов к отправке» (${r.ready_to_promote})</button>` : ""}`;
   bar.classList.toggle("hidden", !r.drafts);
 }

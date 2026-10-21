@@ -27,6 +27,13 @@ START.bat → launcher.py (свободный порт, браузер) → tray
                                      edit_by_external_id / edit (удаление) / by_external_id / list / orders
 ```
 
+## Вход и права (2.23.0)
+
+`main.same_site_only`: адрес клиента (`phone.client_kind`) → проверка Origin → `_sign_in_gate`: кука `pl_session`
+(`users.session_user`) → нет пользователей — `/setup` (только с этого компьютера), нет входа — `/login` (API — 401
+`{login, setup}`), нет права (`users.required`) — 403 `{forbidden}`. Открыто без входа: `PUBLIC_PATHS`, `/static/`,
+`/media/`, `/feed/`. Имя вошедшего — в `changes._user` на время запроса (журнал пишет его в `product_changes.user`).
+
 ## Главные потоки
 
 | Поток | Путь |

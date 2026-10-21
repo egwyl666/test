@@ -21,37 +21,101 @@
   </header>
   <main style="max-width:420px">
     <form class="panel" id="login" style="margin-top:24px">
-      <h2>📱 Вход с телефона</h2>
-      <p class="small muted" style="margin-top:-6px">Введите пароль, который задан на компьютере в «Настройках» → «Доступ с телефона».</p>
+      <h2>🔐 Вход в Prom Loader</h2>
+      <label class="field"><span>Логин</span>
+        <input id="login-name" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus></label>
       <label class="field"><span>Пароль</span>
-        <input id="password" type="password" autocomplete="current-password" required autofocus></label>
+        <input id="password" type="password" autocomplete="current-password" required></label>
       <button class="btn primary" id="go" type="submit" style="width:100%">Войти</button>
-      <p class="small err-text" id="error" style="margin-bottom:0"></p>
+      <p class="small err-text" id="error"></p>
+      <p class="small" style="margin-bottom:0"><a href="#" id="forgot-link">Забыли пароль?</a></p>
+    </form>
+
+    <form class="panel hidden" id="forgot" style="margin-top:24px">
+      <h2>Сброс пароля</h2>
+      <p class="small muted" style="margin-top:-6px">Попросите администратора программы задать вам новый пароль
+        («Настройки» → «Пользователи»). Если вы сами администратор — получите код: программа положит его файлом
+        в папку с данными на компьютере, где она установлена (значок у часов → «Папка с данными»).</p>
+      <div class="toolbar"><button class="btn" id="get-code" type="button">Получить код</button></div>
+      <p class="small" id="code-where"></p>
+      <label class="field"><span>Логин</span>
+        <input id="reset-login" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+      <label class="field"><span>Код из файла</span>
+        <input id="reset-code" inputmode="numeric" autocomplete="one-time-code" required></label>
+      <label class="field"><span>Новый пароль</span>
+        <input id="reset-password" type="password" autocomplete="new-password" placeholder="не меньше 8 символов" required></label>
+      <label class="field"><span>Новый пароль ещё раз</span>
+        <input id="reset-password2" type="password" autocomplete="new-password" required></label>
+      <button class="btn primary" id="reset-go" type="submit" style="width:100%">Сменить пароль и войти</button>
+      <p class="small err-text" id="reset-error"></p>
+      <p class="small" style="margin-bottom:0"><a href="#" id="back-link">← Ко входу</a></p>
     </form>
   </main>
   <script>
     // отдельная маленькая страница: common.js здесь не нужен — без входа его запросы к программе всё равно отклоняются
-    const form = document.getElementById("login");
-    const error = document.getElementById("error");
     const next = new URLSearchParams(location.search).get("next") || "/";
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const button = document.getElementById("go");
-      button.disabled = true;
-      error.textContent = "";
+    const $ = (s) => document.querySelector(s);
+    const tr = (t) => (window.I18N ? I18N.tr(t) : t);
+
+    async function post(path, data) {
+      let r;
       try {
-        const r = await fetch("/api/login", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: document.getElementById("password").value, next }),
-        });
-        const body = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(body.detail || `Ошибка ${r.status}`);
-        location.replace(body.next || "/");
-      } catch (err) {
-        error.textContent = err.message === "Failed to fetch" ? "Нет связи с программой — компьютер выключен или программа не запущена" : err.message;
-        button.disabled = false;
+        r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+      } catch {
+        throw new Error(tr("Нет связи с программой — компьютер выключен или программа не запущена"));
       }
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(body.detail || `${tr("Ошибка")} ${r.status}`);
+      return body;
+    }
+
+    function form(id, errorId, buttonId, action) {
+      $(id).addEventListener("submit", async (e) => {
+        e.preventDefault();
+        $(buttonId).disabled = true;
+        $(errorId).textContent = "";
+        try { await action(); } catch (err) { $(errorId).textContent = err.message; $(buttonId).disabled = false; }
+      });
+    }
+
+    form("#login", "#error", "#go", async () => {
+      const body = await post("/api/login", { login: $("#login-name").value, password: $("#password").value, next });
+      location.replace(body.next || "/");
     });
+    form("#forgot", "#reset-error", "#reset-go", async () => {
+      await post("/api/password/reset", { login: $("#reset-login").value, code: $("#reset-code").value,
+        password: $("#reset-password").value, password2: $("#reset-password2").value });
+      location.replace("/");
+    });
+
+    $("#forgot-link").onclick = (e) => {
+      e.preventDefault();
+      $("#login").classList.add("hidden");
+      $("#forgot").classList.remove("hidden");
+      $("#reset-login").value = $("#login-name").value;
+    };
+    $("#back-link").onclick = (e) => {
+      e.preventDefault();
+      $("#forgot").classList.add("hidden");
+      $("#login").classList.remove("hidden");
+    };
+    $("#get-code").onclick = async () => {
+      $("#get-code").disabled = true;
+      $("#reset-error").textContent = "";
+      try {
+        const r = await post("/api/password/reset-code", {});
+        const where = $("#code-where");
+        where.textContent = "";
+        where.append(tr(`Код готов: файл «${r.file}» в папке с данными. Он действует ${r.minutes} минут.`));
+        if (r.path) {
+          const code = document.createElement("code");
+          code.setAttribute("translate", "no");
+          code.textContent = r.path;
+          where.append(document.createElement("br"), code);
+        }
+      } catch (err) { $("#reset-error").textContent = err.message; }
+      $("#get-code").disabled = false;
+    };
   </script>
 </body>
 </html>

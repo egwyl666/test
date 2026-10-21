@@ -28,12 +28,15 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `tg_outbox` | Очередь уведомлений Telegram: `chat_id`, `text`, `next_at`, `attempts`, `last_error`, `sent_at`, `failed` (через 48 ч без доставки); отправленные хранятся 30 дней |
 | `support_tickets` | Обращения в поддержку |
 | `r2_objects` | Фото, загруженные в Cloudflare R2 |
+| `roles` | Роли (2.23.0): `id` (admin/manager/operator/viewer или `r…` — своя), `label`, `perms` (JSON: catalog, ai, orders, chat), `builtin`, `position` |
+| `users` | Пользователи (2.23.0): `login` (без регистра), `name`, `role` (→ `roles.id`), `password_hash` (PBKDF2), `disabled`, `session_version` (+1 — прежние входы недействительны), `last_login_at`. Восстановление копии без пользователей оставляет нынешних (`backup._restore_users`) |
 | `settings` | Ключ → значение (см. ниже) |
 
 ## Ключи `settings` (основные)
 
-- Доступ с телефона (не меняются восстановлением копии — `backup.DEVICE_SETTINGS`): `phone_lan`, `phone_remote`,
-  `phone_password_hash` (pbkdf2), `phone_secret` (ключ подписи входа).
+- Доступ (не меняются восстановлением копии — `backup.DEVICE_SETTINGS`): `phone_lan`, `phone_remote`,
+  `auth_secret` (ключ подписи входа пользователей); `password_reset` (отпечаток кода сброса и срок).
+  `phone_password_hash`/`phone_secret` — от прежнего общего пароля телефона (до 2.23.0), больше не используются.
 - Prom и фото: `prom_token`, `prom_api_base`, `public_base_url`, настройки R2, `import_method`, `import_plain_v2`, `import_settings`, `quick_updates`
 - ИИ: `ai_provider`, `gemini_key`, `anthropic_key`, `gemini_model` (пусто — авто), `gemini_model_used`, `claude_model`, `ai_rate`, `gemini_free_tier` (`1`/`0`/пусто — не знаем), `ai_model_status` (JSON `provider:model` → статус, у лимита — `until`), `ai_key_error` (JSON provider → текст: ключ не принят), `ai_limits` (JSON: Claude — остаток из заголовков, Gemini — `last_limit`)
 - Курс: `rate_mode` (`nbu`/`manual`), `rate_add`, `rate_manual` (JSON), `rate_auto_send`, `rate_applied` (курс последнего пересчёта), `nbu_rate_<КОД>` (кеш на день)

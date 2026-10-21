@@ -383,7 +383,7 @@ async function loadHistory() {
     const back = r.revertable ? ` <button type="button" class="btn small" data-revert="${r.id}"
       title="Вернуть «${esc(r.old || "пусто")}»">↩ Вернуть</button>` : "";
     return `<div class="history-row"><span class="muted">${esc(formatDate(r.at))}</span> <b>${what}</b>: ${change}` +
-      ` <span class="muted">· ${esc(r.source)}</span>${back}</div>`;
+      ` <span class="muted">· ${esc(r.source)}</span>${r.user ? ` <span class="muted">👤 <span translate="no">${esc(r.user)}</span></span>` : ""}${back}</div>`;
   }).join("") : "Изменений пока нет";
 }
 

@@ -725,3 +725,49 @@ a.kpi-link:hover { border-color: var(--accent); }
 .conflict-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0; }
 .conflict-row .side { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; max-height: 160px; overflow: auto; }
 @media (max-width: 640px) { .conflict-row { grid-template-columns: 1fr; } }
+
+/* 👤 пользователь в шапке */
+.user-menu { position: relative; }
+.user-menu summary { list-style: none; cursor: pointer; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line);
+  background: #fff; font-size: 13px; white-space: nowrap; max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+.user-menu summary::-webkit-details-marker { display: none; }
+.user-menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; background: #fff; border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 6px; min-width: 200px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .12); }
+.user-menu-list .btn { text-align: left; justify-content: flex-start; }
+@media (max-width: 640px) { .user-menu-list { right: auto; left: 0; } }
+
+/* «Настройки» по вкладкам */
+.tab-hidden { display: none !important; }
+body.no-catalog [data-perm="catalog"], body.no-ai [data-perm="ai"], body.no-orders [data-perm="orders"],
+body.no-chat [data-perm="chat"], body.no-admin [data-perm="admin"] { display: none !important; }
+.settings-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: -4px 0 16px; }
+.settings-tabs a { padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--text);
+  font-size: 14px; white-space: nowrap; }
+.settings-tabs a:hover { border-color: var(--accent); text-decoration: none; }
+.settings-tabs a.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+@media (max-width: 640px) { .settings-tabs a { font-size: 13px; padding: 6px 10px; } }
+.user-add { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 12px; align-items: end; }
+.user-add .toolbar { margin-bottom: 12px; }
+#users-table td { vertical-align: middle; }
+#users-table .user-name { width: 140px; min-width: 100px; }
+#users-table .user-role { min-width: 170px; }
+#users-table .actions { display: flex; flex-wrap: wrap; gap: 4px; }
+@media (max-width: 640px) {
+  #users-table thead { display: none; }
+  #users-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  #users-table td { display: block; border: 0; padding: 0; }
+  #users-table td:last-child { grid-column: 1 / -1; }
+  #users-table .user-name, #users-table .user-role { width: 100%; min-width: 0; }
+}
+.perm-list, .role-add-perms { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.perm-box { font-size: 13px; white-space: nowrap; cursor: pointer; }
+.role-add { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 8px; }
+.role-add-perms { margin: -4px 0 10px; }
+#roles-table td { vertical-align: top; }
+#roles-table .role-label { width: 170px; }
+@media (max-width: 640px) {
+  #roles-table tr { display: block; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  #roles-table td { display: block; border: 0; padding: 2px 0; }
+  .perm-box { white-space: normal; }
+}

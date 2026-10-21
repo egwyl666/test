@@ -317,6 +317,29 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS chat_messages_room ON chat_messages(room_ident, created_at);
 
+-- Пользователи программы (users.py): логин без учёта регистра, пароль — солёный PBKDF2. session_version
+-- растёт при смене пароля и блокировке: все прежние входы этого пользователя перестают действовать
+CREATE TABLE IF NOT EXISTS users (
+    id               INTEGER PRIMARY KEY,
+    login            TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    name             TEXT NOT NULL DEFAULT '',
+    role             TEXT NOT NULL DEFAULT 'viewer',
+    password_hash    TEXT NOT NULL,
+    disabled         INTEGER NOT NULL DEFAULT 0,
+    session_version  INTEGER NOT NULL DEFAULT 1,
+    created_at       TEXT NOT NULL,
+    last_login_at    TEXT
+);
+
+-- Роли пользователей: готовые (builtin) и свои; perms — JSON-список прав (users.EDITABLE_PERMS)
+CREATE TABLE IF NOT EXISTS roles (
+    id        TEXT PRIMARY KEY,
+    label     TEXT NOT NULL,
+    perms     TEXT NOT NULL DEFAULT '[]',
+    builtin   INTEGER NOT NULL DEFAULT 0,
+    position  INTEGER NOT NULL DEFAULT 0
+);
+
 -- Правило «группа магазина → категория Prom»: применяется к товарам группы, у которых категория не закреплена
 CREATE TABLE IF NOT EXISTS group_categories (
     group_name   TEXT PRIMARY KEY,
@@ -327,6 +350,9 @@ CREATE TABLE IF NOT EXISTS group_categories (
 
 # Колонки, добавленные после первой версии: для уже существующих баз добавляются через ALTER TABLE.
 MIGRATIONS = {
+    "product_changes": {
+        "user": "TEXT NOT NULL DEFAULT ''",  # кто из пользователей программы сделал правку (пусто — до 2.23.0 и фон)
+    },
     "products": {
         "prom_conflict": "TEXT NOT NULL DEFAULT ''",
         "prom_seen": "TEXT NOT NULL DEFAULT ''",

@@ -42,6 +42,7 @@ router = APIRouter()
 def meta(request: Request):
     return {
         "access": getattr(request.state, "access", "local"),
+        "me": getattr(request.state, "user", None),
         "presence": products.PRESENCE,
         "statuses": products.STATUSES,
         "origin_labels": products.ORIGIN_LABELS,

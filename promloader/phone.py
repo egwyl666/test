@@ -2,49 +2,41 @@
 
 Кто пришёл, решаем по настоящему адресу клиента, а не по заголовку Host: как только программа слушает домашнюю
 сеть, любой в этой сети может прислать «Host: localhost». Поэтому:
-- запрос с этого компьютера (127.0.0.1) без заголовка Cloudflare — свой, пускаем без пароля, как раньше;
+- запрос с этого компьютера (127.0.0.1) без заголовка Cloudflare — «свой» (local);
 - запрос, пришедший через наш туннель (с компьютера, но с заголовком Cf-Connecting-Ip и адресом туннеля), и
-  запрос из домашней сети — «телефон»: нужен вход по паролю;
+  запрос из домашней сети — «телефон» (phone);
 - всё остальное отклоняется.
-Вход даёт подписанную куку на 30 дней. Смена пароля и «Выйти на всех телефонах» меняют ключ подписи — все
-прежние входы перестают действовать.
+Вход — по логину и паролю пользователя (users.py) и там, и там. До 2.23.0 у телефона был отдельный общий пароль,
+а компьютер пускал без пароля; старый пароль телефона больше не нужен.
 """
 
-import hashlib
-import hmac
 import ipaddress
 import logging
 import os
-import secrets
 import socket
 import threading
 import time
 from urllib.parse import urlparse
 
-from . import db, notify, phototunnel, runtime
+from . import db, notify, phototunnel, runtime, users
 
 log = logging.getLogger("promloader.phone")
 
-COOKIE = "pl_phone"
-SESSION_DAYS = 30
-MIN_PASSWORD = 8
-ITERATIONS = 200_000
 LOGIN_WINDOW = 15 * 60       # окно подсчёта неудачных попыток входа, секунд
 LOGIN_FAILS_PER_CLIENT = 10
 LOGIN_FAILS_TOTAL = 30       # на всех вместе: перебор с разных адресов тоже упирается в предел
-PUBLIC_PATHS = {"/login", "/api/login", "/api/logout", "/favicon.ico", "/manifest.webmanifest", "/sw.js"}
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
-SETTINGS = ("phone_lan", "phone_remote", "phone_password_hash", "phone_secret")
 
 
 class PhoneError(Exception):
     pass
 
 
-# ---------- настройки и пароль ----------
+# ---------- настройки ----------
 
 def password_set() -> bool:
-    return bool(db.get_setting("phone_password_hash"))
+    """Есть кому входить: телефон пускаем, только когда в программе заведены пользователи."""
+    return users.any_users()
 
 
 def lan_enabled() -> bool:
@@ -55,50 +47,17 @@ def remote_enabled() -> bool:
     return db.get_setting("phone_remote") == "1" and password_set()
 
 
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, ITERATIONS)
-    return f"pbkdf2_sha256${ITERATIONS}${salt.hex()}${digest.hex()}"
-
-
-def check_password(password: str) -> bool:
-    stored = db.get_setting("phone_password_hash")
-    try:
-        _, iterations, salt, digest = stored.split("$")
-        given = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(iterations))
-    except ValueError:
-        return False
-    return hmac.compare_digest(given.hex(), digest)
-
-
-def _secret() -> bytes:
-    value = db.get_setting("phone_secret")
-    if not value:
-        value = secrets.token_hex(32)
-        db.set_setting("phone_secret", value)
-    return bytes.fromhex(value)
-
-
 def sign_out_everywhere() -> None:
-    db.set_setting("phone_secret", secrets.token_hex(32))
+    users.sign_out_everywhere()
 
 
 def update(data: dict) -> bool:
     """Сохранить настройки доступа. Возвращает True, если поменялся доступ по Wi‑Fi (нужен перезапуск)."""
-    password = data.get("password")
-    if password is not None:
-        password = str(password)
-        if len(password) < MIN_PASSWORD:
-            raise PhoneError(f"Пароль слишком короткий — нужно не меньше {MIN_PASSWORD} символов")
-    has_password = password is not None or password_set()
     for key in ("lan", "remote"):
-        if data.get(key) and not has_password:
-            raise PhoneError("Сначала придумайте пароль для входа с телефона")
+        if data.get(key) and not password_set():
+            raise PhoneError("Сначала создайте пользователей программы")
     lan_before = lan_enabled()
     with db.tx():
-        if password is not None:
-            db.set_setting("phone_password_hash", hash_password(password))
-            sign_out_everywhere()  # старый пароль больше не должен открывать уже вошедшие телефоны
         for key in ("lan", "remote"):
             if key in data:
                 db.set_setting(f"phone_{key}", "1" if data[key] else "0")
@@ -106,22 +65,6 @@ def update(data: dict) -> bool:
 
 
 # ---------- вход ----------
-
-def make_session() -> str:
-    expires = int(time.time()) + SESSION_DAYS * 86400
-    sign = hmac.new(_secret(), str(expires).encode(), hashlib.sha256).hexdigest()
-    return f"{expires}.{sign}"
-
-
-def valid_session(token: str | None) -> bool:
-    if not token or not password_set():
-        return False
-    expires, _, sign = token.partition(".")
-    if not expires.isdigit() or int(expires) < time.time():
-        return False
-    good = hmac.new(_secret(), expires.encode(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(sign, good)
-
 
 class LoginLimiter:
     """Неудачные попытки входа: не больше per_client с одного адреса и total со всех за window секунд.
@@ -160,7 +103,7 @@ class LoginLimiter:
             self.fails.clear()
 
 
-limiter = LoginLimiter()
+limiter = LoginLimiter(what="входа в программу")
 
 
 # ---------- кто пришёл ----------
@@ -201,7 +144,9 @@ def client_kind(request, allowed_hosts: set[str]) -> str | None:
         # вход по паролю защищает одинаково при любом адресе
         return "phone" if remote_enabled() else None
     if runtime.lan_bound:  # программа слушает домашнюю сеть: заголовку Host здесь верить нельзя
-        return "phone" if lan_enabled() else None
+        # и пока пользователей нет (только что обновились) — «телефон»: проверка входа объяснит, что сначала нужно
+        # создать администратора на компьютере, а не скажет непонятное «только localhost»
+        return "phone" if db.get_setting("phone_lan") == "1" else None
     # программа запущена не через START.bat (Docker, свой uvicorn): как раньше, по адресу в Host
     return "local" if host in allowed_hosts else None
 
@@ -330,7 +275,7 @@ def keep_tunnel() -> str:
     if url != _state["notified"]:
         _state["notified"] = url
         # у бесплатного туннеля адрес новый после каждого запуска — пусть он сам придёт в Telegram
-        notify.send("phone", f"📱 Prom Loader открывается с телефона по новому адресу:\n{url}\nВход — по паролю из «Настроек».")
+        notify.send("phone", f"📱 Prom Loader открывается с телефона по новому адресу:\n{url}\nВход — по своему логину и паролю.")
     return url
 
 

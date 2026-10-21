@@ -20,8 +20,8 @@
     <a class="logo" href="/">Prom<span>Loader</span></a>
     <nav></nav>
     <div class="right">
-      <button class="btn" id="prom-catalog" title="Загрузить в программу товары, которые уже есть в кабинете Prom">⬇ Каталог с Prom</button>
-      <a class="btn primary" href="/product">+ Новый товар</a>
+      <button class="btn" id="prom-catalog" data-perm="catalog" title="Загрузить в программу товары, которые уже есть в кабинете Prom">⬇ Каталог с Prom</button>
+      <a class="btn primary" href="/product" data-perm="catalog">+ Новый товар</a>
     </div>
   </header>
 
@@ -191,12 +191,12 @@
         </select>
         <a class="btn" id="export-xlsx" href="/api/products.xlsx" title="Скачать список по текущим фильтрам">⬇ Excel</a>
       </div>
-      <div class="toolbar" id="bulk">
+      <div class="toolbar" id="bulk" data-perm="catalog">
         <label class="small"><input type="checkbox" id="check-all"> выбрать все</label>
         <span class="small muted" id="selected-count"></span>
         <span class="spacer"></span>
         <button class="btn primary" data-action="send" disabled>Отправить на Prom</button>
-        <button class="btn" data-action="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
+        <button class="btn" data-action="ai" data-perm="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
         <button class="btn" data-action="prices" disabled title="Опт → закупка, наценка, курс, ±%">💲 Цены</button>
         <button class="btn" data-action="edit" disabled title="Группа, наличие, количество, производитель, ключевые слова">✏ Изменить</button>
         <details class="actions-menu">

@@ -565,7 +565,7 @@ def test_app_starts_in_a_fresh_process(tmp_path):
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env=env,
                          cwd=os.path.dirname(os.path.dirname(__file__)), timeout=120)
     assert out.returncode == 0, out.stderr[-2000:]
-    assert out.stdout.strip().endswith("200")
+    assert out.stdout.strip().endswith("401")  # программа поднялась и просит создать администратора
 
 
 def test_import_does_not_bring_back_a_product_being_deleted(client):

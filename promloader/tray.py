@@ -162,13 +162,19 @@ class App:
             self.notify("Программа ещё запускается — подождите несколько секунд")
 
     def _post(self, path: str) -> None:
-        """Запрос к своему серверу; если включён пароль (APP_PASSWORD) — с ним. Ошибка — исключение."""
+        """Запрос к своему серверу; если включён пароль (APP_PASSWORD) — с ним. Вход пользователя заменяет служебный
+        ключ из папки с данными (users.service_token). Ошибка — исключение."""
         import httpx
 
         auth = None
         if os.environ.get("APP_PASSWORD"):
             auth = (os.environ.get("APP_USER", "admin"), os.environ["APP_PASSWORD"])
-        r = httpx.post(f"http://127.0.0.1:{self.port()}{path}", timeout=5, auth=auth)
+        try:
+            key = (self.data / "service-token").read_text().strip()
+        except OSError:
+            key = ""
+        r = httpx.post(f"http://127.0.0.1:{self.port()}{path}", timeout=5, auth=auth,
+                       headers={"X-PromLoader-Service": key} if key else None)
         r.raise_for_status()
 
     def restart(self, *_):

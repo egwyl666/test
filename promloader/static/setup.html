@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Первый запуск — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#6d3fe0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prom Loader">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+  </header>
+  <main style="max-width:480px">
+    <form class="panel" id="setup" style="margin-top:24px">
+      <h2>👋 Создайте администратора</h2>
+      <p class="small muted" style="margin-top:-6px">Теперь в Prom Loader у каждого свой логин и пароль: так видно, кто
+        что менял, а продавцу можно дать только заказы и чат. Ваши товары, поставщики, заказы и настройки остаются как были —
+        нужно только придумать пароль. Дальше в «Настройках» → «Пользователи» добавите остальных.</p>
+      <label class="field"><span>Логин</span>
+        <input id="login-name" value="admin" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+      <label class="field"><span>Ваше имя <span class="muted">(видно в журнале изменений)</span></span>
+        <input id="name" autocomplete="name"></label>
+      <label class="field"><span>Пароль</span>
+        <input id="password" type="password" autocomplete="new-password" placeholder="не меньше 8 символов" required autofocus></label>
+      <label class="field"><span>Пароль ещё раз</span>
+        <input id="password2" type="password" autocomplete="new-password" required></label>
+      <p class="small muted">Забудете пароль — его можно сбросить кодом, который программа положит в папку с данными
+        на этом компьютере.</p>
+      <button class="btn primary" id="go" type="submit" style="width:100%">Создать и войти</button>
+      <p class="small err-text" id="error" style="margin-bottom:0"></p>
+    </form>
+  </main>
+  <script>
+    const next = new URLSearchParams(location.search).get("next") || "/";
+    const $ = (s) => document.querySelector(s);
+    $("#setup").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("#go").disabled = true;
+      $("#error").textContent = "";
+      try {
+        const r = await fetch("/api/setup", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ login: $("#login-name").value, name: $("#name").value, password: $("#password").value,
+            password2: $("#password2").value, next }) });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body.detail || `Ошибка ${r.status}`);
+        location.replace(body.next || "/");
+      } catch (err) {
+        $("#error").textContent = err.message === "Failed to fetch" ? "Нет связи с программой" : err.message;
+        $("#go").disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
