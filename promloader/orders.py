@@ -99,6 +99,7 @@ _TEXT = ("lower_u(COALESCE(json_extract(data, '$.client_last_name'), '') || ' ' 
 _PHONE = "COALESCE(json_extract(data, '$.phone'), '')"
 for _ch in "+ -()":
     _PHONE = f"replace({_PHONE}, '{_ch}', '')"
+_PHONE10 = f"substr({_PHONE}, -10)"  # последние 10 цифр: «+380 50…», «050…» и «38050…» — один покупатель
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _NUMBER = re.compile(r"^[\s№#+\-()\d]+$")
 
@@ -145,14 +146,56 @@ def list_orders(flt: dict | None = None, limit: int = 50, offset: int = 0) -> di
     ships = {r["order_id"]: dict(r) for r in db.query(f"SELECT * FROM shipments WHERE order_id {db.IN_LIST}",
                                                       (db.as_list([o["id"] for o in items]),))}
     from . import novaposhta
+    buyers = buyer_histories([(o["id"], o["phone"]) for o in items])
     for o in items:
         s = ships.get(o["id"])
-        o["shipment"] = {"ttn": s["ttn"], "own": bool(s["own"]), "stage": s["stage"], "status": s["status"],
-                         "stage_label": novaposhta.STAGE_LABELS.get(s["stage"], s["status"]),
-                         "prom_error": s["prom_error"]} if s else None
+        o["shipment"] = novaposhta.shipment_view(s) if s else None
+        o["buyer"] = buyers.get(o["id"])
     return {"items": items, "total": total, "counts": counts, "unseen": unseen,
             "last_poll": db.get_setting("orders_last_poll"), "error": db.get_setting("orders_error"),
             "loading_all": bool(db.get_setting("orders_cursor"))}
+
+
+# ---------- надёжность покупателя ----------
+# Отказ от посылки с наложенным платежом стоит продавцу доставки туда и обратно. Если этот телефон уже отказывался
+# от посылки (или часто отменял заказы), оператор должен увидеть это до того, как отправит наложенным платежом.
+
+RISKY_CANCELS = 2  # столько отменённых заказов в прошлом — тоже повод попросить предоплату
+
+
+def phone_key(phone) -> str:
+    digits = re.sub(r"\D", "", str(phone or ""))
+    return digits[-10:] if len(digits) >= 9 else ""
+
+
+def buyer_histories(pairs: list[tuple[int, str]]) -> dict[int, dict]:
+    """{номер заказа: история покупателя по его телефону, без самого этого заказа} — одним запросом на страницу."""
+    keys = {oid: phone_key(phone) for oid, phone in pairs}
+    wanted = sorted({k for k in keys.values() if k})
+    if not wanted:
+        return {}
+    rows = db.query(f"""SELECT o.id, o.status, {_PHONE10} AS ph, s.stage FROM orders o
+                        LEFT JOIN shipments s ON s.order_id = o.id WHERE {_PHONE10} {db.IN_LIST}""",
+                    (db.as_list(wanted),))
+    by_phone: dict[str, list] = {}
+    for r in rows:
+        by_phone.setdefault(r["ph"], []).append(r)
+    result = {}
+    for oid, key in keys.items():
+        others = [r for r in by_phone.get(key, []) if r["id"] != oid]
+        h = {"orders": len(others),
+             "delivered": sum(1 for r in others if r["status"] == "delivered" or r["stage"] == "received"),
+             "canceled": sum(1 for r in others if r["status"] == "canceled"),
+             "refused": sum(1 for r in others if r["stage"] == "refused")}
+        h["risky"] = h["refused"] >= 1 or h["canceled"] >= RISKY_CANCELS
+        result[oid] = h
+    return result
+
+
+def buyer_history(phone, exclude_order_id: int = 0) -> dict:
+    """Заказы этого телефона: всего, выполнено, отменено, отказов от посылок (этап «Отказ / возврат» у ТТН)."""
+    return buyer_histories([(exclude_order_id, phone)]).get(
+        exclude_order_id, {"orders": 0, "delivered": 0, "canceled": 0, "refused": 0, "risky": False})
 
 
 def mark_seen(ids: list[int] | None = None) -> None:

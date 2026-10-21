@@ -777,3 +777,10 @@ body.no-chat [data-perm="chat"], body.no-admin [data-perm="admin"] { display: no
 .card-readonly #photo-drop, .card-readonly .photo .del, .card-readonly .rt-toolbar, .card-readonly #btn-add-param,
 .card-readonly #history [data-revert], .card-readonly .lock[data-field], .card-readonly #ai-panel { display: none !important; }
 .card-readonly #form input[readonly], .card-readonly #form textarea[readonly] { background: var(--bg); }
+
+/* ⚠️ покупатель отказывался от посылок / отменял заказы */
+.buyer-risk { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.buyer-risk span { background: #fdecea; color: #a8261b; border: 1px solid #f5c2bd; border-radius: 999px; padding: 2px 10px;
+  font-size: 12px; font-weight: 600; cursor: help; }
+#ttn-buyer .buyer-risk { margin: -4px 0 10px; }
+.dup-best { color: var(--ok, #1b8a3a); }

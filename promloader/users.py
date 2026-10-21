@@ -62,7 +62,8 @@ RULES = [
     # ИИ — отдельное право. Адреса с номером товара — регулярным выражением (начинается с «^»)
     (r"^/api/products/\d+/ai$", "view", "ai"),
     (r"^/api/chat/rooms/[^/]+/ai-draft$", "view", "ai"),
-    ("/api/ai/bulk", "view", ("catalog", "ai")),  # массовый ИИ меняет товары — нужны оба права
+    ("/api/ai/bulk", "view", ("catalog", "ai")),
+    (r"^/api/orders/\d+/remind$", "view", ("orders", "chat")),  # напоминание о посылке — это сообщение в чат  # массовый ИИ меняет товары — нужны оба права
     ("/api/me", None, None),
     ("/api/roles", "admin", "admin"),
     ("/api/push", None, None),           # уведомления на свой телефон — у каждого свои

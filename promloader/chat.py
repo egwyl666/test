@@ -337,6 +337,24 @@ async def send_ttn(client, order_id: int, ttn: str) -> dict:
     return await send(client, room, ttn_message(order_id, ttn))
 
 
+def remind_message(order_id: int, s: dict) -> str:
+    """Вежливое напоминание забрать посылку — по-украински (язык покупателей Prom)."""
+    where = f" у відділенні Нової Пошти ({s['warehouse']})" if s.get("warehouse") else " у відділенні Нової Пошти"
+    until = ""
+    if s.get("keep_until"):
+        y, m, d = (s["keep_until"].split("-") + ["", "", ""])[:3]
+        until = f" Будь ласка, заберіть її до {d}.{m}, поки зберігання безкоштовне." if d else ""
+    return (f"Вітаємо! Ваше замовлення #{order_id} вже чекає на вас{where}. Номер ТТН: {s['ttn']}.{until or ' Будь ласка, заберіть посилку, щоб вона не повернулася.'}"
+            " Дякуємо, що обрали наш магазин!")
+
+
+async def send_reminder(client, order_id: int, s: dict) -> dict:
+    room = room_for_order(order_id)
+    if not room:
+        raise ChatError("У покупателя этого заказа нет чата с магазином — Prom не даёт написать первым. Позвоните ему")
+    return await send(client, room, remind_message(order_id, s))
+
+
 async def mark_read(client, room_ident: str) -> int:
     """Отметить прочитанными сообщения покупателя в комнате (на Prom — последнее, этого достаточно)."""
     room = db.query_one("SELECT room_id FROM chat_rooms WHERE room_ident = ?", (room_ident,))

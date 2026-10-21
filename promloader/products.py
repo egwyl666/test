@@ -312,6 +312,10 @@ def get(product_id: int) -> dict:
         except rates.RateError:
             pass
     p["origins"] = origins(product_id, p)
+    p["dup_of_product"] = None
+    if p.get("dup_of"):
+        best = db.query_one("SELECT id, name, external_id FROM products WHERE id = ?", (p["dup_of"],))
+        p["dup_of_product"] = dict(best) if best else {"id": p["dup_of"], "name": "", "external_id": ""}
     p["prom_conflict"] = json.loads(p.get("prom_conflict") or "{}")
     p["supplier"] = None
     if p["supplier_id"]:
@@ -455,6 +459,8 @@ READINESS = {
     "missing_ai": f"(NOT ({_HAS_UA}) OR NOT {_FILLED.format(f='keywords')}) AND NOT {_NEEDS_MANUAL}",
     "needs_manual": _NEEDS_MANUAL,
 }
+# скрытые дубли (dup_of) — не «готовы», не «заполнить через ИИ»: их убрали ради выгодного товара
+READINESS = {k: f"p.dup_of IS NULL AND {v}" for k, v in READINESS.items()}
 READINESS_LABELS = {"ready_to_promote": "готовы для Prom", "missing_ua": "без украинского текста",
                     "missing_keywords": "без ключевых слов", "missing_price_or_photo": "без цены или фото",
                     "needs_manual": "мало данных — заполнить вручную"}
@@ -662,9 +668,10 @@ def _norm_name(value) -> str:
 
 def find_duplicates() -> list[dict]:
     """Группы товаров, похожих на один и тот же: одинаковый штрихкод, код поставщика (от 4 символов) или название.
-    Удаляемые товары не учитываются. Товар попадает в одну группу (первое совпадение: штрихкод → код → название)."""
+    Удаляемые и уже скрытые как дубль не учитываются. Товар попадает в одну группу (первое совпадение: штрихкод →
+    код → название). В каждой группе ids упорядочены: первый — выгодный (best)."""
     rows = db.query("""SELECT p.id, p.name, p.barcode, p.vendor_code, p.supplier_id, p.status
-                       FROM products p WHERE p.status != 'deleting'""")
+                       FROM products p WHERE p.status != 'deleting' AND p.dup_of IS NULL""")
     groups: dict = {}
     taken: set = set()
     for kind, keyfn, minimum in (("barcode", lambda r: re.sub(r"\D", "", r["barcode"] or ""), 8),
@@ -681,7 +688,61 @@ def find_duplicates() -> list[dict]:
             if len(ids) > 1:
                 groups[(kind, key)] = ids
                 taken.update(ids)
-    return [{"kind": kind, "key": key, "ids": ids} for (kind, key), ids in groups.items()]
+    found = [{"kind": kind, "key": key, "ids": ids} for (kind, key), ids in groups.items()]
+    if found:
+        from . import rates
+        table = rates.Table()
+        detail = {r["id"]: r for r in db.query(f"{LIST_SELECT} WHERE p.id {db.IN_LIST}",
+                                                (db.as_list([i for g in found for i in g["ids"]]),))}
+        for g in found:
+            g["ids"].sort(key=lambda i: _best_key(detail[i], table), reverse=True)
+            g["best"] = g["ids"][0]
+    return found
+
+
+def _best_key(r, table) -> tuple:
+    """Какой из дублей оставить: в наличии → закупка известна → больше наценка → дешевле закупка → есть фото."""
+    m = margin(r, table)[0]
+    cost = _in_uah(table, r["cost_price"], r["cost_currency"], r["supplier_id"])
+    return (r["presence"] == "available", m is not None, m if m is not None else 0.0,
+            -cost if cost is not None else float("-inf"), (r["image_count"] or 0) > 0, -r["id"])
+
+
+DUP_SOURCE = "Дубли: оставлен выгодный"
+
+
+def keep_best_duplicates() -> dict:
+    """«Оставить выгодный»: в каждой группе дублей выгодный остаётся как есть, остальные — в черновики с пометкой
+    «скрыт как дубль» (dup_of). На Prom ничего не удаляется: уже выгруженные дубли там остаются, их число — в ответе."""
+    from . import changes
+    groups = find_duplicates()
+    hidden, on_prom, busy = 0, 0, 0
+    with db.tx() as c:
+        for g in groups:
+            for pid in g["ids"][1:]:
+                row = c.execute("SELECT status, synced_at FROM products WHERE id = ?", (pid,)).fetchone()
+                if row is None:
+                    continue
+                if row["status"] in ("sending", "deleting"):
+                    busy += 1  # отправляется прямо сейчас — не трогаем, решится на следующем шаге
+                    continue
+                c.execute("UPDATE products SET dup_of = ?, status = 'draft', updated_at = ? WHERE id = ?",
+                          (g["best"], db.now(), pid))
+                if row["status"] != "draft":
+                    changes.record(c, pid, "status", STATUSES.get(row["status"], row["status"]), STATUSES["draft"],
+                                   who=DUP_SOURCE)
+                hidden += 1
+                on_prom += 1 if row["synced_at"] else 0
+    return {"groups": len(groups), "hidden": hidden, "on_prom": on_prom, "busy": busy}
+
+
+def unhide_duplicate(product_id: int) -> dict:
+    """Вернуть товар, скрытый как дубль (остаётся черновиком — дальше как обычно)."""
+    with db.tx() as c:
+        if not c.execute("UPDATE products SET dup_of = NULL, updated_at = ? WHERE id = ?",
+                         (db.now(), product_id)).rowcount:
+            raise KeyError(product_id)
+    return get(product_id)
 
 
 DUPLICATE_KINDS = {"barcode": "штрихкод", "vendor_code": "код поставщика", "name": "название"}
@@ -712,9 +773,7 @@ def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: in
         all_rows = [r for r in db.query(f"{LIST_SELECT} {count_clause}", count_args) if r["id"] in position]
         if flt.get("profit") in PROFIT_FILTERS or sort in PROFIT_SORTS:
             all_rows = _profit_rows(all_rows, flt, sort)
-        from . import rates
-        table = rates.Table()
-        all_rows.sort(key=lambda r: (position[r["id"]][0], -((margin(r, table)[0]) or -1e12)))
+        all_rows.sort(key=lambda r: position[r["id"]])  # группа за группой, в группе первым — выгодный
         counts: dict = {}
         for r in all_rows:
             counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -769,7 +828,7 @@ def list_products(flt: dict | None = None, sort: str = "updated", limit: int = 2
     table = rates.Table()
     dup = {}
     if (flt or {}).get("duplicates") in _TRUE:  # «дубль по: штрихкод 4820…» — чтобы было видно, что их объединяет
-        dup = {pid: {"group": n, "kind": DUPLICATE_KINDS[g["kind"]], "key": g["key"]}
+        dup = {pid: {"group": n, "kind": DUPLICATE_KINDS[g["kind"]], "key": g["key"], "best": pid == g["best"]}
                for n, g in enumerate(find_duplicates()) for pid in g["ids"]}
     items = []
     for r in rows:
@@ -1117,9 +1176,11 @@ def set_status(ids: list[int], status: str) -> int:
         raise ProductError("Вручную можно ставить только «черновик» или «готов»")
     with db.tx() as c:
         for pid in ids:
+            # вручную в «Готов» — значит, дубль всё-таки нужен: пометку «скрыт как дубль» снимаем
             c.execute(
-                "UPDATE products SET status = ?, updated_at = ? WHERE id = ? AND status NOT IN ('sending', 'deleting')",
-                (status, db.now(), pid),
+                "UPDATE products SET status = ?, updated_at = ?, dup_of = CASE WHEN ? = 'ready' THEN NULL ELSE dup_of END "
+                "WHERE id = ? AND status NOT IN ('sending', 'deleting')",
+                (status, db.now(), status, pid),
             )
     return len(ids)
 

@@ -362,6 +362,7 @@ function applyServer(product) {
   renderCheck(product.check);
   renderSupplier(product);
   renderCategory(product);
+  renderDupOf(product);
   lockForm();
   renderPhotos();
   renderPreview();
@@ -915,6 +916,26 @@ document.addEventListener("ai-changed", renderAiPanel);  // ИИ подключ�
 $("#ai-instruction").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); askAi("custom", e.target.value); }
 });
+
+// Товар скрыт как дубль («Оставить выгодный» в списке): чей он дубль и «Вернуть»
+function renderDupOf(p) {
+  let box = $("#dup-of");
+  if (!p.dup_of_product) { if (box) box.remove(); return; }
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "dup-of";
+    box.className = "readonly-note";
+    form.insertAdjacentElement("beforebegin", box);
+  }
+  const best = p.dup_of_product;
+  box.innerHTML = `👥 ${esc(I18N.tr("Скрыт как дубль выгодного товара"))} <a href="/product?id=${best.id}" translate="no">${esc(best.name || best.external_id || "№" + best.id)}</a>.
+    ${esc(I18N.tr("Не считается готовым и не попадает в автоконвейер."))}
+    <button type="button" class="btn small" id="dup-unhide" data-perm="catalog">${esc(I18N.tr("Вернуть"))}</button>`;
+  box.querySelector("#dup-unhide").onclick = (e) => busy(e.target, async () => {
+    try { applyServer(await api(`/api/products/${state.id}/dup-unhide`, { method: "POST" })); toast(I18N.tr("Товар больше не считается дублем"), "ok"); }
+    catch (err) { toast(err.message, "error"); }
+  });
+}
 
 // ---------- только просмотр ----------
 // Роль без права «товары» (Оператор, Только просмотр, своя роль): поля закрыты, кнопки изменений спрятаны,

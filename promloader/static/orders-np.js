@@ -12,10 +12,16 @@ function shipmentBlock(o) {
   if (s) {
     const label = s.own ? `<button class="btn small" data-ttn-label="${o.id}">🖨 Этикетка 100×100</button>` : "";
     const del = s.own && s.stage === "created" ? `<button class="btn small danger" data-ttn-delete="${o.id}">Удалить ТТН</button>` : "";
+    // посылка на отделении: сколько дней ждёт и «🔔 Напомнить в чат» (раз в сутки, отметка — у всех операторов)
+    const waiting = s.stage === "arrived" && s.days_waiting !== null && s.days_waiting !== undefined
+      ? `<span class="small ${s.days_waiting >= 3 ? "err-text" : "muted"}">${esc(I18N.tr(`ждёт на отделении: ${s.days_waiting} дн.`))}</span>` : "";
+    const remind = s.stage !== "arrived" ? ""
+      : s.can_remind ? `<button class="btn small" data-remind="${o.id}" data-perm="chat">🔔 Напомнить в чат</button>`
+      : `<span class="small muted" title="${esc(formatDate(s.reminded_at))}">${esc(I18N.tr("🔔 Напомнили"))} ${esc(formatDate(s.reminded_at))}</span>`;
     return `<div class="toolbar ttn-row" style="margin:10px 0 0">
       <span>🚚 ТТН <b translate="no">${esc(s.ttn)}</b></span>
       <span class="badge ${NP_STAGE_CLASS[s.stage] || "draft"}" title="${esc(s.status)}">${esc(s.stage_label || I18N.tr("Ждёт проверки"))}</span>
-      ${label}${del}
+      ${waiting}${remind}${label}${del}
       ${s.prom_error ? `<span class="small err-text">${esc(s.prom_error)}</span>` : ""}
     </div>`;
   }
@@ -26,7 +32,27 @@ function shipmentBlock(o) {
   return "";
 }
 
+// ⚠️ у покупателя были отказы от посылок или отмены — спросите предоплату вместо наложенного платежа
+function buyerBadge(b) {
+  if (!b || !b.risky) return "";
+  const parts = [];
+  if (b.refused) parts.push(I18N.tr(`⚠️ Отказ от посылки в прошлом (${b.refused})`));
+  if (b.canceled >= 2) parts.push(I18N.tr(`⚠️ Отменял заказы (${b.canceled})`));
+  const title = I18N.tr(`Заказов с этого телефона: ${b.orders}, выполнено: ${b.delivered}, отменено: ${b.canceled}, отказов от посылок: ${b.refused}. Лучше попросить предоплату вместо наложенного платежа.`);
+  return `<div class="buyer-risk" title="${esc(title)}">${parts.map((t) => `<span>${esc(t)}</span>`).join(" ")}</div>`;
+}
+
+async function remindBuyer(btn) {
+  try {
+    await api(`/api/orders/${btn.dataset.remind}/remind`, { method: "POST" });
+    toast(I18N.tr("Напоминание отправлено покупателю в чат Prom"), "ok");
+  } catch (err) { toast(err.message, "error"); }
+  await load();
+}
+
 function handleTtnClick(e) {
+  const remind = e.target.closest("[data-remind]");
+  if (remind) { busy(remind, () => remindBuyer(remind)); return true; }
   const create = e.target.closest("[data-ttn-create]");
   if (create) { busy(create, () => openTtn(Number(create.dataset.ttnCreate))); return true; }
   const label = e.target.closest("[data-ttn-label]");
@@ -48,6 +74,7 @@ async function openTtn(id) {
   ttnOrder = id;
   const d = ttnDraft;
   $("#ttn-order").textContent = id;
+  $("#ttn-buyer").innerHTML = buyerBadge(d.buyer);
   $("#ttn-not-ready").classList.toggle("hidden", d.ready);
   $("#ttn-last").value = d.last_name; $("#ttn-first").value = d.first_name; $("#ttn-middle").value = d.middle_name;
   $("#ttn-phone").value = d.phone;

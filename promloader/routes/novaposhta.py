@@ -83,7 +83,40 @@ def np_track():
 
 @router.get("/api/orders/{order_id}/ttn/draft")
 def ttn_draft(order_id: int):
-    return {**_np(novaposhta.draft, order_id), "ready": novaposhta.sender_ready(), "payers": novaposhta.PAYERS}
+    d = _np(novaposhta.draft, order_id)
+    # история покупателя: отказывался от посылок — оператор увидит это до отправки наложенным платежом
+    return {**d, "ready": novaposhta.sender_ready(), "payers": novaposhta.PAYERS,
+            "buyer": orders.buyer_history(d.get("phone"), exclude_order_id=order_id)}
+
+
+@router.post("/api/orders/{order_id}/remind")
+async def remind_buyer(order_id: int):
+    """«🔔 Напомнить в чат»: посылка ждёт на отделении — вежливое сообщение покупателю в чат Prom (один раз в сутки)."""
+    s = await asyncio.to_thread(novaposhta.shipment, order_id)
+    if not s or s["stage"] != "arrived":
+        raise HTTPException(400, "Посылка не на отделении — напоминать пока не о чем")
+    if novaposhta.remind_blocked(s["reminded_at"]):
+        raise HTTPException(409, "Покупателю уже напомнили — повторно можно через сутки")
+    if not config.get("prom_token"):
+        raise HTTPException(400, "Напоминание не отправлено: не указан токен Prom")
+    owner = await asyncio.to_thread(db.acquire, f"remind:{order_id}", 60)
+    if owner is None:  # два оператора нажали одновременно
+        raise HTTPException(409, "Напоминание уже отправляется")
+    try:
+        async with sync.make_client() as client:
+            await chat.send_reminder(client, order_id, s)
+        def save():
+            with db.tx() as c:
+                c.execute("UPDATE shipments SET reminded_at = ? WHERE order_id = ?", (db.now(), order_id))
+        await asyncio.to_thread(save)
+    except chat.ChatError as exc:
+        raise HTTPException(400, str(exc))
+    except PromError as exc:
+        raise HTTPException(400, f"Напоминание не отправлено: {exc}")
+    finally:
+        await asyncio.to_thread(db.release, f"remind:{order_id}", owner)
+    log.info("Заказ %s: покупателю напомнили забрать посылку %s", order_id, s["ttn"])
+    return {"ok": True}
 
 
 @router.post("/api/orders/{order_id}/ttn")

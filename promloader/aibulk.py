@@ -341,7 +341,7 @@ def start_pipeline(supplier_id: int) -> dict:
     # одним запросом и только нужные поля: у поставщика бывают тысячи черновиков, конвейер идёт после каждого прайса
     rows = db.query("""SELECT p.id, p.name, p.name_ua, p.description, p.description_ua, p.keywords, p.params, p.vendor
                        FROM products p WHERE p.supplier_id = ? AND p.status = 'draft'
-                       AND p.presence = 'available' AND NOT EXISTS (
+                       AND p.presence = 'available' AND p.dup_of IS NULL AND NOT EXISTS (
                          SELECT 1 FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
                          WHERE i.product_id = p.id AND i.status = 'pending' AND j.status IN ('running', 'paused'))""",
                     (supplier_id,))

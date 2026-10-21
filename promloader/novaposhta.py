@@ -16,7 +16,6 @@ methodProperties} → {success, data, errors, warnings}.
 import json
 import logging
 import re
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -55,10 +54,10 @@ class TTNConflict(NPError):
     """У заказа уже есть ТТН или её прямо сейчас создаёт кто-то другой (ответ 409)."""
 
 
-# заказы, для которых ТТН создаётся прямо сейчас: два оператора нажали «Создать» одновременно — Нова Пошта создала
-# бы две накладные (проверка «уже есть ТТН» видит только сохранённые)
-_creating: set[int] = set()
-_creating_lock = threading.Lock()
+# Замок «ТТН для заказа создаётся» — в базе (db.acquire), а не в памяти: его видят и вторая копия программы на тех же
+# данных, и программа после быстрого перезапуска. TTL — с запасом на ответ Новой Почты (там до трёх попыток по 30 с);
+# если программа упала посреди запроса, через TTL создать ТТН снова можно (сначала проверьте кабинет НП)
+TTN_LOCK_SECONDS = 600
 
 
 # ---------- запросы ----------
@@ -261,15 +260,13 @@ def create(order_id: int, form: dict, transport=None) -> dict:
         raise NPError("Сначала подключите Новую Почту в «Настройках»: ключ API, отправитель и отделение отправки")
     order = _order(order_id)
     f = _validate(form)
-    with _creating_lock:
-        if order_id in _creating:
-            raise TTNConflict("ТТН для этого заказа уже создаётся (кто-то нажал раньше) — обновите заказ через минуту")
-        _creating.add(order_id)
+    owner = db.acquire(f"ttn:{order_id}", TTN_LOCK_SECONDS)
+    if owner is None:
+        raise TTNConflict("ТТН для этого заказа уже создаётся (кто-то нажал раньше) — обновите заказ через минуту")
     try:
         return _create(order_id, order, f, transport)
     finally:
-        with _creating_lock:
-            _creating.discard(order_id)
+        db.release(f"ttn:{order_id}", owner)
 
 
 def _create(order_id: int, order: dict, f: dict, transport=None) -> dict:
@@ -347,6 +344,39 @@ def shipment(order_id: int) -> dict | None:
     return s
 
 
+def days_waiting(arrived_at: str | None, now: datetime | None = None) -> int | None:
+    """Сколько полных дней посылка лежит на отделении (None — ещё не прибыла)."""
+    if not arrived_at:
+        return None
+    try:
+        return max(0, ((now or datetime.now(timezone.utc)) - datetime.fromisoformat(arrived_at)).days)
+    except ValueError:
+        return None
+
+
+def shipment_view(s) -> dict:
+    """Посылка для списка заказов: этап, сколько ждёт на отделении, когда напоминали покупателю."""
+    s = dict(s)
+    waiting = days_waiting(s.get("arrived_at")) if s["stage"] == "arrived" else None
+    return {"ttn": s["ttn"], "own": bool(s["own"]), "stage": s["stage"], "status": s["status"],
+            "stage_label": STAGE_LABELS.get(s["stage"], s["status"]), "prom_error": s["prom_error"],
+            "days_waiting": waiting, "warehouse": s.get("warehouse") or "", "keep_until": s.get("keep_until") or "",
+            "reminded_at": s.get("reminded_at") or "",
+            "can_remind": s["stage"] == "arrived" and not remind_blocked(s.get("reminded_at"))}
+
+
+REMIND_AGAIN_HOURS = 24  # повторное напоминание — не раньше чем через сутки: не надоедаем покупателю
+
+
+def remind_blocked(reminded_at: str | None) -> bool:
+    if not reminded_at:
+        return False
+    try:
+        return datetime.now(timezone.utc) - datetime.fromisoformat(reminded_at) < timedelta(hours=REMIND_AGAIN_HOURS)
+    except ValueError:
+        return False
+
+
 # ---------- отслеживание ----------
 
 def _sync_from_prom() -> int:
@@ -403,8 +433,12 @@ def track(transport=None) -> int:
                 arrived = s["arrived_at"]
                 if stage == "arrived" and not arrived:
                     arrived = now.isoformat(timespec="seconds")
-                c.execute("""UPDATE shipments SET status_code = ?, status = ?, stage = ?, arrived_at = ?, checked_at = ?
-                             WHERE order_id = ?""", (code, str(r.get("Status") or ""), stage, arrived, db.now(), s["order_id"]))
+                # отделение и дата платного хранения — для напоминания покупателю («заберіть до …»)
+                c.execute("""UPDATE shipments SET status_code = ?, status = ?, stage = ?, arrived_at = ?, checked_at = ?,
+                             warehouse = ?, keep_until = ? WHERE order_id = ?""",
+                          (code, str(r.get("Status") or ""), stage, arrived, db.now(),
+                           str(r.get("WarehouseRecipient") or s.get("warehouse") or ""),
+                           str(r.get("DatePayedKeeping") or s.get("keep_until") or "")[:10], s["order_id"]))
                 who = f"заказ №{s['order_id']}, ТТН {s['ttn']}"
                 if stage == "arrived":
                     _alert(c, s, "parcel_arrived", f"📦 Посылка прибыла в отделение ({who})\n{r.get('WarehouseRecipient') or ''}")

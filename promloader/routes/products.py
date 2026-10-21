@@ -136,6 +136,17 @@ def products_alerts():
     return products.list_alerts()
 
 
+@router.post("/api/products/duplicates/keep-best")
+def duplicates_keep_best():
+    """«Оставить выгодный»: в каждой группе дублей остальные — в черновики с пометкой «скрыт как дубль»."""
+    return products.keep_best_duplicates()
+
+
+@router.post("/api/products/{product_id}/dup-unhide")
+def duplicate_unhide(product_id: int):
+    return products.unhide_duplicate(product_id)
+
+
 @router.post("/api/products/{product_id}/prom-conflict")
 def product_conflict(product_id: int, action: str = Body(...), fields: list[str] | None = Body(None)):
     return products.resolve_conflict(product_id, action, fields)

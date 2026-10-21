@@ -39,6 +39,7 @@ PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt"}     # ai.py — что 
 PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
                  "build_batch_prompt",  # ai.py — задание для модели
                  "ttn_message",         # chat.py — сообщение покупателю по-украински
+                 "remind_message",      # chat.py — напоминание покупателю по-украински
                  "_notify_job",         # aibulk.py — текст в Telegram (Telegram — по-русски)
                  "_margin_alert",       # suppliers.py — текст в Telegram
                  "quick_replies",       # chat.py — ответы покупателю на его языке

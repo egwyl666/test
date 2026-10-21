@@ -93,10 +93,28 @@ async function loadAlerts() {
   const chip = (key, label, n, cls) => `<button class="chip ${list[key] ? "active" : ""} ${cls}" data-alert="${key}">${esc(I18N.tr(label))}<b>${n}</b></button>`;
   const html = [r.conflicts ? chip("conflict", "⚡ Конфликты с кабинетом Prom", r.conflicts, "alert-conflict") : "",
                 r.duplicates ? chip("duplicates", "🔍 Возможные дубли", r.duplicates, "") : ""].join("");
-  $("#list-alerts").innerHTML = html;
+  // в режиме «дубли»: одной кнопкой оставить в каждой группе выгодный, остальные — в черновики
+  const keep = list.duplicates && r.duplicates
+    ? `<button class="btn small primary" id="dup-keep-best" data-perm="catalog">${esc(I18N.tr("Оставить выгодный (скрыть дубли в черновик)"))}</button>` : "";
+  $("#list-alerts").innerHTML = html + keep;
   $("#list-alerts").classList.toggle("hidden", !html && !list.conflict && !list.duplicates);
 }
+
+async function keepBestDuplicates(btn) {
+  if (!confirm(I18N.tr("В каждой группе дублей останется выгодный товар (★), остальные уйдут в черновики с пометкой «скрыт как дубль» и не попадут в автоконвейер. На Prom ничего не удаляется. Продолжить?"))) return;
+  try {
+    const r = await api("/api/products/duplicates/keep-best", { method: "POST" });
+    let text = I18N.tr(`Скрыто дублей: ${r.hidden} (групп: ${r.groups})`);
+    if (r.on_prom) text += ". " + I18N.tr(`${r.on_prom} из них уже есть на Prom — там они остались; если не нужны, удалите их кнопкой «Удалить» → «и на Prom»`);
+    toast(text, "ok");
+    list.duplicates = "";
+    applyFilters();
+  } catch (err) { toast(err.message, "error"); }
+}
+
 $("#list-alerts").addEventListener("click", (e) => {
+  const keep = e.target.closest("#dup-keep-best");
+  if (keep) { busy(keep, () => keepBestDuplicates(keep)); return; }
   const b = e.target.closest("[data-alert]");
   if (!b) return;
   list[b.dataset.alert] = list[b.dataset.alert] ? "" : "1";
@@ -214,7 +232,8 @@ function renderRows() {
           : `<a class="name" href="/product?id=${p.id}"><span class="muted">Без названия</span></a>`}
         <div class="small muted"><span translate="no">${esc(p.external_id)}</span> · <span>фото: ${p.image_count}</span>${p.supplier_name ? ` · <span translate="no">${esc(p.supplier_name)}</span>` : ""}${p.locked_fields.length ? ` · <span title="Поля, изменённые вручную: ${esc(p.locked_fields.join(", "))}">🔒 ${p.locked_fields.length}</span>` : ""}</div>
         <div class="show-sm" style="margin-top:4px">${statusBadge(p.status)}</div>
-        ${p.dup ? `<div class="small dup-note">${esc(I18N.tr("дубль по"))} ${esc(I18N.tr(p.dup.kind))}: <span translate="no">${esc(p.dup.key.slice(0, 40))}</span>${p.margin_uah !== null && p.margin_uah !== undefined ? ` · ${esc(I18N.tr("наценка"))} ${esc(formatPrice(p.margin_uah, "UAH"))}` : ""}</div>` : ""}
+        ${p.dup ? `<div class="small dup-note">${p.dup.best ? `<b class="dup-best">★ ${esc(I18N.tr("выгодный"))}</b> · ` : ""}${esc(I18N.tr("дубль по"))} ${esc(I18N.tr(p.dup.kind))}: <span translate="no">${esc(p.dup.key.slice(0, 40))}</span>${p.margin_uah !== null && p.margin_uah !== undefined ? ` · ${esc(I18N.tr("наценка"))} ${esc(formatPrice(p.margin_uah, "UAH"))}` : ""}</div>` : ""}
+        ${p.dup_of ? `<div class="small muted">👥 ${esc(I18N.tr("скрыт как дубль"))}</div>` : ""}
         ${p.prom_conflict ? `<div class="small conflict-note">⚡ ${esc(I18N.tr("конфликт с кабинетом Prom — откройте товар"))}</div>` : ""}
         ${problems}${promError}${deleting}
       </td>
@@ -314,7 +333,7 @@ function renderFilterControls() {
   if (list.conflict) active.push(["conflict", "конфликты с кабинетом Prom"]);
   if (list.duplicates) active.push(["duplicates", "возможные дубли"]);
   $("#active-filters").innerHTML = active.map(([k, label]) =>
-    `<button class="chip active" data-clear="${k}" title="Убрать фильтр">${esc(label)} ×</button>`).join("");
+    `<button class="chip active" data-clear="${k}" title="Убрать фильтр"><span>${esc(label)}</span> ×</button>`).join("");
   const more = Object.keys(FLAG_LABELS).filter((k) => list[k]).length + (list.on_prom ? 1 : 0) + (list.prom_category ? 1 : 0);
   $("#more-filters-label").textContent = more ? `Ещё фильтры (${more}) ▾` : "Ещё фильтры ▾";
 }

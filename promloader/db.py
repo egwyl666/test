@@ -4,6 +4,8 @@ import json
 import os
 import sqlite3
 import threading
+import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -331,6 +333,14 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at    TEXT
 );
 
+-- Короткие замки на опасные действия (db.acquire): видны и другому процессу, и программе после перезапуска.
+-- until — до какого времени (секунды Unix) замок действует, если его не сняли (процесс упал посреди запроса)
+CREATE TABLE IF NOT EXISTS locks (
+    name   TEXT PRIMARY KEY,
+    owner  TEXT NOT NULL,
+    until  REAL NOT NULL
+);
+
 -- Роли пользователей: готовые (builtin) и свои; perms — JSON-список прав (users.EDITABLE_PERMS)
 CREATE TABLE IF NOT EXISTS roles (
     id        TEXT PRIMARY KEY,
@@ -374,6 +384,9 @@ MIGRATIONS = {
         # каталога) и что нужно нам — иначе не увидеть, где Prom поставил не то
         "prom_category_id": "INTEGER",
         "target_category_id": "INTEGER",
+        # «скрыт как дубль»: номер выгодного товара, ради которого этот убран в черновики. Такой товар не считается
+        # готовым, не попадает в автоконвейер и в «возможные дубли»
+        "dup_of": "INTEGER",
     },
     "supplier_items": {
         "ignored": "INTEGER NOT NULL DEFAULT 0",
@@ -393,6 +406,11 @@ MIGRATIONS = {
         "clean_names": "INTEGER NOT NULL DEFAULT 0",
         "url_ua": "TEXT NOT NULL DEFAULT ''",
         "auto_pipeline": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "shipments": {
+        "warehouse": "TEXT NOT NULL DEFAULT ''",     # отделение получателя (из отслеживания)
+        "keep_until": "TEXT NOT NULL DEFAULT ''",    # с какой даты хранение платное (DatePayedKeeping), ГГГГ-ММ-ДД
+        "reminded_at": "TEXT NOT NULL DEFAULT ''",   # когда напомнили покупателю в чат забрать посылку
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",
@@ -515,6 +533,23 @@ def paused() -> bool:
     """Фоновая работа на паузе: данные перенесены на другой компьютер или сервер, и работает он — иначе оба
     забирали бы заказы и чат с Prom, слали двойные уведомления и мешали друг другу при отправке."""
     return get_setting("paused") == "1"
+
+
+def acquire(name: str, ttl: float) -> str | None:
+    """Взять замок name на ttl секунд. Возвращает ключ владельца (для release) или None — замок уже держит кто-то
+    другой (ещё не истёк). Одна строка INSERT OR IGNORE: атомарно и между процессами (SQLite сам их упорядочивает)."""
+    owner = f"{os.getpid()}-{uuid.uuid4().hex}"
+    now = time.time()
+    with tx() as c:
+        c.execute("DELETE FROM locks WHERE name = ? AND until < ?", (name, now))
+        taken = c.execute("INSERT OR IGNORE INTO locks (name, owner, until) VALUES (?, ?, ?)",
+                          (name, owner, now + ttl)).rowcount
+    return owner if taken else None
+
+
+def release(name: str, owner: str) -> None:
+    with tx() as c:
+        c.execute("DELETE FROM locks WHERE name = ? AND owner = ?", (name, owner))
 
 
 def as_list(values) -> str:

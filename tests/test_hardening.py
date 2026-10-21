@@ -103,7 +103,7 @@ def test_second_ttn_for_same_order_is_refused_while_first_is_in_flight(slow_np, 
     saves = [c for c in slow_np.calls if c[0] == "InternetDocument.save"]
     assert len(saves) == 1  # в Новой Почте — ровно одна накладная
     assert db.query_one("SELECT COUNT(*) AS n FROM shipments WHERE order_id = 2001")["n"] == 1
-    assert not novaposhta._creating  # замок снят
+    assert db.query_one("SELECT COUNT(*) AS n FROM locks")["n"] == 0  # замок снят
 
 
 def test_failed_ttn_releases_the_lock(slow_np):
@@ -112,7 +112,7 @@ def test_failed_ttn_releases_the_lock(slow_np):
     form = novaposhta.draft(2002)
     with pytest.raises(novaposhta.NPError):
         novaposhta.create(2002, {**form, "phone": "12345"})
-    assert not novaposhta._creating
+    assert db.query_one("SELECT COUNT(*) AS n FROM locks")["n"] == 0
 
 
 # ---------- 3. фото «из прайса» ведёт в домашнюю сеть ----------

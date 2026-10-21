@@ -83,6 +83,7 @@
   <div class="modal hidden" id="ttn-modal">
     <div class="modal-box">
       <h2>📦 ТТН Новой Почты — заказ №<span id="ttn-order"></span></h2>
+      <div id="ttn-buyer"></div>
       <p class="small err-text hidden" id="ttn-not-ready">Сначала подключите Новую Почту: «Настройки» → «Новая Почта» (ключ API, отправитель, отделение отправки).</p>
       <div class="row" style="gap:8px;flex-wrap:wrap">
         <label class="field" style="flex:1;min-width:140px"><span>Фамилия</span><input id="ttn-last" translate="no"></label>
@@ -201,6 +202,7 @@
           <div>
             <div>${o.client ? `<b translate="no">${esc(o.client)}</b>` : "<b>Покупатель</b>"}</div>
             ${o.phone ? `<div><a href="tel:${esc(o.phone)}" data-call="${o.id}">${esc(o.phone)}</a></div>` : ""}
+            ${buyerBadge(o.buyer)}
             ${o.email ? `<div class="small muted">${esc(o.email)}</div>` : ""}
             ${o.delivery ? `<div class="small" style="margin-top:6px" translate="no">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
             ${o.payment ? `<div class="small" translate="no">💳 ${esc(o.payment)}</div>` : ""}

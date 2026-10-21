@@ -7,7 +7,7 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 
 | Таблица | Что хранит · важные колонки |
 |---|---|
-| `products` | Товар. `external_id` (артикул = id оффера на Prom), тексты RU/UA, `price`/`currency` (розница), `cost_price`/`rrp` + `cost_currency` (закупка в своей валюте), `presence`, `quantity`, `params` (JSON), `status`, `last_error`, `revision`, `synced_at`, `prom_id`, `supplier_id`, `locked_fields` (🔒), `pending_fields` (что не отправлено), `vendor_code`, `barcode`, `delete_next_at`/`delete_attempts`, `prom_no_ext` (в кабинете Prom у товара пустой «Ідентифікатор_товару»), `videos` (JSON-список ссылок YouTube), `prom_category_id` / `target_category_id` (категория Prom: на Prom / нужная) |
+| `products` | Товар. `external_id` (артикул = id оффера на Prom), тексты RU/UA, `price`/`currency` (розница), `cost_price`/`rrp` + `cost_currency` (закупка в своей валюте), `presence`, `quantity`, `params` (JSON), `status`, `last_error`, `revision`, `synced_at`, `prom_id`, `supplier_id`, `locked_fields` (🔒), `pending_fields` (что не отправлено), `vendor_code`, `barcode`, `delete_next_at`/`delete_attempts`, `prom_no_ext` (в кабинете Prom у товара пустой «Ідентифікатор_товару»), `videos` (JSON-список ссылок YouTube), `prom_category_id` / `target_category_id` (категория Prom: на Prom / нужная), `dup_of` (скрыт как дубль выгодного товара с этим id, 2.24.0) |
 | `prom_categories` | Справочник категорий каталога Prom: `caption`, `path`, `url` |
 | `group_categories` | Правило «группа → категория Prom» |
 | `chat_rooms`, `chat_messages` | Копия чата Prom: комната (`room_ident`, покупатель, последнее сообщение, `unread`, товар, заказ) и сообщения (`is_my`, `type` message / attachment / context) |
@@ -22,12 +22,13 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `ai_jobs`, `ai_items` | Массовый ИИ и откат; `ai_jobs.user` — кто запустил (его имя пишется в журнал у правок задания) |
 | `ai_usage` | Каждый запрос к ИИ: `at`, `provider`, `model` (ответившая), `action`, `source` (`card`/`bulk`/`check`), `job_id`, `tokens_in`/`tokens_out` (мышление — в выходе), `cost_usd` (NULL — цена неизвестна), `ok`, `error` |
 | `orders` | Заказы Prom |
-| `shipments` | Посылки Новой Почты по заказам: ТТН, `own` (создана программой), этап и статус, `arrived_at`, отправленные уведомления (`alerts`), ошибка передачи номера в Prom |
+| `shipments` | Посылки Новой Почты по заказам: ТТН, `warehouse`, `keep_until` (платное хранение с), `reminded_at` (напомнили в чат), `own` (создана программой), этап и статус, `arrived_at`, отправленные уведомления (`alerts`), ошибка передачи номера в Prom |
 | `push_subscriptions` | Телефоны с push-уведомлениями: endpoint, ключи, события |
 | `tg_recipients` | Получатели Telegram и их события |
 | `tg_outbox` | Очередь уведомлений Telegram: `chat_id`, `text`, `next_at`, `attempts`, `last_error`, `sent_at`, `failed` (через 48 ч без доставки); отправленные хранятся 30 дней |
 | `support_tickets` | Обращения в поддержку |
 | `r2_objects` | Фото, загруженные в Cloudflare R2 |
+| `locks` | Замки опасных действий (2.24.0): `name` (`ttn:<заказ>`, `remind:<заказ>`), `owner`, `until` — истекает сам, если процесс упал |
 | `roles` | Роли (2.23.0): `id` (admin/manager/operator/viewer или `r…` — своя), `label`, `perms` (JSON: catalog, ai, orders, chat), `builtin`, `position` |
 | `users` | Пользователи (2.23.0): `login` (без регистра), `name`, `role` (→ `roles.id`), `password_hash` (PBKDF2), `disabled`, `session_version` (+1 — прежние входы недействительны), `last_login_at`. Восстановление копии без пользователей оставляет нынешних (`backup._restore_users`) |
 | `settings` | Ключ → значение (см. ниже) |
