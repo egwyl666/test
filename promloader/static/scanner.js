@@ -1,12 +1,63 @@
 // Сканер штрихкодов камерой телефона: ТТН Новой Почты на этикетке, номер заказа, штрихкод товара.
-// Распознаёт сам браузер (BarcodeDetector — Chrome на Android, Edge, Chrome на компьютере с камерой) — без библиотек
-// и без отправки картинки куда-либо. Где распознавания нет (iPhone/Safari) или камера недоступна (адрес по Wi‑Fi
-// http://192.168… — браузер даёт камеру только на https или localhost), остаётся поле для ввода номера.
+// Распознаёт сам браузер (BarcodeDetector — Chrome на Android, Edge, Chrome на компьютере), а где его нет (iPhone,
+// Firefox) — ZXing (static/vendor, загружается только тогда, 336 КБ). Картинка никуда не отправляется. Камеру браузер
+// даёт только на https (через Cloudflare) или на самом компьютере — по адресу Wi‑Fi http://192.168… остаётся поле
+// для ввода номера.
 
 const SCAN_FORMATS = ["code_128", "code_39", "ean_13", "ean_8", "itf", "qr_code", "upc_a", "data_matrix"];
+const ZXING_SRC = "/static/vendor/zxing-0.21.3.min.js";
+const SCAN_WIDTH = 720;  // кадр для ZXing уменьшаем: штрихкоду ТТН хватает, а старый телефон не тормозит
 
-function scannerSupported() {
-  return "BarcodeDetector" in window && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext;
+function cameraAvailable() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && window.isSecureContext;
+}
+
+let zxingLoading = null;
+function loadZxing() {
+  if (window.ZXing) return Promise.resolve(window.ZXing);
+  if (!zxingLoading) {
+    zxingLoading = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = `${ZXING_SRC}?v=${encodeURIComponent((window.META && META.version) || "")}`;
+      s.onload = () => (window.ZXing ? resolve(window.ZXing) : reject(new Error("ZXing")));
+      s.onerror = () => { zxingLoading = null; reject(new Error("ZXing")); };
+      document.head.appendChild(s);
+    });
+  }
+  return zxingLoading;
+}
+
+// Распознаватель кадра видео: detect(video) → строка или "". Сначала свой у браузера, иначе ZXing.
+async function makeDetector() {
+  if ("BarcodeDetector" in window) {
+    try {
+      const native = new BarcodeDetector({ formats: SCAN_FORMATS });
+      return async (video) => (await native.detect(video)).map((f) => f.rawValue).find(Boolean) || "";
+    } catch { /* формат не поддерживается — ZXing */ }
+  }
+  const Z = await loadZxing();
+  const hints = new Map();
+  hints.set(Z.DecodeHintType.POSSIBLE_FORMATS, [Z.BarcodeFormat.CODE_128, Z.BarcodeFormat.CODE_39, Z.BarcodeFormat.EAN_13,
+    Z.BarcodeFormat.EAN_8, Z.BarcodeFormat.ITF, Z.BarcodeFormat.UPC_A, Z.BarcodeFormat.QR_CODE, Z.BarcodeFormat.DATA_MATRIX]);
+  hints.set(Z.DecodeHintType.TRY_HARDER, true);
+  const reader = new Z.MultiFormatReader();
+  reader.setHints(hints);
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  return async (video) => {
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return "";
+    const scale = Math.min(1, SCAN_WIDTH / w);
+    canvas.width = Math.round(w * scale);
+    canvas.height = Math.round(h * scale);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    try {
+      const bitmap = new Z.BinaryBitmap(new Z.HybridBinarizer(new Z.HTMLCanvasElementLuminanceSource(canvas)));
+      return reader.decodeWithState(bitmap).getText() || "";
+    } catch {
+      return "";  // NotFoundException: на этом кадре штрихкода нет
+    }
+  };
 }
 
 // opts: title, hint, placeholder, onCode(code, close) → Promise (может вернуть {text, bad}). Возвращает «закрыть».
@@ -72,16 +123,20 @@ function openScanner({ title = "Сканировать", hint = "", placeholder 
   });
 
   (async () => {
-    if (!scannerSupported()) {
-      status.textContent = I18N.tr(!window.isSecureContext
-        ? "Камера работает только по адресу https (через Cloudflare) или на самом компьютере — введите номер вручную."
-        : "Этот браузер не распознаёт штрихкоды (так бывает на iPhone) — введите номер вручную.");
+    if (!cameraAvailable()) {
+      status.textContent = I18N.tr("Камера работает только по адресу https (через Cloudflare) или на самом компьютере — введите номер вручную.");
       input.focus();
       return;
     }
-    let detector;
+    let detect;
     try {
-      detector = new BarcodeDetector({ formats: SCAN_FORMATS });
+      detect = await makeDetector();
+    } catch {
+      status.textContent = I18N.tr("Не удалось загрузить распознавание штрихкодов — введите номер вручную.");
+      input.focus();
+      return;
+    }
+    try {
       stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
     } catch (err) {
       status.textContent = I18N.tr("Нет доступа к камере — разрешите её в браузере или введите номер вручную.");
@@ -97,8 +152,7 @@ function openScanner({ title = "Сканировать", hint = "", placeholder 
       if (closed || !stream) return;
       if (!busyCode && video.readyState >= 2) {
         try {
-          const found = await detector.detect(video);
-          const code = found.map((f) => f.rawValue).find(Boolean);
+          const code = await detect(video);
           if (code) {
             if (navigator.vibrate) navigator.vibrate(80);
             await handle(code);

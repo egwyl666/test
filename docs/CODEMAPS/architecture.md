@@ -27,6 +27,12 @@ START.bat → launcher.py (свободный порт, браузер) → tray
                                      edit_by_external_id / edit (удаление) / by_external_id / list / orders
 ```
 
+## Сторонний код в интерфейсе
+
+Только `static/vendor/zxing-0.21.3.min.js` (ZXing, Apache-2.0) — распознавание штрихкодов там, где у браузера нет
+`BarcodeDetector`. Файл — как в npm, без изменений: sha256 записан в `vendor/README.md` и проверяется тестом
+`tests/test_scanner.py`, который также читает им настоящий штрихкод ТТН (`tests/fixtures/ttn_code128.png`).
+
 ## Вход и права (2.23.0)
 
 `main.same_site_only`: адрес клиента (`phone.client_kind`) → проверка Origin → `_sign_in_gate`: кука `pl_session`
