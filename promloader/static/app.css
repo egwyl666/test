@@ -786,3 +786,17 @@ body.no-chat [data-perm="chat"], body.no-admin [data-perm="admin"] { display: no
 .dup-best { color: var(--ok, #1b8a3a); }
 .risky-banner { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #fdecea; border: 1px solid #f5c2bd;
   color: #a8261b; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }
+/* 📷 сканер и 📦 упаковка */
+.scanner-box { max-width: 480px; }
+.scanner-view { position: relative; border-radius: 10px; overflow: hidden; background: #000; margin-bottom: 8px; }
+.scanner-view video { width: 100%; display: block; max-height: 55vh; object-fit: cover; }
+.scanner-frame { position: absolute; inset: 30% 10%; border: 2px solid rgba(255, 255, 255, .85); border-radius: 8px;
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, .25); pointer-events: none; }
+.scanner-manual input { font-size: 18px; letter-spacing: .5px; }
+.scan-result { border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; display: flex; flex-direction: column; gap: 4px; }
+.scan-result.good { background: #e8f6ec; border: 1px solid #b5e0c1; }
+.scan-result.warn { background: #fff6e0; border: 1px solid #f1d58a; }
+.scan-result.bad { background: #fdecea; border: 1px solid #f5c2bd; color: #a8261b; }
+.pack-toggle { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.ok-text { color: var(--ok, #1b8a3a); }
+.warn-text { color: #9a6200; }

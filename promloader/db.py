@@ -412,6 +412,8 @@ MIGRATIONS = {
         # requested — попросили в чате, ok — оператор снял пометку (предоплату получили или решили отправить так)
         "prepay_state": "TEXT NOT NULL DEFAULT ''",
         "prepay_requested_at": "TEXT NOT NULL DEFAULT ''",
+        "packed_at": "TEXT NOT NULL DEFAULT ''",   # упакован (скан на складе)
+        "packed_by": "TEXT NOT NULL DEFAULT ''",   # кто упаковал (имя пользователя)
     },
     "shipments": {
         "warehouse": "TEXT NOT NULL DEFAULT ''",     # отделение получателя (из отслеживания)

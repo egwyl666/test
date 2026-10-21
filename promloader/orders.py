@@ -90,6 +90,8 @@ def view(row) -> dict:
         "actions": {k: SETTABLE[k] for k in TRANSITIONS.get(status, ())},
         "prepay_state": row["prepay_state"] if "prepay_state" in row.keys() else "",
         "prepay_requested_at": row["prepay_requested_at"] if "prepay_requested_at" in row.keys() else "",
+        "packed_at": row["packed_at"] if "packed_at" in row.keys() else "",
+        "packed_by": row["packed_by"] if "packed_by" in row.keys() else "",
     }
 
 
@@ -118,9 +120,10 @@ def _where(flt: dict, with_status: bool = True) -> tuple[str, list]:
         sub = ["(" + " AND ".join([f"{_TEXT} LIKE ?"] * len(words)) + ")"]
         args += [f"%{w}%" for w in words]
         digits = re.sub(r"\D", "", q)
-        if digits and _NUMBER.match(q):  # «№1234», «+38 050 123-45-67» — номер заказа или телефон
-            sub += ["CAST(id AS TEXT) = ?", f"{_PHONE} LIKE ?"]
-            args += [digits, f"%{digits}%"]
+        if digits and _NUMBER.match(q):  # «№1234», «+38 050 123-45-67», ТТН — номер заказа, телефон или ТТН
+            sub += ["CAST(id AS TEXT) = ?", f"{_PHONE} LIKE ?", "id IN (SELECT order_id FROM shipments WHERE ttn = ?)",
+                    "COALESCE(json_extract(data, '$.delivery_provider_data.declaration_number'), '') = ?"]
+            args += [digits, f"%{digits}%", digits, digits]
         parts.append("(" + " OR ".join(sub) + ")")
     for key, op in (("date_from", ">="), ("date_to", "<=")):
         value = str(flt.get(key) or "")
@@ -237,6 +240,82 @@ def buyer_history(phone, exclude_order_id: int = 0) -> dict:
     """Заказы этого телефона: всего, выполнено, отменено, отказов от посылок (этап «Отказ / возврат» у ТТН)."""
     return buyer_histories([(exclude_order_id, phone)]).get(
         exclude_order_id, {"orders": 0, "delivered": 0, "canceled": 0, "refused": 0, "risky": False})
+
+
+# ---------- склад: скан ТТН / номера заказа, «Упакован» ----------
+
+TTN_MIN = 13  # ТТН Новой Почты — 14 цифр (2045…, 5900…); номер заказа Prom — до 12 цифр
+
+
+class ScanError(Exception):
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
+
+
+def find_by_code(code) -> dict:
+    """Что отсканировали или ввели: ТТН (штрихкод на этикетке Новой Почты) или номер заказа. Возвращает заказ так же,
+    как в списке (с посылкой и историей покупателя). Сканер иногда добавляет лишнее («TTN: 2045…», пробелы) —
+    берём цифры."""
+    digits = re.sub(r"\D", "", str(code or ""))
+    if not digits:
+        raise ScanError("Не похоже на ТТН или номер заказа")
+    order_id = None
+    kind = "ttn" if len(digits) >= TTN_MIN else "order"
+    if kind == "ttn":
+        row = db.query_one("SELECT order_id FROM shipments WHERE ttn = ?", (digits,)) or db.query_one(
+            "SELECT id AS order_id FROM orders WHERE "
+            "json_extract(data, '$.delivery_provider_data.declaration_number') = ?", (digits,))
+        order_id = row["order_id"] if row else None
+    if order_id is None and len(digits) <= 12:
+        row = db.query_one("SELECT id FROM orders WHERE id = ?", (int(digits),))
+        order_id = row["id"] if row else None
+        kind = "order"
+    if order_id is None:
+        raise ScanError(f"ТТН {digits} не найдена среди заказов программы" if kind == "ttn"
+                        else f"Заказ №{digits} не найден среди заказов программы", 404)
+    item = order_card(order_id)
+    return {"kind": kind, "code": digits, "order": item}
+
+
+def order_card(order_id: int) -> dict:
+    """Один заказ — как в списке: посылка, история покупателя, пометка о предоплате."""
+    from . import novaposhta
+    row = db.query_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+    if row is None:
+        raise KeyError(order_id)
+    o = view(row)
+    s = db.query_one("SELECT * FROM shipments WHERE order_id = ?", (order_id,))
+    o["shipment"] = novaposhta.shipment_view(s) if s else None
+    o["buyer"] = buyer_history(o["phone"], exclude_order_id=order_id) if o["phone"] else None
+    return o
+
+
+def pack(order_id: int, who: str, force: bool = False) -> dict:
+    """«Упакован»: проверки, которые на складе легко пропустить. Возвращает {ok, order, warnings}; ошибки — ScanError.
+    - отменённый заказ не упаковываем (409);
+    - уже упакован — второй скан не перезаписывает «кто и когда» (409, если не force);
+    - рисковый покупатель без снятой пометки, нет ТТН — упаковать можно, но с предупреждением."""
+    o = order_card(order_id)
+    if o["status"] == "canceled":
+        raise ScanError(f"Заказ №{order_id} отменён — не упаковывайте его", 409)
+    if o["packed_at"] and not force:
+        raise ScanError(f"Заказ №{order_id} уже упакован ({o['packed_by'] or '—'})", 409)
+    warnings = []
+    if o["prepay_state"] in ("required", "requested"):
+        warnings.append("Рисковый покупатель: предоплата не отмечена — проверьте перед отправкой")
+    if not o["shipment"] and not o["prom_ttn"]:
+        warnings.append("У заказа ещё нет ТТН")
+    with db.tx() as c:
+        c.execute("UPDATE orders SET packed_at = ?, packed_by = ? WHERE id = ?", (db.now(), who or "", order_id))
+    return {"ok": True, "order": order_card(order_id), "warnings": warnings}
+
+
+def unpack(order_id: int) -> dict:
+    with db.tx() as c:
+        if not c.execute("UPDATE orders SET packed_at = '', packed_by = '' WHERE id = ?", (order_id,)).rowcount:
+            raise KeyError(order_id)
+    return order_card(order_id)
 
 
 def mark_seen(ids: list[int] | None = None) -> None:

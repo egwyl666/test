@@ -67,9 +67,12 @@
       <label class="small muted">с <input type="date" id="date-from"></label>
       <label class="small muted">по <input type="date" id="date-to"></label>
       <button class="btn small hidden" id="reset">Сбросить</button>
+      <button class="btn small" id="scan-btn" title="ТТН с этикетки Новой Почты или номер заказа — камерой телефона">📷 Сканировать</button>
+      <label class="small pack-toggle" data-perm="orders"><input type="checkbox" id="pack-mode"> 📦 Режим упаковки</label>
       <span class="spacer"></span>
       <button class="btn small hidden" id="seen-all">✓ Отметить все просмотренными</button>
     </div>
+    <div id="scan-result" class="hidden"></div>
     <div class="chips" id="chips" style="margin-bottom:14px"></div>
     <div id="list"></div>
     <div class="toolbar" style="justify-content:center">
@@ -129,7 +132,9 @@
   </div>
 
   <script src="/static/common.js"></script>
+  <script src="/static/scanner.js"></script>
   <script src="/static/orders-np.js"></script>
+  <script src="/static/orders-scan.js"></script>
   <script src="/static/orders-stats.js"></script>
   <script>
     const PAGE = 50;
@@ -212,6 +217,7 @@
           <div>${items}</div>
         </div>
         ${shipmentBlock(o)}
+        ${packBlock(o)}
         ${actions ? `<div class="toolbar" style="margin:10px 0 0">${actions}</div>` : ""}
       </div>`;
     }
@@ -231,7 +237,7 @@
       if (seen) return busy(seen, () => markSeen([Number(seen.dataset.seen)]));
       const call = e.target.closest("[data-call]");
       if (call) { markSeen([Number(call.dataset.call)]); return; }
-      if (handleTtnClick(e)) return;
+      if (handleTtnClick(e) || handlePackClick(e)) return;
       const b = e.target.closest("[data-set]");
       if (b) busy(b, () => setStatus(Number(b.dataset.id), b.dataset.set));
     });

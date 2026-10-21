@@ -21,7 +21,7 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `schedules` | Выгрузка по расписанию |
 | `ai_jobs`, `ai_items` | Массовый ИИ и откат; `ai_jobs.user` — кто запустил (его имя пишется в журнал у правок задания) |
 | `ai_usage` | Каждый запрос к ИИ: `at`, `provider`, `model` (ответившая), `action`, `source` (`card`/`bulk`/`check`), `job_id`, `tokens_in`/`tokens_out` (мышление — в выходе), `cost_usd` (NULL — цена неизвестна), `ok`, `error` |
-| `orders` | Заказы Prom; `prepay_state` ('' / required / requested / ok — рисковый покупатель и предоплата), `prepay_requested_at` |
+| `orders` | Заказы Prom; `prepay_state` ('' / required / requested / ok — рисковый покупатель и предоплата), `prepay_requested_at`, `packed_at`/`packed_by` (упакован: когда и кто) |
 | `shipments` | Посылки Новой Почты по заказам: ТТН, `warehouse`, `keep_until` (платное хранение с), `reminded_at` (напомнили в чат), `waiting_alert_sent_at` (владельцу ушло «посылка ждёт»), `own` (создана программой), этап и статус, `arrived_at`, отправленные уведомления (`alerts`), ошибка передачи номера в Prom |
 | `push_subscriptions` | Телефоны с push-уведомлениями: endpoint, ключи, события |
 | `tg_recipients` | Получатели Telegram и их события |

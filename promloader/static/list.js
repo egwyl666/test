@@ -364,6 +364,18 @@ $("#search").addEventListener("input", (e) => {
   searchTimer = setTimeout(() => { list.q = e.target.value.trim(); applyFilters(); }, 250);
 });
 
+// 📷 штрихкод товара камерой → поиск в списке (поиск ищет и по штрихкоду, и по артикулу поставщика)
+$("#scan-product").addEventListener("click", () => openScanner({
+  title: I18N.tr("Найти товар по штрихкоду"), placeholder: I18N.tr("штрихкод или артикул"),
+  hint: I18N.tr("Наведите камеру на штрихкод товара или упаковки."),
+  onCode: async (code, close) => {
+    close();
+    $("#search").value = code;
+    list.q = code;
+    applyFilters();
+  },
+}));
+
 $("#more").addEventListener("click", () => loadProducts(true));
 $("#supplier-filter").addEventListener("change", (e) => { list.supplier = e.target.value; applyFilters(); });
 

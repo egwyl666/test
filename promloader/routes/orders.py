@@ -1,7 +1,7 @@
 """Заказы с Prom и Telegram."""
 
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import Response
 
 from .. import config, db, notify, orders, reports, sync
@@ -55,6 +55,27 @@ async def refresh_orders():
     except PromError as exc:
         raise HTTPException(502, str(exc))
     return {"new": new}
+
+
+@router.get("/api/orders/scan")
+def orders_scan(code: str = ""):
+    """Скан камерой или ввод: ТТН или номер заказа → заказ."""
+    try:
+        return orders.find_by_code(code)
+    except orders.ScanError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
+@router.post("/api/orders/{order_id}/packed")
+def order_packed(request: Request, order_id: int, packed: bool = Body(True, embed=True), force: bool = Body(False, embed=True)):
+    """Режим упаковки: «Упакован» (или снять отметку). Кто упаковал — имя вошедшего пользователя."""
+    if not packed:
+        return {"ok": True, "order": orders.unpack(order_id), "warnings": []}
+    user = getattr(request.state, "user", None) or {}
+    try:
+        return orders.pack(order_id, user.get("name") or user.get("login") or "", force=force)
+    except orders.ScanError as exc:
+        raise HTTPException(exc.status, str(exc))
 
 
 @router.post("/api/orders/seen")
