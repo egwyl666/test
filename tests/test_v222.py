@@ -9,7 +9,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from promloader import ai, aibulk, db, products, promcatalog
+from promloader import ai, aibulk, db, duplicates, products, promcatalog
 from promloader.prom_api import PromClient
 
 
@@ -181,7 +181,7 @@ def test_duplicates_grouped_by_barcode_code_and_name(client):
     n1 = products.create({"name": "Зонт складной, чёрный", "price": 100})
     n2 = products.create({"name": "зонт  складной чёрный", "price": 100})
     products.create({"name": "Одиночка", "price": 100})
-    groups = {g["kind"]: set(g["ids"]) for g in products.find_duplicates()}
+    groups = {g["kind"]: set(g["ids"]) for g in duplicates.find()}
     assert groups == {"barcode": {a, b}, "vendor_code": {c1, c2}, "name": {n1, n2}}
     items = client.get("/api/products?duplicates=1").json()["items"]
     ids = [x["id"] for x in items]

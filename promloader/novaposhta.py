@@ -166,7 +166,13 @@ def _order(order_id: int) -> dict:
     row = db.query_one("SELECT data FROM orders WHERE id = ?", (order_id,))
     if not row:
         raise NPError("Нет такого заказа")
-    return json.loads(row["data"])
+    data = json.loads(row["data"] or "{}")
+    return data if isinstance(data, dict) else {}
+
+
+def _obj(value) -> dict:
+    """Поле заказа Prom как словарь: в старых и странных заказах там бывает строка, число или null."""
+    return value if isinstance(value, dict) else {}
 
 
 def _money(value) -> float:
@@ -176,12 +182,12 @@ def _money(value) -> float:
 
 def is_cod(order: dict) -> bool:
     """Наложенный платёж: заказ ещё не оплачен — без обратной доставки денег посылку отдали бы бесплатно."""
-    name = str((order.get("payment_option") or {}).get("name") or "").lower()
+    name = str(_obj(order.get("payment_option")).get("name") or "").lower()
     return any(w in name for w in COD_WORDS)
 
 
 def prom_ttn(order: dict) -> str:
-    return str((order.get("delivery_provider_data") or {}).get("declaration_number") or "")
+    return str(_obj(order.get("delivery_provider_data")).get("declaration_number") or "")
 
 
 def draft(order_id: int, transport=None) -> dict:
@@ -189,15 +195,15 @@ def draft(order_id: int, transport=None) -> dict:
     order = _order(order_id)
     if prom_ttn(order) or db.query_one("SELECT 1 FROM shipments WHERE order_id = ?", (order_id,)):
         raise NPError("У этого заказа уже есть ТТН")
-    rec = order.get("delivery_recipient") or {}
+    rec = _obj(order.get("delivery_recipient"))
     first = rec.get("first_name") or order.get("client_first_name") or ""
     last = rec.get("last_name") or order.get("client_last_name") or ""
     middle = rec.get("second_name") or order.get("client_second_name") or ""
     phone = re.sub(r"\D", "", str(rec.get("phone") or order.get("phone") or ""))
-    provider = order.get("delivery_provider_data") or {}
+    provider = _obj(order.get("delivery_provider_data"))
     city = {"ref": "", "name": ""}
     warehouse = {"ref": "", "name": ""}
-    wh_ref = provider.get("recipient_warehouse_id") or (provider.get("recipient_address") or {}).get("warehouse_id")
+    wh_ref = provider.get("recipient_warehouse_id") or _obj(provider.get("recipient_address")).get("warehouse_id")
     if wh_ref:
         try:
             # подсказка для формы, а не обязательный шаг: без повторов — окно ТТН не ждёт секунды, если сети нет
@@ -215,7 +221,7 @@ def draft(order_id: int, transport=None) -> dict:
         "city_ref": city["ref"], "city": city["name"], "warehouse_ref": warehouse["ref"], "warehouse": warehouse["name"],
         "weight": float(setting("np_weight") or 0.5), "description": setting("np_description"), "cost": total,
         "payer": setting("np_payer"), "cod": cod, "cod_amount": total if cod else 0.0,
-        "address_hint": order.get("delivery_address") or "",
+        "address_hint": str(order.get("delivery_address") or ""),
     }
 
 

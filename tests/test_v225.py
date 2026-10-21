@@ -8,7 +8,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from promloader import ai, aibulk, db, notify, novaposhta, orders, phone, products, sync
+from promloader import ai, aibulk, aicategory, db, notify, novaposhta, orders, phone, products, sync
 from promloader.main import app
 from promloader.prom_api import PromClient
 
@@ -248,7 +248,7 @@ def test_match_categories_only_accepts_listed_choices(monkeypatch):
     calls = fake_gemini(monkeypatch, {"i0_group": "павербанки", "i0_category": "500901",
                                       "i1_group": "Чохли для ноутбуків", "i1_category": "[380210]",
                                       "i2_group": "", "i2_category": "999999"})
-    results, _ = ai.match_categories([products.get(i) for i in ids])
+    results, _ = aicategory.match([products.get(i) for i in ids])
     assert results[0] == {"group_name": "Павербанки", "target_category_id": 500901}  # регистр — неважен
     assert results[1] == {"target_category_id": 380210}  # выдуманной группы нет в списке — отброшена
     assert isinstance(results[2], ai.AIError)            # ничего подходящего
@@ -263,7 +263,7 @@ def test_match_category_bulk_job_end_to_end(monkeypatch):
     fake_gemini(monkeypatch, {"i0_group": "Павербанки", "i0_category": "500901",
                               "i1_group": "Павербанки", "i1_category": "380210", "i2_group": "", "i2_category": ""})
     job = aibulk.create(ids, "match_category")
-    assert job["label"] == ai.CATEGORY_LABEL
+    assert job["label"] == aicategory.LABEL
     while aibulk.process_one() != "idle":
         pass
     a, b, c = (products.get(i) for i in ids)
@@ -293,5 +293,5 @@ def test_match_category_skips_done_and_needs_choices(monkeypatch, client):
         pass
     assert calls == [] and aibulk.get(job["id"])["counts"] == {"skipped": 1}  # уже заполнено — без запроса
     meta = client.get("/api/meta").json()["ai"]
-    assert meta["bulk_only"]["match_category"] == ai.CATEGORY_LABEL and "match_category" not in meta["actions"]
-    assert client.post("/api/ai/bulk/estimate", json={"ids": ids, "action": "match_category"}).json()["batch"] == ai.CATEGORY_BATCH
+    assert meta["bulk_only"]["match_category"] == aicategory.LABEL and "match_category" not in meta["actions"]
+    assert client.post("/api/ai/bulk/estimate", json={"ids": ids, "action": "match_category"}).json()["batch"] == aicategory.BATCH

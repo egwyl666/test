@@ -95,7 +95,7 @@ def _load_orders(start: date | None = None, end: date | None = None) -> list[dic
             qty = _num(p.get("quantity")) or 1.0
             total = _num(p.get("total_price")) or _num(p.get("price")) * qty
             items.append({"prom_id": p.get("id"), "external_id": p.get("external_id") or "", "sku": p.get("sku") or "",
-                          "name": p.get("name") or (p.get("name_multilang") or {}).get("ru") or "",
+                          "name": p.get("name") or (p.get("name_multilang") if isinstance(p.get("name_multilang"), dict) else {}).get("ru") or "",
                           "qty": qty, "total": total})
         out.append({
             "id": row["id"], "status": row["status"], "when": when, "day": when.date(),

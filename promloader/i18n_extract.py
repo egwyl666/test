@@ -25,7 +25,7 @@ SQL = re.compile(r"\s*(SELECT|UPDATE|INSERT|DELETE|CREATE|ALTER|WITH)\s", re.I)
 PY_SKIP_MODULES = {"i18n_extract.py", "tray.py", "launcher.py", "__main__.py"}
 PY_SKIP_NAMES = {
     "STAGE_UA", "ORDER_UA",              # chat.py — фразы покупателю (по-украински)
-    "SYSTEM", "CHECK_PROMPT", "CHAT_SYSTEM", "CATEGORY_SYSTEM",  # ai.py — задания для модели
+    "SYSTEM", "CHECK_PROMPT", "CHAT_SYSTEM",  # ai.py, aicategory.py — задания для модели
     "HINTS", "VIDEO_HINT",               # excel.py — распознавание заголовков колонок
     "_presence_words", "CURRENCY_CODES",  # products.py — распознавание значений из прайсов
     "EXPORT_COLUMNS",                    # products.py — заголовки файла Excel
@@ -35,9 +35,9 @@ PY_SKIP_NAMES = {
     "MISMATCH_HEADERS", "CAT_HEADERS", "COD_WORDS", "NP_DEFAULTS",                  # categories.py — колонки файла для кабинета Prom
     "RESET_FILE",                        # users.py — имя файла с кодом сброса пароля
 }
-PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt", "build_category_prompt"}     # ai.py — что возвращается, уходит модели
+PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt"}     # ai.py, aicategory.py — что возвращается, уходит модели
 PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
-                 "build_category_prompt",  # ai.py — задание для модели
+                 "prompt_for",          # aicategory.py — задание для модели
                  "build_batch_prompt",  # ai.py — задание для модели
                  "ttn_message",         # chat.py — сообщение покупателю по-украински
                  "remind_message",      # chat.py — напоминание покупателю по-украински

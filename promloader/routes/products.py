@@ -18,11 +18,13 @@ from fastapi.responses import (
 from .. import (
     ai,
     aibulk,
+    aicategory,
     aiprice,
     changes,
     chat,
     config,
     db,
+    duplicates,
     excel,
     pricing,
     products,
@@ -79,7 +81,7 @@ def _ai_meta() -> dict:
             "today_usd": today["cost_usd"], "today_uah": aiprice.to_uah(today["cost_usd"]), "today_requests": today["requests"],
             "key_error": bool(aiprice.key_errors().get(s["provider"])),
             "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
-            "bulk_only": {"match_category": ai.CATEGORY_LABEL}}  # только в массовом ИИ — не в карточке
+            "bulk_only": {"match_category": aicategory.LABEL}}  # только в массовом ИИ — не в карточке
 
 
 def _first_steps() -> dict:
@@ -140,12 +142,12 @@ def products_alerts():
 @router.post("/api/products/duplicates/keep-best")
 def duplicates_keep_best():
     """«Оставить выгодный»: в каждой группе дублей остальные — в черновики с пометкой «скрыт как дубль»."""
-    return products.keep_best_duplicates()
+    return duplicates.keep_best()
 
 
 @router.post("/api/products/{product_id}/dup-unhide")
 def duplicate_unhide(product_id: int):
-    return products.unhide_duplicate(product_id)
+    return duplicates.unhide(product_id)
 
 
 @router.post("/api/products/{product_id}/prom-conflict")

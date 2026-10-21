@@ -56,37 +56,52 @@ def _money(value) -> str:
     return "" if value in (None, "") else str(value)
 
 
+def _obj(value) -> dict:
+    """Поле заказа Prom, которое должно быть объектом: строка, число или null вместо него — пустой объект
+    (заказ из кабинета, старой версии API или с ошибкой у Prom не должен ронять страницу «Заказы»)."""
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value) -> str:
+    return value if isinstance(value, str) else "" if value is None else str(value)
+
+
 def view(row) -> dict:
     """Заказ для страницы: основные поля + исходные данные."""
-    data = json.loads(row["data"])
-    client = " ".join(filter(None, [data.get("client_last_name"), data.get("client_first_name"),
-                                    data.get("client_second_name")])) or data.get("client_name") or ""
+    data = _obj(json.loads(row["data"] or "{}"))
+    client = " ".join(filter(None, [_text(data.get("client_last_name")), _text(data.get("client_first_name")),
+                                    _text(data.get("client_second_name"))])) or _text(data.get("client_name"))
     delivery = data.get("delivery_option") or {}
     payment = data.get("payment_option") or {}
+    provider = _obj(data.get("delivery_provider_data"))
     items = []
-    for p in data.get("products") or []:
-        ext = p.get("external_id") or ""
+    goods = data.get("products")
+    for p in goods if isinstance(goods, list) else []:
+        if not isinstance(p, dict):
+            continue
+        ext = _text(p.get("external_id"))
         local = db.query_one("SELECT id FROM products WHERE external_id = ?", (ext,)) if ext else None
         items.append({
-            "name": p.get("name") or (p.get("name_multilang") or {}).get("ru") or "",
+            "name": _text(p.get("name")) or _text(_obj(p.get("name_multilang")).get("ru"))
+                    or _text(_obj(p.get("name_multilang")).get("uk")),
             "quantity": p.get("quantity"), "price": _money(p.get("price")), "total": _money(p.get("total_price")),
-            "image": p.get("image") or "", "external_id": ext, "sku": p.get("sku") or "",
+            "image": _text(p.get("image")), "external_id": ext, "sku": _text(p.get("sku")),
             "local_id": local["id"] if local else None,
         })
     status = row["status"]
     return {
-        "id": row["id"], "status": status, "status_label": data.get("status_name") or STATUSES.get(status, status),
-        "date": row["date_created"], "client": client, "phone": data.get("phone") or "",
-        "email": data.get("email") or "", "price": _money(data.get("full_price") or data.get("price")),
+        "id": row["id"], "status": status, "status_label": _text(data.get("status_name")) or STATUSES.get(status, status),
+        "date": row["date_created"], "client": client, "phone": _text(data.get("phone")),
+        "email": _text(data.get("email")), "price": _money(data.get("full_price") or data.get("price")),
         "delivery": delivery.get("name") if isinstance(delivery, dict) else str(delivery or ""),
-        "address": data.get("delivery_address") or "",
+        "address": _text(data.get("delivery_address")),
         "payment": payment.get("name") if isinstance(payment, dict) else str(payment or ""),
-        "notes": data.get("client_notes") or "", "source": data.get("source") or "",
+        "notes": _text(data.get("client_notes")), "source": _text(data.get("source")),
         "items": items, "new": not row["seen"],
-        "nova_poshta": (data.get("delivery_provider_data") or {}).get("provider") == "nova_poshta"
+        "nova_poshta": provider.get("provider") == "nova_poshta"
                        or "нова пошта" in str(delivery.get("name") if isinstance(delivery, dict) else delivery).lower()
                        or "новая почта" in str(delivery.get("name") if isinstance(delivery, dict) else delivery).lower(),
-        "prom_ttn": str((data.get("delivery_provider_data") or {}).get("declaration_number") or ""),
+        "prom_ttn": _text(provider.get("declaration_number")),
         "actions": {k: SETTABLE[k] for k in TRANSITIONS.get(status, ())},
         "prepay_state": row["prepay_state"] if "prepay_state" in row.keys() else "",
         "prepay_requested_at": row["prepay_requested_at"] if "prepay_requested_at" in row.keys() else "",

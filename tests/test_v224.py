@@ -11,7 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from promloader import aibulk, db, novaposhta, orders, products, suppliers, sync
+from promloader import aibulk, db, duplicates, novaposhta, orders, products, suppliers, sync
 from promloader.main import app
 from promloader.prom_api import PromClient
 
@@ -199,7 +199,7 @@ def two_suppliers_same_item():
 
 def test_best_offer_is_first_and_marked(client):
     a, b, c = two_suppliers_same_item()
-    g, = products.find_duplicates()
+    g, = duplicates.find()
     assert g["best"] == a and g["ids"] == [a, b, c]  # в наличии и наценка больше; «нема в наявності» — последним
     items = client.get("/api/products", params={"duplicates": "1"}).json()["items"]
     assert [i["id"] for i in items] == [a, b, c]
@@ -219,7 +219,7 @@ def test_keep_best_hides_others_and_keeps_them_out_of_pipeline(client):
     assert client.get("/api/products/alerts").json()["duplicates"] == 0
     row = db.query_one("SELECT source, new FROM product_changes WHERE product_id = ? AND field = 'status' "
                        "ORDER BY id DESC LIMIT 1", (b,))
-    assert row["source"] == products.DUP_SOURCE and row["new"] == products.STATUSES["draft"]
+    assert row["source"] == duplicates.DUP_SOURCE and row["new"] == products.STATUSES["draft"]
     # скрытые не «готовы» и не уходят в «В «Готов к отправке»» и автоконвейер, даже если всё заполнено
     for pid in (a, b, c):
         products.update(pid, {"name_ua": "Павербанк", "keywords": "павербанк"})

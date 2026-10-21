@@ -10,14 +10,14 @@ import json
 import logging
 import time
 
-from . import ai, aiprice, db, products
+from . import ai, aicategory, aiprice, db, products
 from . import changes as changes_log
 
 log = logging.getLogger("promloader.aibulk")
 
 BULK_ACTIONS = ("prepare_prom", "from_photo", "match_category", "improve", "shorten", "translate_ua", "translate_ru",
                 "name", "keywords", "custom")
-ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()} | {"match_category": ai.CATEGORY_LABEL}
+ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()} | {"match_category": aicategory.LABEL}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 # (что пропускать целиком — ai.already_done; эти поля при «только где пусто» не перезаписываются, если уже заполнены)
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",),
@@ -50,7 +50,7 @@ def create(product_ids: list[int], action: str, instruction: str = "", only_empt
     if not ai.enabled():
         raise BulkError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
     if action == "match_category":
-        choices = ai.category_choices()
+        choices = aicategory.known_choices()
         if not choices["groups"] and not choices["categories"]:
             raise BulkError("Выбирать не из чего: у товаров нет групп, а категории Prom ещё не известны. Нажмите "
                             "«⬇ Каталог с Prom» или задайте группы нескольким товарам")
@@ -304,7 +304,7 @@ def process_one(runner=None) -> str:
         with ai.usage_source("bulk", first["job_id"]):
             only_missing = bool(first["only_empty"]) and first["action"] in ai.ONLY_MISSING
             if first["action"] == "match_category" and runner is None:
-                results, _ = ai.match_categories([p for _, p in batch], only_empty=bool(first["only_empty"]))
+                results, _ = aicategory.match([p for _, p in batch], only_empty=bool(first["only_empty"]))
             elif len(batch) == 1 and (runner is not None or not only_missing):
                 item, p = batch[0]
                 results = [(runner or ai.run)(p, item["action"], item["instruction"])]
