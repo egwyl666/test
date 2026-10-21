@@ -784,3 +784,5 @@ body.no-chat [data-perm="chat"], body.no-admin [data-perm="admin"] { display: no
   font-size: 12px; font-weight: 600; cursor: help; }
 #ttn-buyer .buyer-risk { margin: -4px 0 10px; }
 .dup-best { color: var(--ok, #1b8a3a); }
+.risky-banner { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: #fdecea; border: 1px solid #f5c2bd;
+  color: #a8261b; font-size: 13px; display: flex; flex-direction: column; gap: 6px; }

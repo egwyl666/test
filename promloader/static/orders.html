@@ -203,6 +203,7 @@
             <div>${o.client ? `<b translate="no">${esc(o.client)}</b>` : "<b>Покупатель</b>"}</div>
             ${o.phone ? `<div><a href="tel:${esc(o.phone)}" data-call="${o.id}">${esc(o.phone)}</a></div>` : ""}
             ${buyerBadge(o.buyer)}
+            ${prepayBlock(o)}
             ${o.email ? `<div class="small muted">${esc(o.email)}</div>` : ""}
             ${o.delivery ? `<div class="small" style="margin-top:6px" translate="no">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
             ${o.payment ? `<div class="small" translate="no">💳 ${esc(o.payment)}</div>` : ""}
@@ -294,6 +295,9 @@
       reload();
     };
 
+    // ссылка из Telegram «/orders?q=104» — сразу нужный заказ
+    const startQ = new URLSearchParams(location.search).get("q");
+    if (startQ) { view.q = startQ.trim(); $("#q").value = view.q; }
     loadMeta().catch(() => {});
     reload();
     // список обновляется сам, пока вкладка открыта на экране

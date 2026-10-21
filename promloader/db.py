@@ -407,10 +407,17 @@ MIGRATIONS = {
         "url_ua": "TEXT NOT NULL DEFAULT ''",
         "auto_pipeline": "INTEGER NOT NULL DEFAULT 0",
     },
+    "orders": {
+        # рисковый покупатель (отказывался от посылок / отменял): '' — нет пометки, required — нужна предоплата,
+        # requested — попросили в чате, ok — оператор снял пометку (предоплату получили или решили отправить так)
+        "prepay_state": "TEXT NOT NULL DEFAULT ''",
+        "prepay_requested_at": "TEXT NOT NULL DEFAULT ''",
+    },
     "shipments": {
         "warehouse": "TEXT NOT NULL DEFAULT ''",     # отделение получателя (из отслеживания)
         "keep_until": "TEXT NOT NULL DEFAULT ''",    # с какой даты хранение платное (DatePayedKeeping), ГГГГ-ММ-ДД
         "reminded_at": "TEXT NOT NULL DEFAULT ''",   # когда напомнили покупателю в чат забрать посылку
+        "waiting_alert_sent_at": "TEXT NOT NULL DEFAULT ''",  # когда владельцу ушло «посылка ждёт, напомните покупателю»
     },
     "sync_jobs": {
         "kind": "TEXT NOT NULL DEFAULT 'import'",

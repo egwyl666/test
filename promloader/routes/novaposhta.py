@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from .. import chat, config, db, novaposhta, orders, sync
 from ..prom_api import PromError
@@ -45,6 +45,8 @@ SETTABLE = ("np_contact_ref", "np_contact_name", "np_sender_phone", "np_city_ref
 
 @router.post("/api/np/settings")
 def np_save(data: dict = Body(...)):
+    if "auto_flag_risky_cod" in data:
+        db.set_setting("auto_flag_risky_cod", "1" if data["auto_flag_risky_cod"] else "0")
     values = {k: str(data[k]).strip() for k in SETTABLE if k in data}
     if "np_sender_phone" in values and values["np_sender_phone"]:
         values["np_sender_phone"] = _np(novaposhta._phone, values["np_sender_phone"])
@@ -89,6 +91,44 @@ def ttn_draft(order_id: int):
             "buyer": orders.buyer_history(d.get("phone"), exclude_order_id=order_id)}
 
 
+@router.post("/api/orders/{order_id}/prepay-request")
+async def prepay_request(order_id: int):
+    """«💬 Запросить предоплату в чат Prom» рисковому покупателю (раз в сутки, отметка видна всем операторам)."""
+    row = await asyncio.to_thread(db.query_one, "SELECT prepay_state, prepay_requested_at FROM orders WHERE id = ?",
+                                  (order_id,))
+    if row is None:
+        raise HTTPException(404, "Нет такого заказа")
+    if novaposhta.remind_blocked(row["prepay_requested_at"]):
+        raise HTTPException(409, "Предоплату у покупателя уже просили — повторно можно через сутки")
+    if not config.get("prom_token"):
+        raise HTTPException(400, "Сообщение не отправлено: не указан токен Prom")
+    owner = await asyncio.to_thread(db.acquire, f"prepay:{order_id}", 60)
+    if owner is None:
+        raise HTTPException(409, "Сообщение уже отправляется")
+    try:
+        async with sync.make_client() as client:
+            await chat.send_prepay_request(client, order_id)
+
+        def save():
+            with db.tx() as c:
+                c.execute("UPDATE orders SET prepay_state = 'requested', prepay_requested_at = ? WHERE id = ?",
+                          (db.now(), order_id))
+        await asyncio.to_thread(save)
+    except chat.ChatError as exc:
+        raise HTTPException(400, str(exc))
+    except PromError as exc:
+        raise HTTPException(400, f"Сообщение не отправлено: {exc}")
+    finally:
+        await asyncio.to_thread(db.release, f"prepay:{order_id}", owner)
+    return {"ok": True}
+
+
+@router.post("/api/orders/{order_id}/prepay")
+def order_prepay(order_id: int, state: str = Body(..., embed=True)):
+    """Снять пометку «нужна предоплата» (ok) или поставить вручную (required)."""
+    return orders.set_prepay(order_id, state)
+
+
 @router.post("/api/orders/{order_id}/remind")
 async def remind_buyer(order_id: int):
     """«🔔 Напомнить в чат»: посылка ждёт на отделении — вежливое сообщение покупателю в чат Prom (один раз в сутки)."""
@@ -122,6 +162,12 @@ async def remind_buyer(order_id: int):
 @router.post("/api/orders/{order_id}/ttn")
 async def ttn_create(order_id: int, form: dict = Body(...)):
     """Создать ТТН и передать её номер в заказ Prom. Не передался — ТТН всё равно есть, ошибка видна у заказа."""
+    # рисковый покупатель (отказывался от посылок): наложенный платёж — только осознанно, после подтверждения
+    flag = await asyncio.to_thread(db.query_one, "SELECT prepay_state FROM orders WHERE id = ?", (order_id,))
+    if flag and flag["prepay_state"] in ("required", "requested") and form.get("cod") and not form.get("confirm_risky"):
+        return JSONResponse({"detail": "Рисковый покупатель: отказывался от посылок или отменял заказы. Наложенный "
+                                       "платёж заблокирован — возьмите предоплату или подтвердите отправку наложенным "
+                                       "платежом", "risky": True}, status_code=409)
     try:
         s = await asyncio.to_thread(novaposhta.create, order_id, form)
     except novaposhta.NPError as exc:

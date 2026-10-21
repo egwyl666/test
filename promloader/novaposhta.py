@@ -272,7 +272,10 @@ def create(order_id: int, form: dict, transport=None) -> dict:
 def _create(order_id: int, order: dict, f: dict, transport=None) -> dict:
     if prom_ttn(order) or db.query_one("SELECT 1 FROM shipments WHERE order_id = ?", (order_id,)):
         raise TTNConflict("У этого заказа уже есть ТТН")
-    if is_cod(order) and not f.get("cod"):
+    # предоплату у рискового покупателя взяли («Предоплата получена») — наложенный платёж уже не нужен
+    flag = db.query_one("SELECT prepay_state FROM orders WHERE id = ?", (order_id,))
+    prepaid = bool(flag) and flag["prepay_state"] == "ok"
+    if is_cod(order) and not f.get("cod") and not prepaid:
         raise NPError("Заказ с наложенным платежом: включите «Наложенный платёж», иначе посылку отдадут без оплаты")
     recipient = call("Counterparty", "save", {
         "FirstName": f["first_name"].strip(), "LastName": f["last_name"].strip(),
@@ -404,6 +407,49 @@ def _alert(c, s: dict, kind: str, text: str) -> None:
     notify.send(kind, text)
 
 
+WAITING_ALERT_DAYS = 3  # столько дней на отделении без напоминания покупателю — сообщаем владельцу
+
+
+def _orders_link(order_id: int) -> str:
+    """Ссылка на заказ для Telegram: адрес программы через Cloudflare (если включён доступ из интернета) — иначе
+    ссылки нет: localhost с телефона не откроется."""
+    from . import phone
+    try:
+        base = phone.remote_url() if phone.remote_enabled() else ""
+    except Exception:
+        base = ""
+    return f"{base.rstrip('/')}/orders?q={order_id}" if base.startswith("https://") else ""
+
+
+def waiting_alert_text(order_id: int, s: dict, warehouse: str, days: int) -> str:
+    from . import orders as _orders
+    row = db.query_one("SELECT * FROM orders WHERE id = ?", (order_id,))
+    v = _orders.view(row) if row else {"client": "", "phone": ""}
+    buyer = " ".join(x for x in (notify.esc(v["client"]), notify.esc(v["phone"])) if x) or "—"
+    link = _orders_link(order_id)
+    return (f"⏳ <b>Посылка ждёт на отделении {days} дн.</b> — заказ №{order_id}\n"
+            f"Покупатель: {buyer}\nТТН: {notify.esc(s['ttn'])}\n"
+            + (f"Отделение: {notify.esc(warehouse)}\n" if warehouse else "")
+            + "Покупателю ещё не напоминали. Откройте заказ и нажмите «🔔 Напомнить в чат» или позвоните, "
+              "пока посылка не вернулась."
+            + (f"\n{link}" if link else "\nЗаказ — в программе: «Заказы» → поиск по номеру."))
+
+
+def _waiting_alert(c, s: dict, arrived: str | None, warehouse: str, now: datetime) -> None:
+    """Раз на одно «ожидание» (с момента прибытия): если покупателю уже напомнили — не беспокоим."""
+    if not arrived:
+        return
+    days = (now - datetime.fromisoformat(arrived)).days
+    if days < WAITING_ALERT_DAYS:
+        return
+    reminded = s.get("reminded_at") or ""
+    sent = s.get("waiting_alert_sent_at") or ""
+    if (reminded and reminded >= arrived) or (sent and sent >= arrived):
+        return
+    c.execute("UPDATE shipments SET waiting_alert_sent_at = ? WHERE order_id = ?", (db.now(), s["order_id"]))
+    notify.send("parcel_waiting_alert", waiting_alert_text(s["order_id"], s, warehouse, days))
+
+
 def track(transport=None) -> int:
     """Обновить статусы посылок в пути. Возвращает, сколько проверено."""
     _sync_from_prom()
@@ -442,6 +488,7 @@ def track(transport=None) -> int:
                 who = f"заказ №{s['order_id']}, ТТН {s['ttn']}"
                 if stage == "arrived":
                     _alert(c, s, "parcel_arrived", f"📦 Посылка прибыла в отделение ({who})\n{r.get('WarehouseRecipient') or ''}")
+                    _waiting_alert(c, s, arrived, str(r.get("WarehouseRecipient") or s.get("warehouse") or ""), now)
                     if arrived and now - datetime.fromisoformat(arrived) > timedelta(days=days):
                         _alert(c, s, "parcel_waiting", f"⏳ Посылку не забирают больше {days} дн. ({who}) — напишите или "
                                                        f"позвоните покупателю, пока не начался платный срок хранения")
@@ -457,6 +504,7 @@ def enabled() -> bool:
 
 def settings_view() -> dict:
     return {"key_set": bool(api_key()), "key": config.mask(api_key()), "ready": sender_ready(), "payers": PAYERS,
+            "auto_flag_risky_cod": db.get_setting("auto_flag_risky_cod") != "0",
             **{k: setting(k) for k in ("np_sender_name", "np_contact_name", "np_sender_phone", "np_city_name",
                                        "np_city_ref", "np_warehouse_name", "np_warehouse_ref", "np_weight",
                                        "np_description", "np_payer", "np_storage_days")}}

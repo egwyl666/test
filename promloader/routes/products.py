@@ -78,7 +78,8 @@ def _ai_meta() -> dict:
             "auto": s["provider"] == "gemini" and not s["model"], "free": s["provider"] == "gemini" and aiprice.free_tier(),
             "today_usd": today["cost_usd"], "today_uah": aiprice.to_uah(today["cost_usd"]), "today_requests": today["requests"],
             "key_error": bool(aiprice.key_errors().get(s["provider"])),
-            "actions": {k: v[0] for k, v in ai.ACTIONS.items()}}
+            "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
+            "bulk_only": {"match_category": ai.CATEGORY_LABEL}}  # только в массовом ИИ — не в карточке
 
 
 def _first_steps() -> dict:

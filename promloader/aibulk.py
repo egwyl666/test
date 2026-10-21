@@ -15,8 +15,9 @@ from . import changes as changes_log
 
 log = logging.getLogger("promloader.aibulk")
 
-BULK_ACTIONS = ("prepare_prom", "from_photo", "improve", "shorten", "translate_ua", "translate_ru", "name", "keywords", "custom")
-ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()}
+BULK_ACTIONS = ("prepare_prom", "from_photo", "match_category", "improve", "shorten", "translate_ua", "translate_ru",
+                "name", "keywords", "custom")
+ACTION_LABEL = {k: v[0] for k, v in ai.ACTIONS.items()} | {"match_category": ai.CATEGORY_LABEL}
 # какие поля должны быть пустыми, чтобы товар обрабатывался в режиме «только где пусто»
 # (что пропускать целиком — ai.already_done; эти поля при «только где пусто» не перезаписываются, если уже заполнены)
 EMPTY_CHECK = {"translate_ua": ("name_ua", "description_ua"), "keywords": ("keywords",), "improve": ("description",),
@@ -48,6 +49,11 @@ def create(product_ids: list[int], action: str, instruction: str = "", only_empt
         raise BulkError("Напишите, что сделать с товарами")
     if not ai.enabled():
         raise BulkError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
+    if action == "match_category":
+        choices = ai.category_choices()
+        if not choices["groups"] and not choices["categories"]:
+            raise BulkError("Выбирать не из чего: у товаров нет групп, а категории Prom ещё не известны. Нажмите "
+                            "«⬇ Каталог с Prom» или задайте группы нескольким товарам")
     # очередь по выгоде: сначала в наличии, с фото и с большей наценкой — бесплатный лимит ИИ тратится на них первыми
     ids = products.profit_order(sorted(set(product_ids)))
     if limit:
@@ -74,7 +80,7 @@ def get(job_id: int) -> dict:
         "SELECT status, COUNT(*) AS n FROM ai_items WHERE job_id = ? GROUP BY status", (job_id,))}
     job["counts"] = counts
     job["total"] = sum(counts.values())
-    job["label"] = ai.ACTIONS[job["action"]][0]
+    job["label"] = ACTION_LABEL.get(job["action"], job["action"])
     job["errors"] = [dict(r) for r in db.query(
         "SELECT product_id, message FROM ai_items WHERE job_id = ? AND status = 'error' LIMIT 10", (job_id,))]
     spent = aiprice.job_spent(job_id)
@@ -297,7 +303,9 @@ def process_one(runner=None) -> str:
     try:
         with ai.usage_source("bulk", first["job_id"]):
             only_missing = bool(first["only_empty"]) and first["action"] in ai.ONLY_MISSING
-            if len(batch) == 1 and (runner is not None or not only_missing):
+            if first["action"] == "match_category" and runner is None:
+                results, _ = ai.match_categories([p for _, p in batch], only_empty=bool(first["only_empty"]))
+            elif len(batch) == 1 and (runner is not None or not only_missing):
                 item, p = batch[0]
                 results = [(runner or ai.run)(p, item["action"], item["instruction"])]
             else:

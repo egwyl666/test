@@ -88,6 +88,8 @@ def view(row) -> dict:
                        or "новая почта" in str(delivery.get("name") if isinstance(delivery, dict) else delivery).lower(),
         "prom_ttn": str((data.get("delivery_provider_data") or {}).get("declaration_number") or ""),
         "actions": {k: SETTABLE[k] for k in TRANSITIONS.get(status, ())},
+        "prepay_state": row["prepay_state"] if "prepay_state" in row.keys() else "",
+        "prepay_requested_at": row["prepay_requested_at"] if "prepay_requested_at" in row.keys() else "",
     }
 
 
@@ -151,6 +153,7 @@ def list_orders(flt: dict | None = None, limit: int = 50, offset: int = 0) -> di
         s = ships.get(o["id"])
         o["shipment"] = novaposhta.shipment_view(s) if s else None
         o["buyer"] = buyers.get(o["id"])
+    flag_risky(items)  # заказ рискового покупателя, пришедший до включения настройки, — пометим при просмотре
     return {"items": items, "total": total, "counts": counts, "unseen": unseen,
             "last_poll": db.get_setting("orders_last_poll"), "error": db.get_setting("orders_error"),
             "loading_all": bool(db.get_setting("orders_cursor"))}
@@ -192,6 +195,44 @@ def buyer_histories(pairs: list[tuple[int, str]]) -> dict[int, dict]:
     return result
 
 
+ACTIVE = ("pending", "received", "paid")  # заказ ещё не отправлен и не закрыт — пометка о предоплате имеет смысл
+
+
+def auto_flag_enabled() -> bool:
+    """«Автоматически помечать заказы рисковых покупателей как требующие предоплаты» — по умолчанию включено."""
+    return db.get_setting("auto_flag_risky_cod") != "0"
+
+
+def flag_risky(items: list[dict]) -> list[int]:
+    """Пометить «нужна предоплата» активные заказы рисковых покупателей (у кого пометки ещё нет). items — заказы
+    списка (view + buyer). Возвращает номера, помеченные сейчас."""
+    if not auto_flag_enabled():
+        return []
+    flagged = [o["id"] for o in items
+               if o.get("buyer") and o["buyer"]["risky"] and not o.get("prepay_state") and o["status"] in ACTIVE]
+    if flagged:
+        with db.tx() as c:
+            c.execute(f"UPDATE orders SET prepay_state = 'required' WHERE prepay_state = '' AND id {db.IN_LIST}",
+                      (db.as_list(flagged),))
+        for o in items:
+            if o["id"] in flagged:
+                o["prepay_state"] = "required"
+    return flagged
+
+
+def risk_text(b: dict) -> str:
+    return f"⚠️ Рисковый покупатель (отказов: {b['refused']}, отмен: {b['canceled']}) — рекомендуется предоплата"
+
+
+def set_prepay(order_id: int, state: str) -> dict:
+    if state not in ("", "ok", "required"):
+        raise ValueError("Неизвестное состояние пометки")
+    with db.tx() as c:
+        if not c.execute("UPDATE orders SET prepay_state = ? WHERE id = ?", (state, order_id)).rowcount:
+            raise KeyError(order_id)
+    return {"prepay_state": state}
+
+
 def buyer_history(phone, exclude_order_id: int = 0) -> dict:
     """Заказы этого телефона: всего, выполнено, отменено, отказов от посылок (этап «Отказ / возврат» у ТТН)."""
     return buyer_histories([(exclude_order_id, phone)]).get(
@@ -215,6 +256,8 @@ def _notify_text(v: dict) -> str:
         lines.append(f"• {notify.esc(item['name'])} × {item['quantity']}")
     if v["delivery"]:
         lines.append(f"Доставка: {notify.esc(v['delivery'])}")
+    if v.get("prepay_state") == "required" and v.get("buyer"):
+        lines.append(f"<b>{notify.esc(risk_text(v['buyer']))}</b>")
     return "\n".join(lines)
 
 
@@ -226,6 +269,7 @@ def store(orders: list[dict], notify_new: bool = True, first_run: bool | None = 
     new = _store(orders, first_run)
     if not first_run:
         db.set_setting("orders_initialized", "1")
+    _flag_new(new)
     if notify_new and new:
         _notify(new)
     return len(new)
@@ -253,12 +297,27 @@ def _store(orders: list[dict], first_run: bool, newer_than: int | None = None) -
     return new
 
 
+def _flag_new(new_ids: list) -> None:
+    """Новый заказ рискового покупателя — сразу «нужна предоплата» (и строка об этом в уведомлении о заказе)."""
+    if not new_ids or not auto_flag_enabled():
+        return
+    rows = db.query(f"SELECT * FROM orders WHERE id {db.IN_LIST}", (db.as_list(new_ids),))
+    items = [view(r) for r in rows]
+    buyers = buyer_histories([(o["id"], o["phone"]) for o in items])
+    for o in items:
+        o["buyer"] = buyers.get(o["id"])
+    flag_risky(items)
+
+
 def _notify(new_ids: list) -> None:
     """После простоя новых заказов может быть много — о первых по сообщению, об остальных одним."""
     rows = [db.query_one("SELECT * FROM orders WHERE id = ?", (oid,)) for oid in new_ids]
     rows.sort(key=lambda r: (r["date_created"], r["id"]))
     for row in rows[:NOTIFY_EACH]:
-        notify.send("order", _notify_text(view(row)))
+        v = view(row)
+        if v["prepay_state"] == "required":
+            v["buyer"] = buyer_history(v["phone"], exclude_order_id=v["id"])
+        notify.send("order", _notify_text(v))
     rest = rows[NOTIFY_EACH:]
     if rest:
         notify.send("order", f"🛒 <b>И ещё {len(rest)} новых заказов</b> — пока программа не проверяла Prom. "

@@ -42,6 +42,33 @@ function buyerBadge(b) {
   return `<div class="buyer-risk" title="${esc(title)}">${parts.map((t) => `<span>${esc(t)}</span>`).join(" ")}</div>`;
 }
 
+// Пометка «нужна предоплата» у заказа рискового покупателя + «💬 Запросить предоплату в чат Prom»
+const PREPAY_ACTIVE = ["pending", "received", "paid"];
+function prepayBlock(o) {
+  const b = o.buyer;
+  const flagged = ["required", "requested"].includes(o.prepay_state);
+  if (!(flagged || (b && b.risky)) || !PREPAY_ACTIVE.includes(o.status)) return "";
+  const asked = o.prepay_requested_at
+    ? `<span class="small muted">💬 ${esc(I18N.tr("Предоплату попросили"))} ${esc(formatDate(o.prepay_requested_at))}</span>`
+    : `<button class="btn small" data-prepay-request="${o.id}" data-perm="chat">💬 ${esc(I18N.tr("Запросить предоплату в чат Prom"))}</button>`;
+  return `<div class="risky-banner">${flagged && b ? `<b>${esc(I18N.tr(`⚠️ Рисковый покупатель (отказов: ${b.refused}, отмен: ${b.canceled}) — рекомендуется предоплата`))}</b>` : ""}
+    <span class="toolbar" style="margin:0">${asked}
+    ${flagged ? `<button class="btn small" data-prepay-ok="${o.id}" data-perm="orders">${esc(I18N.tr("Предоплата получена / снять пометку"))}</button>` : ""}</span></div>`;
+}
+
+async function prepayAction(btn) {
+  try {
+    if (btn.dataset.prepayRequest) {
+      await api(`/api/orders/${btn.dataset.prepayRequest}/prepay-request`, { method: "POST" });
+      toast(I18N.tr("Просьба о предоплате отправлена покупателю в чат Prom"), "ok");
+    } else {
+      await api(`/api/orders/${btn.dataset.prepayOk}/prepay`, { method: "POST", json: { state: "ok" } });
+      toast(I18N.tr("Пометка снята"), "ok");
+    }
+  } catch (err) { toast(err.message, "error"); }
+  await load();
+}
+
 async function remindBuyer(btn) {
   try {
     await api(`/api/orders/${btn.dataset.remind}/remind`, { method: "POST" });
@@ -51,6 +78,8 @@ async function remindBuyer(btn) {
 }
 
 function handleTtnClick(e) {
+  const prepay = e.target.closest("[data-prepay-request], [data-prepay-ok]");
+  if (prepay) { busy(prepay, () => prepayAction(prepay)); return true; }
   const remind = e.target.closest("[data-remind]");
   if (remind) { busy(remind, () => remindBuyer(remind)); return true; }
   const create = e.target.closest("[data-ttn-create]");
@@ -138,7 +167,15 @@ $("#ttn-go").onclick = () => busy($("#ttn-go"), async () => {
   } catch {}
   if (!confirm(`Создать ТТН для заказа №${ttnOrder}? Покупатель получит SMS от Новой Почты.`)) return;
   try {
-    const r = await api(`/api/orders/${ttnOrder}/ttn`, { method: "POST", json: form });
+    let r;
+    try {
+      r = await api(`/api/orders/${ttnOrder}/ttn`, { method: "POST", json: form });
+    } catch (err) {
+      // рисковый покупатель и наложенный платёж: только после явного «да»
+      if (!(err.status === 409 && err.body.risky)) throw err;
+      if (!confirm(`${err.message}.\n\n${I18N.tr("Всё равно отправить наложенным платежом?")}`)) return;
+      r = await api(`/api/orders/${ttnOrder}/ttn`, { method: "POST", json: { ...form, confirm_risky: true } });
+    }
     $("#ttn-modal").classList.add("hidden");
     toast(`${I18N.tr("ТТН создана:")} ${r.ttn}`, "ok");
     if (r.prom_error) toast(r.prom_error, "error");

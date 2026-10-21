@@ -26,6 +26,7 @@ function npFill(s, contacts) {
   $("#np-city").value = s.np_city_name; $("#np-city").dataset.ref = s.np_city_ref;
   $("#np-warehouse").innerHTML = s.np_warehouse_ref ? `<option value="${esc(s.np_warehouse_ref)}">${esc(s.np_warehouse_name)}</option>` : "";
   $("#np-weight").value = s.np_weight; $("#np-desc").value = s.np_description; $("#np-days").value = s.np_storage_days;
+  $("#np-risky").checked = !!s.auto_flag_risky_cod;
   $("#np-payer").innerHTML = Object.entries(s.payers).map(([k, v]) => `<option value="${k}" ${k === s.np_payer ? "selected" : ""}>${esc(v)}</option>`).join("");
 }
 
@@ -73,5 +74,12 @@ $("#np-save").onclick = () => busy($("#np-save"), async () => {
     toast(I18N.tr("Сохранено"), "ok");
   } catch (err) { toast(err.message, "error"); }
 });
+
+$("#np-risky").onchange = async (e) => {
+  try {
+    await api("/api/np/settings", { method: "POST", json: { auto_flag_risky_cod: e.target.checked } });
+    toast(I18N.tr("Сохранено"), "ok");
+  } catch (err) { toast(err.message, "error"); e.target.checked = !e.target.checked; }
+};
 
 npLoad();

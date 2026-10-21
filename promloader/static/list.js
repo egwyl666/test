@@ -498,7 +498,7 @@ function summarizeResult(r) {
 // ---------- массовый ИИ ----------
 
 // «Подготовить для Prom» — первым: перевод и ключевые слова одним заданием (и одним запросом на 5 товаров)
-const AI_BULK = ["prepare_prom", "from_photo", "translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
+const AI_BULK = ["prepare_prom", "from_photo", "match_category", "translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
 let aiSel = { ids: [] };
 let aiRate = 8;
 
@@ -514,7 +514,7 @@ function openAiModal(sel, opts = {}) {
   aiSel = sel;
   aiCount = opts.count ?? selectionCount();
   $("#ai-count").textContent = aiCount;
-  $("#ai-action").innerHTML = AI_BULK.map((k) => `<option value="${k}">${esc(META.ai.actions[k])}</option>`).join("");
+  $("#ai-action").innerHTML = AI_BULK.map((k) => `<option value="${k}">${esc(META.ai.actions[k] || (META.ai.bulk_only || {})[k] || k)}</option>`).join("");
   if (opts.action) $("#ai-action").value = opts.action;
   // «первые N по выгоде» — пробный прогон на лучших товарах, а не на всех тысячах; для маленькой выборки не нужен
   $("#ai-limit").value = "";
@@ -528,11 +528,11 @@ let aiEstimateSeq = 0;
 async function updateAiModal() {
   const action = $("#ai-action").value;
   $("#ai-instr-wrap").classList.toggle("hidden", action !== "custom");
-  $("#ai-empty-wrap").classList.toggle("hidden", !["prepare_prom", "from_photo", "translate_ua", "translate_ru", "keywords", "improve"].includes(action));
+  $("#ai-empty-wrap").classList.toggle("hidden", !["prepare_prom", "from_photo", "match_category", "translate_ua", "translate_ru", "keywords", "improve"].includes(action));
   const count = Math.min(aiCount, aiLimit() || aiCount);
   $("#ai-count").textContent = count;
   const minutes = Math.ceil(count / aiRate);
-  $("#ai-promote-wrap").classList.toggle("hidden", !["prepare_prom", "from_photo", "translate_ua", "keywords"].includes(action));
+  $("#ai-promote-wrap").classList.toggle("hidden", !["prepare_prom", "from_photo", "match_category", "translate_ua", "keywords"].includes(action));
   const pace = `Темп: до ${aiRate} товаров в минуту (лимит ИИ) — примерно ${minutes} мин. Можно закрыть страницу, работа продолжится.`;
   $("#ai-eta").textContent = pace;
   $("#ai-cost").innerHTML = `<span class="muted">Считаю, сколько это будет стоить…</span>`;
@@ -546,8 +546,9 @@ async function updateAiModal() {
   }
   if (seq !== aiEstimateSeq) return;  // пока считали, выбрали другое действие
   if (e.batch > 1) {
-    $("#ai-eta").textContent = `По ${e.batch} товаров в одном запросе — запросов ${e.requests}, примерно ${Math.max(1, e.minutes)} мин. ` +
-      "Так бесплатного лимита хватает на гораздо большее число товаров. Можно закрыть страницу, работа продолжится.";
+    // двумя переводимыми кусками: склеенное в одну строку предложение словарь не узнаёт
+    $("#ai-eta").innerHTML = `<span>${esc(I18N.tr(`По ${e.batch} товаров в одном запросе — запросов ${e.requests}, примерно ${Math.max(1, e.minutes)} мин.`))}</span> ` +
+      `<span>${esc(I18N.tr("Так бесплатного лимита хватает на гораздо большее число товаров. Можно закрыть страницу, работа продолжится."))}</span>`;
   }
   const model = e.model ? aiModelName(e.model) : "модель выберется автоматически";
   let text;

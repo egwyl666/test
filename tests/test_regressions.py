@@ -414,7 +414,7 @@ def test_public_feed_skips_deleting_and_broken_products(client):
 # Остальные — обычные def: FastAPI выполняет их в отдельном потоке, и долгая запись в базу не подвешивает программу.
 ASYNC_OK = {"ttn_create", "categories_fix", "supplier_restore_deleted", "upload_images", "diagnose_start", "prom_link", "check_connection",
             "import_upload", "upload_supplier_source", "run_supplier", "prom_catalog_load", "prom_external_ids_write", "refresh_orders",
-            "order_status", "support_create", "categories_refresh", "chat_send", "chat_read", "chat_refresh", "remind_buyer", "handler"}  # handler — отдача страниц (FileResponse)
+            "order_status", "support_create", "categories_refresh", "chat_send", "chat_read", "chat_refresh", "remind_buyer", "prepay_request", "handler"}  # handler — отдача страниц (FileResponse)
 
 
 def test_blocking_endpoints_do_not_run_on_the_event_loop():

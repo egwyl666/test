@@ -355,6 +355,20 @@ async def send_reminder(client, order_id: int, s: dict) -> dict:
     return await send(client, room, remind_message(order_id, s))
 
 
+def prepay_message(order_id: int) -> str:
+    """Просьба о предоплате — вежливо, по-украински (язык покупателей Prom)."""
+    return (f"Вітаємо! Дякуємо за замовлення #{order_id}. Перед відправкою просимо внести невелику передоплату "
+            "(або повну оплату) — реквізити надішлемо у відповідь на це повідомлення. Якщо зручніше, напишіть, будь "
+            "ласка, і ми узгодимо деталі замовлення перед відправкою. Дякуємо за розуміння!")
+
+
+async def send_prepay_request(client, order_id: int) -> dict:
+    room = room_for_order(order_id)
+    if not room:
+        raise ChatError("У покупателя этого заказа нет чата с магазином — Prom не даёт написать первым. Позвоните ему")
+    return await send(client, room, prepay_message(order_id))
+
+
 async def mark_read(client, room_ident: str) -> int:
     """Отметить прочитанными сообщения покупателя в комнате (на Prom — последнее, этого достаточно)."""
     room = db.query_one("SELECT room_id FROM chat_rooms WHERE room_ident = ?", (room_ident,))

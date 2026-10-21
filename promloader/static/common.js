@@ -35,6 +35,7 @@ async function api(path, options = {}) {
     const err = new Error(typeof detail === "string" && detail ? detail : `Ошибка ${response.status}`);
     err.status = response.status;
     err.field = body && body.field;
+    err.body = body && typeof body === "object" ? body : {};
     throw err;
   }
   return body;

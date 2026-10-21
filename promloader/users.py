@@ -63,7 +63,8 @@ RULES = [
     (r"^/api/products/\d+/ai$", "view", "ai"),
     (r"^/api/chat/rooms/[^/]+/ai-draft$", "view", "ai"),
     ("/api/ai/bulk", "view", ("catalog", "ai")),
-    (r"^/api/orders/\d+/remind$", "view", ("orders", "chat")),  # напоминание о посылке — это сообщение в чат  # массовый ИИ меняет товары — нужны оба права
+    (r"^/api/orders/\d+/remind$", "view", ("orders", "chat")),  # напоминание о посылке — это сообщение в чат
+    (r"^/api/orders/\d+/prepay-request$", "view", ("orders", "chat")),  # просьба о предоплате — тоже  # массовый ИИ меняет товары — нужны оба права
     ("/api/me", None, None),
     ("/api/roles", "admin", "admin"),
     ("/api/push", None, None),           # уведомления на свой телефон — у каждого свои
