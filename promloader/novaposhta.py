@@ -16,6 +16,7 @@ methodProperties} → {success, data, errors, warnings}.
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -48,6 +49,16 @@ FINAL = {"received", "refused", "deleted", "failed"}
 
 class NPError(Exception):
     pass
+
+
+class TTNConflict(NPError):
+    """У заказа уже есть ТТН или её прямо сейчас создаёт кто-то другой (ответ 409)."""
+
+
+# заказы, для которых ТТН создаётся прямо сейчас: два оператора нажали «Создать» одновременно — Нова Пошта создала
+# бы две накладные (проверка «уже есть ТТН» видит только сохранённые)
+_creating: set[int] = set()
+_creating_lock = threading.Lock()
 
 
 # ---------- запросы ----------
@@ -249,9 +260,21 @@ def create(order_id: int, form: dict, transport=None) -> dict:
     if not sender_ready():
         raise NPError("Сначала подключите Новую Почту в «Настройках»: ключ API, отправитель и отделение отправки")
     order = _order(order_id)
-    if prom_ttn(order) or db.query_one("SELECT 1 FROM shipments WHERE order_id = ?", (order_id,)):
-        raise NPError("У этого заказа уже есть ТТН")
     f = _validate(form)
+    with _creating_lock:
+        if order_id in _creating:
+            raise TTNConflict("ТТН для этого заказа уже создаётся (кто-то нажал раньше) — обновите заказ через минуту")
+        _creating.add(order_id)
+    try:
+        return _create(order_id, order, f, transport)
+    finally:
+        with _creating_lock:
+            _creating.discard(order_id)
+
+
+def _create(order_id: int, order: dict, f: dict, transport=None) -> dict:
+    if prom_ttn(order) or db.query_one("SELECT 1 FROM shipments WHERE order_id = ?", (order_id,)):
+        raise TTNConflict("У этого заказа уже есть ТТН")
     if is_cod(order) and not f.get("cod"):
         raise NPError("Заказ с наложенным платежом: включите «Наложенный платёж», иначе посылку отдадут без оплаты")
     recipient = call("Counterparty", "save", {

@@ -405,6 +405,18 @@ def _sign(payload: str) -> str:
     return hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
 
 
+def cookie_secure(request) -> bool:
+    """Куку помечаем Secure, только когда браузер пришёл по https (Cloudflare, свой прокси): на http://localhost
+    браузер такую куку просто выбросил бы, и войти на самом компьютере было бы нельзя."""
+    return (request.url.scheme == "https" or "cf-connecting-ip" in request.headers
+            or request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https")
+
+
+def set_cookie(response, request, user_id: int) -> None:
+    response.set_cookie(COOKIE, make_session(user_id), max_age=SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                        secure=cookie_secure(request))
+
+
 def make_session(user_id: int) -> str:
     row = db.query_one("SELECT session_version FROM users WHERE id = ?", (user_id,))
     payload = f"{user_id}.{row['session_version']}.{int(time.time()) + SESSION_DAYS * 86400}"
@@ -433,9 +445,37 @@ def reset_file() -> Path:
     return db.data_dir() / RESET_FILE
 
 
+RESET_TRIES = 5  # неверных кодов всего (со всех адресов) — и код сгорает: 10^6 вариантов так не перебрать
+
+
+def _saved_reset() -> dict:
+    try:
+        saved = json.loads(db.get_setting("password_reset") or "{}")
+    except ValueError:
+        saved = {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def burn_reset() -> None:
+    """Код больше не действует: из базы и файл с диска."""
+    with db.tx() as c:
+        c.execute("DELETE FROM settings WHERE key = 'password_reset'")
+    reset_file().unlink(missing_ok=True)
+
+
+def cleanup_reset() -> bool:
+    """Срок кода вышел — файл не должен лежать дальше (вызывается раз в несколько секунд из фона и при входе)."""
+    saved = _saved_reset()
+    if saved and saved.get("until", 0) < time.time() or not saved and reset_file().exists():
+        burn_reset()
+        return True
+    return False
+
+
 def request_reset() -> str:
     code = f"{secrets.randbelow(10 ** 6):06d}"
-    db.set_setting("password_reset", json.dumps({"hash": hash_password(code), "until": time.time() + RESET_MINUTES * 60}))
+    db.set_setting("password_reset", json.dumps({"hash": hash_password(code), "until": time.time() + RESET_MINUTES * 60,
+                                                 "fails": 0}))
     reset_file().write_text(
         "Prom Loader — сброс пароля\n\n"
         f"Код: {code}\n\n"
@@ -444,24 +484,32 @@ def request_reset() -> str:
     return str(reset_file())
 
 
-def reset_with_code(login, code, password) -> dict:
+def reset_with_code(login, code, password, from_this_computer: bool = False) -> dict:
+    """Новый пароль по коду из файла. Заблокированного администратором НЕ разблокирует — кроме администраторов и
+    сброса на самом компьютере: иначе уволенный сотрудник, узнавший код, вернул бы себе доступ с телефона."""
     password = _check_password(password)
-    try:
-        saved = json.loads(db.get_setting("password_reset") or "{}")
-    except ValueError:
-        saved = {}
+    saved = _saved_reset()
     if not saved or saved.get("until", 0) < time.time():
+        burn_reset()
         raise UserError("Код устарел — нажмите «Получить код» ещё раз", "code")
     if not verify_hash(saved.get("hash", ""), str(code or "").strip()):
+        fails = int(saved.get("fails", 0)) + 1
+        if fails >= RESET_TRIES:
+            burn_reset()
+            raise UserError("Слишком много неверных кодов — этот код больше не действует. Нажмите «Получить код» ещё раз",
+                            "code")
+        db.set_setting("password_reset", json.dumps({**saved, "fails": fails}))
         raise UserError("Неверный код", "code")
     row = db.query_one("SELECT * FROM users WHERE login = ?", (str(login or "").strip().lower(),))
     if row is None:
         raise UserError("Нет пользователя с таким логином", "login")
+    if row["disabled"] and row["role"] != "admin" and not from_this_computer:
+        raise UserError("Этот пользователь заблокирован администратором — сброс пароля его не разблокирует. "
+                        "Обратитесь к администратору", "login")
     with db.tx() as c:
         c.execute("UPDATE users SET password_hash = ?, session_version = session_version + 1, disabled = 0 "
                   "WHERE id = ?", (hash_password(password), row["id"]))
-        c.execute("DELETE FROM settings WHERE key = 'password_reset'")
-    reset_file().unlink(missing_ok=True)
+    burn_reset()
     return get(row["id"])
 
 

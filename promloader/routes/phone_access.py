@@ -37,8 +37,7 @@ def phone_sign_out_all(request: Request):
     response = JSONResponse({"ok": True})
     user = getattr(request.state, "user", None)
     if user:
-        response.set_cookie(users.COOKIE, users.make_session(user["id"]), max_age=users.SESSION_DAYS * 86400,
-                            httponly=True, samesite="lax")
+        users.set_cookie(response, request, user["id"])
     return response
 
 

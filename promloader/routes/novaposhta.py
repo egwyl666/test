@@ -92,7 +92,7 @@ async def ttn_create(order_id: int, form: dict = Body(...)):
     try:
         s = await asyncio.to_thread(novaposhta.create, order_id, form)
     except novaposhta.NPError as exc:
-        raise HTTPException(400, str(exc))
+        raise HTTPException(409 if isinstance(exc, novaposhta.TTNConflict) else 400, str(exc))
     error = ""
     if config.get("prom_token"):
         try:

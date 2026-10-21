@@ -19,7 +19,7 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `price_rules` | Наценка: поставщик, группа, диапазон закупки, `markup_percent`, округление |
 | `product_changes` | Журнал: `product_id`, `at`, `source` (кто), `field`, `old`, `new`; хранится 180 дней |
 | `schedules` | Выгрузка по расписанию |
-| `ai_jobs`, `ai_items` | Массовый ИИ и откат |
+| `ai_jobs`, `ai_items` | Массовый ИИ и откат; `ai_jobs.user` — кто запустил (его имя пишется в журнал у правок задания) |
 | `ai_usage` | Каждый запрос к ИИ: `at`, `provider`, `model` (ответившая), `action`, `source` (`card`/`bulk`/`check`), `job_id`, `tokens_in`/`tokens_out` (мышление — в выходе), `cost_usd` (NULL — цена неизвестна), `ok`, `error` |
 | `orders` | Заказы Prom |
 | `shipments` | Посылки Новой Почты по заказам: ТТН, `own` (создана программой), этап и статус, `arrived_at`, отправленные уведомления (`alerts`), ошибка передачи номера в Prom |
@@ -35,7 +35,7 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 ## Ключи `settings` (основные)
 
 - Доступ (не меняются восстановлением копии — `backup.DEVICE_SETTINGS`): `phone_lan`, `phone_remote`,
-  `auth_secret` (ключ подписи входа пользователей); `password_reset` (отпечаток кода сброса и срок).
+  `auth_secret` (ключ подписи входа пользователей); `password_reset` (отпечаток кода сброса, срок, `fails` — неверные попытки со всех адресов).
   `phone_password_hash`/`phone_secret` — от прежнего общего пароля телефона (до 2.23.0), больше не используются.
 - Prom и фото: `prom_token`, `prom_api_base`, `public_base_url`, настройки R2, `import_method`, `import_plain_v2`, `import_settings`, `quick_updates`
 - ИИ: `ai_provider`, `gemini_key`, `anthropic_key`, `gemini_model` (пусто — авто), `gemini_model_used`, `claude_model`, `ai_rate`, `gemini_free_tier` (`1`/`0`/пусто — не знаем), `ai_model_status` (JSON `provider:model` → статус, у лимита — `until`), `ai_key_error` (JSON provider → текст: ключ не принят), `ai_limits` (JSON: Claude — остаток из заголовков, Gemini — `last_limit`)

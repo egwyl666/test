@@ -71,9 +71,30 @@ _SECRET_PATTERNS = [
 ]
 
 
+MIN_SECRET = 8  # короче — это не ключ, а вырезать такое из текста значило бы портить обычные слова
+
+
+def known_secrets() -> list[str]:
+    """Значения всех ключей и токенов этой программы — чтобы вырезать их из журнала даже там, где они стоят «голыми»
+    (текст ошибки сервиса, заголовок Authorization, JSON с apiKey) и шаблон по виду ссылки их не узнаёт."""
+    from .cloudbackup import SECRET_SETTINGS
+
+    values = [os.environ.get(ENV[k], "") for k in SECRET_SETTINGS if k in ENV] + [os.environ.get("APP_PASSWORD", "")]
+    try:
+        marks = ",".join("?" * len(SECRET_SETTINGS))
+        values += [r["value"] for r in db.query(f"SELECT value FROM settings WHERE key IN ({marks})", SECRET_SETTINGS)]
+        values.append((db.data_dir() / "service-token").read_text().strip())
+    except Exception:  # база ещё не открыта, файла нет — вырезаем то, что известно
+        pass
+    return sorted({v for v in values if v and len(v) >= MIN_SECRET}, key=len, reverse=True)
+
+
 def redact(text: str) -> str:
     for pattern, repl in _SECRET_PATTERNS:
         text = pattern.sub(repl, text)
+    for value in known_secrets():
+        if value in text:
+            text = text.replace(value, mask(value) if len(value) > 24 else "***")
     return text
 
 

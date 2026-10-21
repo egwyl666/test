@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 import httpx
 
-from . import aiprice, config, db
+from . import aiprice, config, db, netguard
 
 GEMINI_BASE = os.environ.get("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta")
 DEFAULT_MODELS = {"gemini": "", "claude": "claude-opus-5-5"}  # Gemini: "" = выбрать автоматически
@@ -334,15 +334,15 @@ def product_photo(p: dict, transport=None) -> tuple[str, str]:
             url = _products.image_src(img)
             if not re.match(r"^https?://", url):
                 raise AIError("Фото товара — не ссылка http/https")
-            content = b""
-            with httpx.Client(timeout=PHOTO_TIMEOUT, follow_redirects=True, transport=transport) as client:
-                with client.stream("GET", url) as r:
-                    if r.status_code >= 400:
-                        raise AIError(f"Фото товара не скачалось (HTTP {r.status_code})")
-                    for chunk in r.iter_bytes():
-                        content += chunk
-                        if len(content) > PHOTO_MAX_BYTES:
-                            raise AIError("Фото товара больше 4 МБ — загрузите фото поменьше")
+            # ссылка — из чужого прайса: только публичный интернет и не больше 4 МБ (netguard)
+            try:
+                content = netguard.fetch(url, PHOTO_MAX_BYTES, PHOTO_TIMEOUT, transport)
+            except netguard.BlockedURL as exc:
+                raise AIError(f"Фото товара не скачано: {exc}") from None
+            except httpx.HTTPStatusError as exc:
+                raise AIError(f"Фото товара не скачалось (HTTP {exc.response.status_code})") from None
+            except ValueError:
+                raise AIError("Фото товара больше 4 МБ — загрузите фото поменьше") from None
         picture = Image.open(_io.BytesIO(content))
         picture = picture.convert("RGB")
         picture.thumbnail((PHOTO_SIDE, PHOTO_SIDE))

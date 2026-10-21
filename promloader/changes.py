@@ -44,6 +44,20 @@ def source(text: str):
         _source.reset(token)
 
 
+@contextmanager
+def user(name: str):
+    """Правки делаются от имени пользователя (фоновое задание, которое он запустил раньше)."""
+    token = _user.set(name or "")
+    try:
+        yield
+    finally:
+        _user.reset(token)
+
+
+def current_user() -> str:
+    return _user.get()
+
+
 def current_source() -> str:
     return _source.get()
 

@@ -19,9 +19,7 @@ def _me(request: Request) -> dict:
 
 def _signed_in(request: Request, user: dict, body: dict) -> JSONResponse:
     response = JSONResponse(body)
-    secure = request.url.scheme == "https" or "cf-connecting-ip" in request.headers  # через Cloudflare — https
-    response.set_cookie(users.COOKIE, users.make_session(user["id"]), max_age=users.SESSION_DAYS * 86400,
-                        httponly=True, samesite="lax", secure=secure)
+    users.set_cookie(response, request, user["id"])
     return response
 
 
@@ -95,7 +93,8 @@ def reset_password(request: Request, data: dict = Body(...)):
     if str(data.get("password") or "") != str(data.get("password2") or ""):
         raise users.UserError("Пароли не совпадают", "password2")
     try:
-        user = users.reset_with_code(data.get("login"), data.get("code"), data.get("password"))
+        user = users.reset_with_code(data.get("login"), data.get("code"), data.get("password"),
+                                     from_this_computer=phone.from_this_computer(request))
     except users.UserError:
         reset_limiter.failed(who)
         raise

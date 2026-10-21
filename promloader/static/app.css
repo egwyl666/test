@@ -771,3 +771,9 @@ body.no-chat [data-perm="chat"], body.no-admin [data-perm="admin"] { display: no
   #roles-table td { display: block; border: 0; padding: 2px 0; }
   .perm-box { white-space: normal; }
 }
+
+/* карточка товара «только просмотр» (роль без права «товары») */
+.readonly-note { background: var(--accent-soft); color: var(--text); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 14px; }
+.card-readonly #photo-drop, .card-readonly .photo .del, .card-readonly .rt-toolbar, .card-readonly #btn-add-param,
+.card-readonly #history [data-revert], .card-readonly .lock[data-field], .card-readonly #ai-panel { display: none !important; }
+.card-readonly #form input[readonly], .card-readonly #form textarea[readonly] { background: var(--bg); }

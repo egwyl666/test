@@ -25,10 +25,11 @@ async function api(path, options = {}) {
   const text = await response.text();
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
   if (!response.ok) {
-    // вход истёк или ещё не выполнен — на страницу входа (или создания администратора), потом обратно сюда
-    if (response.status === 401 && body && body.login) {
-      location.href = `${body.setup ? "/setup" : "/login"}?next=${encodeURIComponent(location.pathname + location.search)}`;
-    }
+    // вход истёк или ещё не выполнен — на страницу входа (или создания администратора), потом обратно сюда.
+    // Один раз, и не со страницы входа: десяток фоновых запросов не должен устраивать цепочку переходов
+    if (response.status === 401 && body && body.login) goToLogin(body.setup);
+    // права отняли, пока страница была открыта: перечитать их и убрать кнопки, которые больше не работают
+    if (response.status === 403 && body && body.forbidden) refreshPerms();
     let detail = body && body.detail !== undefined ? body.detail : body;
     if (Array.isArray(detail)) detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
     const err = new Error(typeof detail === "string" && detail ? detail : `Ошибка ${response.status}`);
@@ -37,6 +38,34 @@ async function api(path, options = {}) {
     throw err;
   }
   return body;
+}
+
+let leaving = false;
+function goToLogin(setup) {
+  if (leaving || ["/login", "/setup"].includes(location.pathname)) return;
+  leaving = true;
+  location.href = `${setup ? "/setup" : "/login"}?next=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
+}
+
+let permsChecked = 0;
+async function refreshPerms() {
+  if (Date.now() - permsChecked < 5000) return;  // пачка отказов подряд — одна проверка
+  permsChecked = Date.now();
+  let me;
+  try { me = await api("/api/me"); } catch { return; }
+  const before = (META.me && META.me.perms || []).join(",");
+  META.me = me;
+  if (before === (me.perms || []).join(",")) return;
+  applyNavPerms();
+  document.dispatchEvent(new Event("perms-changed"));  // страница сама закроет то, что стало нельзя
+  if (document.getElementById("perms-changed")) return;
+  const bar = document.createElement("div");
+  bar.id = "perms-changed";
+  bar.className = "update-banner";
+  bar.innerHTML = `<span>🔐 Администратор изменил ваши права — обновите страницу, чтобы увидеть, что теперь доступно.</span>
+    <button class="btn small" type="button">Обновить страницу</button>`;
+  bar.querySelector("button").onclick = () => location.reload();
+  document.querySelector(".topbar")?.insertAdjacentElement("afterend", bar);
 }
 
 async function loadMeta() {
@@ -401,6 +430,25 @@ function applyNavPerms() {
   // кнопки, которые роли всё равно не разрешены (сервер ответит «Недостаточно прав»), — прячем: класс на body
   // действует и на то, что страница дорисует потом (полоска готовности, окна)
   for (const p of ["catalog", "ai", "orders", "chat", "admin"]) document.body.classList.toggle(`no-${p}`, !can(p));
+  applyPagePerm();
+}
+
+// Страница целиком для изменений (поставщики, наценка, категории), а у роли нет права: всё видно, но поля и кнопки
+// закрыты — и те, что страница дорисует потом (таблицы правил, окна)
+function applyPagePerm() {
+  const main = document.querySelector("main[data-page-perm]");
+  if (!main || can(main.dataset.pagePerm) || main.dataset.locked) return;
+  main.dataset.locked = "1";
+  document.body.classList.add("page-readonly");
+  const note = document.createElement("div");
+  note.className = "readonly-note";
+  note.textContent = "👁 Только просмотр: у вашей роли нет права это менять.";
+  main.prepend(note);
+  const lock = () => main.querySelectorAll("input, select, textarea, button").forEach((el) => {
+    if (!el.disabled && !el.closest("[data-view-ok]")) el.disabled = true;
+  });
+  lock();
+  new MutationObserver(lock).observe(main, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
 }
 
 // 👤 в шапке: кто вошёл, смена своего пароля, «Пользователи» (администратору) и «Выйти».

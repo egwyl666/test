@@ -57,9 +57,10 @@ def create(product_ids: list[int], action: str, instruction: str = "", only_empt
     ts = db.now()
     with db.tx() as c:
         job_id = c.execute(
-            "INSERT INTO ai_jobs (action, instruction, only_empty, auto_promote, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (action, instruction.strip(), 1 if only_empty else 0, 1 if auto_promote else 0, ts, ts)).lastrowid
+            "INSERT INTO ai_jobs (action, instruction, only_empty, auto_promote, created_at, updated_at, user) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (action, instruction.strip(), 1 if only_empty else 0, 1 if auto_promote else 0, ts, ts,
+             changes_log.current_user())).lastrowid
         c.executemany("INSERT INTO ai_items (job_id, product_id) VALUES (?, ?)", [(job_id, pid) for pid in ids])
     return get(job_id)
 
@@ -160,7 +161,8 @@ def _unpromote(job_id: int) -> int:
 
 def _next_item():
     return db.query_one(
-        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
+        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote, j.user FROM ai_items i
+           JOIN ai_jobs j ON j.id = i.job_id
            WHERE j.status = 'running' AND i.status = 'pending' ORDER BY j.id, i.id LIMIT 1""")
 
 
@@ -172,7 +174,8 @@ def _next_items(limit: int) -> list:
     if first is None or limit <= 1 or first["message"] == SINGLE:
         return [first] if first else []
     return db.query(
-        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote FROM ai_items i JOIN ai_jobs j ON j.id = i.job_id
+        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote, j.user FROM ai_items i
+           JOIN ai_jobs j ON j.id = i.job_id
            WHERE i.job_id = ? AND i.status = 'pending' AND i.message != ? ORDER BY i.id LIMIT ?""",
         (first["job_id"], SINGLE, limit))
 
@@ -254,14 +257,28 @@ def _prepare(item):
 
 
 def _apply(item, p: dict, changes: dict) -> None:
+    """p — товар, каким его видел ИИ. Пока шёл запрос (секунды, а в очереди с лимитом — минуты), человек мог
+    поправить поле в карточке: такое поле ответ ИИ не перезаписывает — правка человека новее."""
     fields = EMPTY_CHECK.get(item["action"])
     if item["only_empty"] and fields:
         changes = {k: v for k, v in changes.items() if k not in fields or not (p.get(k) or "").strip()}
-    old = {k: p.get(k) for k in changes}
-    if changes:
-        with changes_log.source(f"ИИ: {ACTION_LABEL.get(item['action'], item['action'])}"):
-            products.update(p["id"], changes)
-    _mark(item["id"], "done", old=old, new=changes)
+    kept = []
+    with db.tx():
+        try:
+            now = products.get(p["id"])
+        except KeyError:
+            _mark(item["id"], "skipped", "товар удалён")
+            return
+        kept = [k for k in changes if now.get(k) != p.get(k)]
+        changes = {k: v for k, v in changes.items() if k not in kept}
+        old = {k: p.get(k) for k in changes}
+        if changes:
+            with changes_log.source(f"ИИ: {ACTION_LABEL.get(item['action'], item['action'])}"), \
+                    changes_log.user(item["user"]):
+                products.update(p["id"], changes)
+    names = ", ".join(changes_log.LABELS.get(k, k) for k in kept)
+    message = f"не перезаписано — поправили вручную, пока работал ИИ: {names}" if kept else ""
+    _mark(item["id"], "done", message, old=old, new=changes)
 
 
 def process_one(runner=None) -> str:
@@ -347,7 +364,8 @@ def _auto_promote(job_item, product_ids: list[int]) -> None:
     """Задание с «сразу в «Готов к отправке»»: черновики, которые после ИИ стали готовы для Prom, — в «Готов»."""
     if not job_item["auto_promote"] or not product_ids:
         return
-    moved = products.promote_if_ready(product_ids, AUTO_PROMOTE_SOURCE)
+    with changes_log.user(job_item["user"]):
+        moved = products.promote_if_ready(product_ids, AUTO_PROMOTE_SOURCE)
     if moved:
         with db.tx() as c:
             c.execute("UPDATE ai_jobs SET promoted = promoted + ? WHERE id = ?", (moved, job_item["job_id"]))

@@ -234,6 +234,10 @@ async def phone_worker(stop: asyncio.Event) -> None:
         except Exception:
             log.exception("Сбой туннеля для телефона")
         try:
+            users.cleanup_reset()  # код сброса пароля просрочен — файл с кодом не лежит дольше нужного
+        except Exception:
+            log.exception("Не удалось убрать просроченный код сброса пароля")
+        try:
             await asyncio.wait_for(stop.wait(), timeout=5)
         except asyncio.TimeoutError:
             pass

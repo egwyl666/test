@@ -15,6 +15,7 @@ const state = {
   lang: "ru",
   activeImage: 0,
   uploads: [],        // {key, file, status: 'uploading'|'failed', error}
+  readonly: false,    // у роли нет права «товары»: смотреть можно, менять нельзя (сервер и так не даст)
 };
 
 const form = $("#form");
@@ -67,6 +68,7 @@ function fillForm(p) {
   }
   renderParams(p.params || []);
   renderVideos(p.videos || []);
+  lockForm();
 }
 
 // Обновить поля из ответа сервера («↩ Вернуть», «🔒 своё»), не трогая то, что пользователь сейчас набирает
@@ -156,6 +158,7 @@ function markInvalid(field, message) {
 }
 
 function changed(field) {
+  if (state.readonly) return;  // случайная правка у «Только просмотр» не должна уходить в автосохранение
   const el = form.elements[field];
   if (el && el.classList) { el.classList.remove("invalid"); el.title = ""; }
   const values = formValues();
@@ -182,6 +185,7 @@ function setSaveState(kind, text) {
 }
 
 function scheduleSave(delay = SAVE_DELAY) {
+  if (state.readonly) return;
   clearTimeout(state.saveTimer);
   state.saveTimer = setTimeout(() => save().catch(() => {}), delay);
   setSaveState("saving", "Есть изменения…");
@@ -358,6 +362,7 @@ function applyServer(product) {
   renderCheck(product.check);
   renderSupplier(product);
   renderCategory(product);
+  lockForm();
   renderPhotos();
   renderPreview();
   if (product.status === "sending") pollStatus();
@@ -633,6 +638,7 @@ function renderPhotos() {
 }
 
 async function uploadFiles(files, retryOf = null) {
+  if (state.readonly) { toast("Только просмотр: у вашей роли нет права менять товары", "error"); return; }
   files = files.filter(isImage);
   if (!files.length) return;
   if (retryOf) state.uploads = state.uploads.filter((u) => u !== retryOf);
@@ -910,6 +916,58 @@ $("#ai-instruction").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); askAi("custom", e.target.value); }
 });
 
+// ---------- только просмотр ----------
+// Роль без права «товары» (Оператор, Только просмотр, своя роль): поля закрыты, кнопки изменений спрятаны,
+// автосохранение не запускается. Сервер всё равно ответил бы «Недостаточно прав» — но лучше не давать начать.
+
+const VIEW_OK = "#lang-tabs button, #preview-lang button, [data-view], #history summary, .actions-menu summary, #btn-on-prom, #btn-diagnose";
+
+function lockForm() {
+  if (!state.readonly) return;
+  for (const el of form.querySelectorAll("input, textarea, select, button")) {
+    if (el.matches(VIEW_OK)) continue;
+    if (el.tagName === "BUTTON" || el.type === "checkbox" || el.type === "radio" || el.tagName === "SELECT") el.disabled = true;
+    else el.readOnly = true;
+  }
+  $$(".rt-area").forEach((a) => (a.contentEditable = "false"));
+  $$(".photo[draggable=true]").forEach((el) => (el.draggable = false));
+}
+
+function applyReadOnly() {
+  state.readonly = !can("catalog");
+  document.body.classList.toggle("card-readonly", state.readonly);
+  if (!state.readonly) return;
+  if (!$("#readonly-note")) {
+    const note = document.createElement("div");
+    note.id = "readonly-note";
+    note.className = "readonly-note";
+    note.textContent = "👁 Только просмотр: у вашей роли нет права менять товары. Поля закрыты, изменения не сохраняются.";
+    form.insertAdjacentElement("beforebegin", note);
+  }
+  lockForm();
+}
+
+document.addEventListener("perms-changed", () => {
+  applyReadOnly();
+  if (state.readonly) {  // правки, которые сервер не принял, повторять бессмысленно
+    state.pending = {};
+    clearTimeout(state.saveTimer);
+    clearTimeout(state.retryTimer);
+    try { localStorage.removeItem(backupKey()); } catch {}
+    setSaveState("failed", "Изменения не сохранены — у вашей роли больше нет права менять товары");
+  }
+});
+
+// всё, что дорисуется потом (характеристики, фото, «🔒 своё», «↩ Вернуть»), тоже не должно менять товар
+document.addEventListener("click", (e) => {
+  if (!state.readonly) return;
+  const b = e.target.closest("#form button, #form .lock, #history [data-revert], #conflict-panel button, .photo .del, #photo-drop");
+  if (!b || b.matches(VIEW_OK)) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  toast("Только просмотр: у вашей роли нет права менять товары", "error");
+}, true);
+
 // ---------- старт ----------
 
 async function init() {
@@ -919,6 +977,7 @@ async function init() {
     if (back && back.startsWith("/")) $("#back-link").href = back;
   } catch {}
   await loadMeta();
+  applyReadOnly();
   $("#presence").innerHTML = Object.entries(META.presence).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
   $("#groups").innerHTML = (META.groups || []).map((g) => `<option value="${esc(g)}">`).join("");
   renderAiPanel();
@@ -939,8 +998,9 @@ async function init() {
     fillForm({ currency: "UAH", presence: "available", unit: "шт.", params: [] });
   }
 
-  // восстановление несохранённого после сбоя/закрытия вкладки
-  let backup = readBackup();
+  lockForm();
+  // восстановление несохранённого после сбоя/закрытия вкладки (только просмотр — восстанавливать нечего)
+  let backup = state.readonly ? null : readBackup();
   // копия в браузере старше изменений на сервере (обновил поставщик, правили в другой вкладке) — не затираем
   // более новые данные молча, а спрашиваем
   const serverAt = state.product ? Date.parse(state.product.updated_at) : NaN;

@@ -84,7 +84,8 @@ def diagnostics(client: dict | None = None) -> dict:
             tail = (db.data_dir() / "logs" / name).read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_TAIL:]
         except OSError:
             continue
-        lines += [f"--- {name} ---"] + tail
+        # console.log пишет значок у часов мимо фильтра журнала — секреты вырезаем и здесь
+        lines += [f"--- {name} ---"] + [config.redact(line) for line in tail]
     return {
         "version": updater.current_version(),
         "os": f"{platform.system()} {platform.release()} ({platform.machine()})",

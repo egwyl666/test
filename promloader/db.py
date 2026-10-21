@@ -381,6 +381,8 @@ MIGRATIONS = {
     "ai_jobs": {
         "auto_promote": "INTEGER NOT NULL DEFAULT 0",
         "promoted": "INTEGER NOT NULL DEFAULT 0",
+        # кто запустил задание: его имя пишется в журнал у правок ИИ (пусто — автоконвейер по расписанию)
+        "user": "TEXT NOT NULL DEFAULT ''",
     },
     "suppliers": {
         "merge_by_barcode": "INTEGER NOT NULL DEFAULT 1",
