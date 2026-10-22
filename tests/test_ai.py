@@ -143,7 +143,8 @@ def test_claude_request():
     assert body["fallbacks"] == "default"
     assert "server-side-fallback-2026-07-01" in req.headers["anthropic-beta"]
     assert body["output_config"]["format"]["schema"]["additionalProperties"] is False
-    assert req.headers["x-api-key"] == "sk-test"
+    # anthropic 1.x кладёт ключ в x-api-key, 2.x — в Authorization: Bearer; Anthropic принимает оба
+    assert req.headers.get("x-api-key") == "sk-test" or req.headers.get("authorization") == "Bearer sk-test"
 
 
 def test_claude_refusal():
