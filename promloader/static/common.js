@@ -584,6 +584,26 @@ document.addEventListener("click", (e) => {  // «Ещё ▾» закрывае�
   const open = document.querySelector(".nav-more[open]");
   if (open && (!open.contains(e.target) || e.target.closest("a"))) open.open = false;
 });
+// В окне уже 1440 px меню прокручивается вбок (overflow-x), и выпадающий список внутри него обрезался бы —
+// «Ещё» нажимается, а ничего не видно. Поэтому список ставим поверх страницы (fixed) под самой кнопкой.
+function placeNavMore(d) {
+  const box = d.querySelector(".nav-more-box");
+  if (!box) return;
+  if (!d.open) { box.style.cssText = ""; return; }
+  const r = d.querySelector("summary").getBoundingClientRect();
+  box.style.position = "fixed";
+  box.style.top = `${Math.round(r.bottom + 6)}px`;
+  box.style.left = `${Math.round(Math.max(8, Math.min(r.left, innerWidth - box.offsetWidth - 8)))}px`;
+}
+document.addEventListener("toggle", (e) => {
+  if (e.target.classList && e.target.classList.contains("nav-more")) placeNavMore(e.target);
+}, true);
+for (const ev of ["scroll", "resize"]) {  // список fixed — при прокрутке страницы или меню закрываем, а не оставляем висеть
+  window.addEventListener(ev, (e) => {
+    const open = document.querySelector(".nav-more[open]");
+    if (open && !(e.target instanceof Node && open.contains(e.target))) open.open = false;
+  }, true);
+}
 
 function initNav() { renderNav(); }
 

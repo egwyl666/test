@@ -74,6 +74,13 @@ def _login(ctx, url, errors):
     return page
 
 
+def _hit(page, selector) -> bool:
+    """Элемент действительно под мышью (не обрезан родителем и не закрыт другим) — is_visible этого не видит."""
+    return page.evaluate("""s => { const el = document.querySelector(s); const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !!hit && (hit === el || el.contains(hit)); }""", selector)
+
+
 def _status(pid):
     return db.query_one("SELECT status FROM products WHERE id = ?", (pid,))["status"]
 
@@ -125,6 +132,8 @@ def test_interface_in_a_real_browser(server):
         assert not page.locator('.topbar nav a[href="/changes"]').is_visible()
         page.click(".nav-more summary")
         assert page.locator('.topbar nav a[href="/changes"]').is_visible()
+        # не обрезан меню, которое в окне до 1440 px прокручивается вбок: пункт виден и нажимается на самом деле
+        assert _hit(page, '.topbar nav a[href="/changes"]')
         page.mouse.click(5, 400)  # клик мимо — меню закрылось
         assert not page.locator('.topbar nav a[href="/changes"]').is_visible()
 
@@ -176,6 +185,9 @@ def test_interface_in_a_real_browser(server):
         page.wait_for_url(f"**/product?id={row_ids[10]}")
         page.wait_for_selector("#card-nav:not(.hidden)")
         assert page.inner_text("#card-pos") == "11 / 30"
+        page.click(".actions-menu.menu-always summary")  # «Ещё ▾» карточки раскрывается, и кнопки в нём нажимаются
+        assert _hit(page, ".actions-menu.menu-always .actions-box .btn:not([hidden])")
+        page.mouse.click(5, 400)
         page.click("#next-link")
         page.wait_for_url(f"**/product?id={row_ids[11]}")
         page.wait_for_selector("#card-nav:not(.hidden)")
