@@ -1071,3 +1071,7 @@ body.login-hero .login-logo { background: rgba(255, 255, 255, .92); border-radiu
 }
 /* свой логотип в тёмной теме — на светлой подложке: тёмный логотип на тёмной шапке не видно */
 :root[data-theme="dark"] .topbar .logo.with-logo img { background: rgba(255, 255, 255, .92); border-radius: 6px; padding: 2px 5px; }
+/* «Установить на телефон»: шаги для iPhone / Android, когда браузер не даёт своё окно установки */
+.install-steps { padding-left: 20px; margin: 0 0 10px; line-height: 1.55; }
+.install-steps li { margin: 6px 0; }
+.install-steps svg.i { vertical-align: -3px; color: var(--accent); }

@@ -241,6 +241,20 @@ def test_interface_in_a_real_browser(server):
             assert page.evaluate("getComputedStyle(document.querySelector('#bulk')).position") == "sticky"
             ctx.close()
 
+        # ---------- iPhone: Safari не даёт сайту окно установки — кнопка всё равно есть и показывает шаги ----------
+        iphone = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                  "Version/18.0 Mobile/15E148 Safari/604.1")
+        ctx = browser.new_context(viewport={"width": 390, "height": 800}, is_mobile=True, has_touch=True, user_agent=iphone)
+        page = _login(ctx, url, errors)
+        page.goto(url + "/settings#app")
+        page.wait_for_selector("#app-install:not(.hidden)")
+        page.click("#app-install")
+        page.wait_for_selector("#install-help:not(.hidden) .install-steps svg")  # значок «Поделиться» в шаге
+        assert "На экран „Домой“" in page.inner_text("#install-help")
+        page.click("#install-help [data-close]")
+        assert page.locator("#install-help.hidden").count() == 1
+        ctx.close()
+
         # ---------- роль без права «товары»: кнопки видны, но заперты, и объяснено почему ----------
         ctx = browser.new_context(viewport={"width": 1366, "height": 900})
         page = ctx.new_page()
