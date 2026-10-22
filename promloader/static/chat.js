@@ -24,7 +24,10 @@ async function loadRooms() {
     // одной фразой: так словарь переведёт и её, и текст ошибки Prom внутри
     $("#error").textContent = r.error ? `Не удалось получить чат: ${r.error}` : "";
     $("#poll-info").textContent = r.last_poll ? `проверено ${time(r.last_poll)}` : "";
-    $("#rooms").innerHTML = r.rooms.length ? r.rooms.map((room) => `
+    const empty = $("#rooms > p");
+    if (r.rooms.length && empty) empty.remove();
+    // опрос раз в 30 с: меняются только диалоги, где что-то новое — список не мигает и не теряет наведение
+    if (r.rooms.length) patchChildren($("#rooms"), r.rooms, (room) => room.room_ident, (room) => `
       <button class="chat-room-item ${room.room_ident === view.room ? "active" : ""}" data-room="${esc(room.room_ident)}">
         <span class="row" style="gap:6px;align-items:center">
           <b translate="no">${esc(room.buyer_name || I18N.tr("Покупатель"))}</b>
@@ -32,8 +35,8 @@ async function loadRooms() {
           <span class="spacer"></span><span class="small muted">${esc(time(room.last_at))}</span></span>
         ${room.product ? `<span class="small muted" translate="no">${esc(room.product.name)}</span>` : ""}
         <span class="small chat-last" translate="no">${esc(room.last_message)}</span>
-      </button>`).join("")
-      : `<p class="muted small">${esc(I18N.tr(view.q || view.unread ? "Ничего не найдено." : "Сообщений от покупателей пока нет."))}</p>`;
+      </button>`);
+    else $("#rooms").innerHTML = `<p class="muted small">${esc(I18N.tr(view.q || view.unread ? "Ничего не найдено." : "Сообщений от покупателей пока нет. Когда покупатель напишет магазину на Prom, диалог появится здесь сам."))}</p>`;
   } catch (err) { $("#error").textContent = err.message; }
 }
 
@@ -71,7 +74,13 @@ function renderRoom(r) {
   // готовые ответы из настоящих данных (наличие, ТТН, статус заказа) — по-украински, без ИИ
   $("#quick").innerHTML = (r.quick || []).map((q) =>
     `<button class="chip" data-quick="${esc(q.text)}" title="${esc(q.text)}">${esc(I18N.tr(q.label))}</button>`).join("");
-  $("#messages").innerHTML = r.messages.map((m) => {
+  const box = $("#messages");
+  // прокрутка вниз — только при открытии диалога или если и так были внизу: читая старое, не прыгаем в конец
+  const sameRoom = box.dataset.room === r.room.room_ident;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+  box.dataset.room = r.room.room_ident;
+  if (!sameRoom) box.innerHTML = "";
+  patchChildren(box, r.messages, (m) => m.id ?? `${m.created_at}|${m.type}`, (m) => {
     if (m.type === "context") {
       const what = m.context_type === "order" ? `${I18N.tr("Заказ №")}${m.context_id}` : "";
       return `<div class="chat-context small muted">${m.product ? productCard(m.product) : esc(what || I18N.tr("Покупатель смотрит товар"))}</div>`;
@@ -89,9 +98,8 @@ function renderRoom(r) {
     return `<div class="chat-msg ${m.is_my ? "mine" : ""}">
       <div class="chat-bubble" translate="no">${text}${files ? `<div>${files}</div>` : ""}</div>
       <div class="small muted">${esc(time(m.created_at))}</div></div>`;
-  }).join("");
-  const box = $("#messages");
-  box.scrollTop = box.scrollHeight;
+  });
+  if (!sameRoom || atBottom) box.scrollTop = box.scrollHeight;
 }
 
 $("#rooms").addEventListener("click", (e) => {

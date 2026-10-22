@@ -329,8 +329,8 @@ def test_multi_supplier_product_returns_in_stock_without_presence_column():
     b = supplier("Бета", [], mapping=mapping)
     refresh(a, [["A1", "4820000000017", "Кружка", 100, "", ""]])
     refresh(b, [["B7", "4820000000017", "Кружка", 80, "", ""]])
-    refresh(a, [])
-    refresh(b, [])
+    refresh(a, [], force=True)
+    refresh(b, [], force=True)
     assert only_product()["presence"] == "not_available"
     refresh(b, [["B7", "4820000000017", "Кружка", 85, "", ""]])
     p = only_product()

@@ -1,6 +1,6 @@
 # Проверка каждого обновления: программа у пользователей обновляется сама из ветки main, поэтому сломанная
 # версия не должна туда попасть незамеченной. Запускаются ruff и все тесты (в том числе полнота перевода на
-# украинский — tests/test_i18n.py).
+# украинский — tests/test_i18n.py и проверка в настоящем браузере — tests/test_browser.py).
 name: Проверка
 
 # Один и тот же коммит уходит и в main, и в рабочую ветку — проверяем его один раз (в main),
@@ -32,5 +32,9 @@ jobs:
         run: pip install -r requirements-dev.txt ruff==0.15.8  # версия закреплена: новые ruff включают новые правила сами
       - name: ruff
         run: ruff check promloader tests
+      - name: Браузер для tests/test_browser.py
+        run: |
+          pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
       - name: pytest
         run: python -m pytest -q

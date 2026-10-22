@@ -20,6 +20,7 @@ from .. import (
     aibulk,
     aicategory,
     aiprice,
+    branding,
     changes,
     chat,
     config,
@@ -32,6 +33,7 @@ from .. import (
     r2,
     schedule,
     suppliers,
+    undo,
     updater,
 )
 from ..web import MAX_UPLOAD, _background
@@ -51,6 +53,7 @@ def meta(request: Request):
         "targets": excel.TARGETS,
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
+        "shop_logo": branding.version(),  # версия логотипа магазина ("" — не загружен)
         "prom_token_set": bool(config.get("prom_token")),
         "failed_suppliers": suppliers.failed(),
         "version": updater.current_version(),
@@ -142,7 +145,9 @@ def products_alerts():
 @router.post("/api/products/duplicates/keep-best")
 def duplicates_keep_best():
     """«Оставить выгодный»: в каждой группе дублей остальные — в черновики с пометкой «скрыт как дубль»."""
-    return duplicates.keep_best()
+    stamp = undo.stamp()
+    r = duplicates.keep_best(stamp)
+    return r | {"undo": undo.remember(r.pop("before"), stamp, "Оставить выгодный")}
 
 
 @router.post("/api/products/{product_id}/dup-unhide")
@@ -352,13 +357,32 @@ def delete_cancel(ids: list[int] = Body(..., embed=True)):
 @router.post("/api/products/promote-ready")
 def promote_ready(filter: dict | None = Body(None, embed=True)):
     """Все готовые для Prom черновики (по фильтрам списка) — в «Готов к отправке»."""
-    moved = products.promote_ready(filter or {})
-    return {"moved": moved, **products.readiness(filter or {})}
+    ids, stamp = products.ready_drafts(filter or {}), undo.stamp()
+    before = undo.snapshot(ids)
+    moved = products.promote_ready(ids=ids, stamp=stamp)
+    return {"moved": moved, "undo": undo.remember(before, stamp, "В «Готов к отправке»") if moved else None,
+            **products.readiness(filter or {})}
 
 
 @router.post("/api/products/status")
 def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filter: dict | None = Body(None)):
-    return {"ok": True, "changed": products.set_status(_selected(ids, filter), status)}
+    chosen, stamp = _selected(ids, filter), undo.stamp()
+    before = undo.snapshot(chosen)
+    changed = products.set_status(chosen, status, stamp)
+    label = UNDO_LABELS.get(status, status)
+    return {"ok": True, "changed": changed, "undo": undo.remember(before, stamp, label) if changed else None}
+
+
+UNDO_LABELS = {"draft": "В черновики", "ready": "Пометить «готов»", "synced": "Вернуть «На Prom»"}
+
+
+@router.post("/api/products/undo/{token}")
+def undo_action(token: str):
+    """«↩ Отменить» последнего быстрого действия со статусами (несколько секунд после него)."""
+    try:
+        return {"restored": undo.apply(token)}
+    except KeyError:
+        raise HTTPException(410, "Отменить уже нельзя — прошло слишком много времени") from None
 
 
 @router.post("/api/products/{product_id}/images")

@@ -445,7 +445,7 @@ _REFUSED_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 
 # без входа: страницы входа и первого запуска, их запросы, значок и файлы приложения на телефоне
 PUBLIC_PATHS = {"/login", "/setup", "/api/login", "/api/logout", "/api/setup", "/api/password/reset-code",
-                "/api/password/reset", "/favicon.ico", "/manifest.webmanifest", "/sw.js"}
+                "/api/password/reset", "/favicon.ico", "/manifest.webmanifest", "/sw.js", "/shop-logo.png"}
 
 
 def _refused(request: Request, text: str, status: int = 403, **extra):

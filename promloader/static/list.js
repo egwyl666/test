@@ -42,11 +42,22 @@ function selectionCount() { return list.allMatching ? list.total : list.selected
 async function loadProducts(append = false) {
   const offset = append ? list.items.length : 0;
   // при автообновлении перечитываем столько, сколько уже показано
-  const limit = append ? PAGE : Math.max(PAGE, list.items.length);
+  const limit = append ? PAGE : Math.max(PAGE, list.items.length, list.restoreCount || 0);
+  list.restoreCount = 0;
   const params = new URLSearchParams({ ...filterParams(), sort: list.sort, limit, offset });
   // номер запроса: ответ на старый фильтр, пришедший позже нового, не должен перерисовать список
   const seq = (list.seq = (list.seq || 0) + 1);
-  const data = await api(`/api/products?${params}`);
+  if (!append && !list.items.length) {
+    // первая загрузка или новый фильтр — заготовка вместо пустоты и «Товаров пока нет», пока ответ в пути
+    $("#rows").innerHTML = skeletonRows($$("table.list thead th").length || 9);
+    $("#empty").classList.add("hidden");
+    $("#nothing-found").classList.add("hidden");
+  }
+  let data;
+  try { data = await api(`/api/products?${params}`); } catch (err) {
+    $$("#rows tr.skeleton").forEach((el) => el.remove());  // не оставлять «загрузку» навсегда
+    throw err;
+  }
   if (seq !== list.seq) return;
   $("#export-xlsx").href = "/api/products.xlsx?" + new URLSearchParams({ ...filterParams(), sort: list.sort });
   list.items = append ? list.items.concat(data.items) : data.items;
@@ -101,12 +112,12 @@ async function loadAlerts() {
 }
 
 async function keepBestDuplicates(btn) {
-  if (!confirm(I18N.tr("В каждой группе дублей останется выгодный товар (★), остальные уйдут в черновики с пометкой «скрыт как дубль» и не попадут в автоконвейер. На Prom ничего не удаляется. Продолжить?"))) return;
+  // без вопроса: скрытые дубли — это черновики, их можно вернуть «↩ Отменить» в уведомлении
   try {
     const r = await api("/api/products/duplicates/keep-best", { method: "POST" });
     let text = I18N.tr(`Скрыто дублей: ${r.hidden} (групп: ${r.groups})`);
     if (r.on_prom) text += ". " + I18N.tr(`${r.on_prom} из них уже есть на Prom — там они остались; если не нужны, удалите их кнопкой «Удалить» → «и на Prom»`);
-    toast(text, "ok");
+    undoToast(text, r.undo, () => applyFilters());
     list.duplicates = "";
     applyFilters();
   } catch (err) { toast(err.message, "error"); }
@@ -170,13 +181,11 @@ $("#readiness").addEventListener("click", (e) => {
   }
   const btn = e.target.closest("#promote-ready");
   if (!btn) return;
-  const n = btn.textContent.match(/\d+/)[0];
-  if (!confirm(`Перевести готовые черновики (${n}) в «Готов к отправке»? На Prom они уйдут при следующей отправке.`)) return;
   busy(btn, async () => {
     try {
       const filter = Object.fromEntries(Object.entries(filterParams()).filter(([k]) => !["status", "readiness"].includes(k)));
       const r = await api("/api/products/promote-ready", { method: "POST", json: { filter } });
-      toast(`В «Готов к отправке»: ${r.moved}`, "ok");
+      undoToast(I18N.tr(`В «Готов к отправке»: ${r.moved}`), r.undo, () => applyFilters());
       if (list.readiness === "ready_to_promote") list.readiness = "";
       applyFilters();
     } catch (err) { toast(err.message, "error"); }
@@ -216,7 +225,8 @@ function renderRows() {
   const filtered = FILTERS.some((k) => list[k] !== "");
   $("#empty").classList.toggle("hidden", list.items.length > 0 || filtered);
   $("#nothing-found").classList.toggle("hidden", list.items.length > 0 || !filtered);
-  tbody.innerHTML = list.items.map((p) => {
+  if (!list.items.length && filtered) $("#nothing-text").textContent = I18N.tr(nothingText());
+  patchChildren(tbody, list.items, (p) => p.id, (p) => {
     const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.map(I18N.tr).join(" · "))}</div>` : "";
     const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
     const deleting = p.status === "deleting" ? `<div class="small deleting-note">${p.last_error
@@ -244,30 +254,45 @@ function renderRows() {
       <td class="hide-sm">${statusBadge(p.status)}${p.synced_at && p.status !== "synced" ? `<span class="on-prom-note" title="Товар уже есть на Prom; изменения уйдут при следующей отправке">● есть на Prom</span>` : ""}</td>
       <td class="hide-sm small muted">${esc(formatDate(p.updated_at))}</td>
     </tr>`;
-  }).join("");
-
-  $$("#rows tr.item").forEach((tr) => {
-    const id = Number(tr.dataset.id);
-    tr.addEventListener("click", async (e) => {
-      if (e.target.classList.contains("sel") || e.target.closest("a")) return;  // ссылка-название откроется сама
-      const del = e.target.closest("[data-del]");
-      if (del) {
-        try {
-          await api(`/api/products/delete/${del.dataset.del}`, { method: "POST", json: { ids: [id] } });
-          toast(del.dataset.del === "retry" ? "Пробую удалить ещё раз" : "Удаление отменено", "ok");
-          loadProducts();
-        } catch (err) { toast(err.message, "error"); }
-        return;
-      }
-      location.href = `/product?id=${id}`;
-    });
-    tr.querySelector(".sel").addEventListener("change", (e) => {
-      if (e.target.checked) list.selected.add(id); else list.selected.delete(id);
-      list.allMatching = false;
-      updateBulk();
-    });
   });
   updateBulk();
+}
+
+// Обработчики — один раз на всю таблицу: строки перерисовываются по одной (patchChildren), а клик ловится здесь
+$("#rows").addEventListener("click", async (e) => {
+  const tr = e.target.closest("tr.item");
+  if (!tr || e.target.classList.contains("sel") || e.target.closest("a")) return;  // ссылка-название откроется сама
+  const id = Number(tr.dataset.id);
+  const del = e.target.closest("[data-del]");
+  if (del) {
+    try {
+      await api(`/api/products/delete/${del.dataset.del}`, { method: "POST", json: { ids: [id] } });
+      toast(del.dataset.del === "retry" ? "Пробую удалить ещё раз" : "Удаление отменено", "ok");
+      loadProducts();
+    } catch (err) { toast(err.message, "error"); }
+    return;
+  }
+  location.href = `/product?id=${id}`;
+});
+$("#rows").addEventListener("change", (e) => {
+  if (!e.target.classList.contains("sel")) return;
+  const id = Number(e.target.closest("tr.item").dataset.id);
+  if (e.target.checked) list.selected.add(id); else list.selected.delete(id);
+  list.allMatching = false;
+  updateBulk();
+});
+
+// Пусто по фильтру-«проверке» — это хорошая новость, а не «ничего не найдено»
+function nothingText() {
+  const only = FILTERS.filter((k) => list[k] !== "");
+  if (only.length === 1) {
+    const good = { duplicates: "Возможных дублей нет ✓", conflict: "Конфликтов с кабинетом Prom нет ✓",
+      errors: "Товаров с ошибками заполнения нет ✓", no_photo: "Все товары с фото ✓", gone: "Пропавших у поставщика нет ✓",
+      cat_mismatch: "Категории на Prom совпадают с нужными ✓" }[only[0]];
+    if (good) return good;
+    if (only[0] === "status" && list.status === "error") return "Товаров с ошибкой отправки нет ✓";
+  }
+  return list.q ? "Ничего не найдено — проверьте написание или поищите по артикулу." : "Ничего не найдено.";
 }
 
 function updateBulk() {
@@ -278,6 +303,7 @@ function updateBulk() {
     : `выбрано: ${n}` + (pageAll && list.total > list.items.length
       ? ` · <a href="#" id="select-all-matching">выбрать все ${list.total} по фильтру</a>` : "");
   $$("#bulk [data-action]").forEach((b) => (b.disabled = !n));
+  $("#bulk").classList.toggle("has-selection", !!n);
   $("#check-all").checked = pageAll || list.allMatching;
   const allLink = $("#select-all-matching");
   if (allLink) allLink.onclick = (e) => { e.preventDefault(); list.allMatching = true; updateBulk(); };
@@ -402,12 +428,15 @@ $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", () => busy(
       return;
     } else if (action === "synced") {
       const res = await api("/api/products/status", { method: "POST", json: { ...sel, status: "synced" } });
-      toast(res.changed ? `Снова «На Prom»: ${res.changed}` : "Эти товары ещё не выгружались на Prom", res.changed ? "ok" : "error");
+      if (res.changed) undoToast(I18N.tr(`Снова «На Prom»: ${res.changed}`), res.undo, () => loadProducts());
+      else toast("Эти товары ещё не выгружались на Prom", "error");
     } else if (action === "delete") {
       openDeleteModal(sel);
       return;
     } else {
-      await api("/api/products/status", { method: "POST", json: { ...sel, status: action } });
+      const res = await api("/api/products/status", { method: "POST", json: { ...sel, status: action } });
+      const done = action === "draft" ? `В черновики: ${res.changed}` : `Готов к отправке: ${res.changed}`;
+      undoToast(I18N.tr(done), res.undo, () => loadProducts());
     }
     loadProducts();
   } catch (err) {
@@ -465,7 +494,7 @@ async function loadJobs() {
     active ? "обновляется автоматически" : "",
   ].filter(Boolean).map(I18N.tr).join(" · ");
   if (jobs.length) {
-    $("#jobs").innerHTML = jobs.slice(0, 6).map((j) => {
+    patchChildren($("#jobs"), jobs.slice(0, 6), (j) => j.id, (j) => {
       const [cls, label] = JOB_STATUS[j.status] || ["draft", j.status];
       let msg = j.last_error || "";
       if (j.status === "done" && j.result) msg = summarizeResult(j.result);
@@ -478,22 +507,27 @@ async function loadJobs() {
         <a class="btn small" href="/api/sync/jobs/${j.id}/file" title="Файл, который ушёл на Prom: можно загрузить в кабинете вручную">Скачать файл</a>
         ${j.status === "failed" ? `<button class="btn small" data-retry="${j.id}">Повторить</button>` : ""}
       </div>`;
-    }).join("");
-    $$("#jobs [data-retry]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
-      try {
-        const res = await api(`/api/sync/jobs/${b.dataset.retry}/retry`, { method: "POST" });
-        toast(`Повторно в очереди: ${res.accepted}`, "ok");
-      } catch (err) {
-        toast(err.message, "error");
-      }
-      loadJobs();
-      loadProducts();
-    })));
+    });
   }
   if (active) {
     jobsTimer = setTimeout(() => { loadJobs(); refreshList(); }, 3000);
   }
 }
+
+$("#jobs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-retry]");
+  if (!b) return;
+  busy(b, async () => {
+    try {
+      const res = await api(`/api/sync/jobs/${b.dataset.retry}/retry`, { method: "POST" });
+      toast(`Повторно в очереди: ${res.accepted}`, "ok");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    loadJobs();
+    loadProducts();
+  });
+});
 
 function summarizeResult(r) {
   if (r.mode === "quick") {
@@ -613,7 +647,7 @@ async function loadAiJobs() {
   try { data = await api("/api/ai/bulk"); } catch { return; }
   aiRate = data.rate;
   $("#ai-jobs-panel").classList.toggle("hidden", !data.items.length);
-  $("#ai-jobs").innerHTML = data.items.map((j) => {
+  patchChildren($("#ai-jobs"), data.items, (j) => j.id, (j) => {
     const [cls, label] = AI_JOB_STATUS[j.status] || ["draft", j.status];
     const c = j.counts;
     const doneCount = (c.done || 0) + (c.skipped || 0) + (c.error || 0);
@@ -629,13 +663,22 @@ async function loadAiJobs() {
       ${active ? `<button class="btn small" data-ai-job="${j.id}" data-st="cancelled">Отменить</button>` : ""}
       ${c.done && j.status !== "reverted" ? `<button class="btn small danger" data-ai-revert="${j.id}">Откатить</button>` : ""}
     </div>`;
-  }).join("");
-  $$("[data-ai-job]").forEach((b) => b.addEventListener("click", async () => {
-    try { await api(`/api/ai/bulk/${b.dataset.aiJob}/status`, { method: "POST", json: { status: b.dataset.st } }); }
+  });
+  if (data.items.some((j) => j.status === "running")) {
+    aiTimer = setTimeout(() => { loadAiJobs(); refreshList(); }, 4000);
+  }
+}
+
+$("#ai-jobs").addEventListener("click", async (e) => {
+  const job = e.target.closest("[data-ai-job]");
+  if (job) {
+    try { await api(`/api/ai/bulk/${job.dataset.aiJob}/status`, { method: "POST", json: { status: job.dataset.st } }); }
     catch (err) { toast(err.message, "error"); }
     loadAiJobs();
-  }));
-  $$("[data-ai-revert]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
+    return;
+  }
+  const b = e.target.closest("[data-ai-revert]");
+  if (b) busy(b, async () => {
     if (!confirm("Вернуть прежние тексты у всех товаров этого задания?")) return;
     try {
       const r = await api(`/api/ai/bulk/${b.dataset.aiRevert}/revert`, { method: "POST" });
@@ -643,11 +686,8 @@ async function loadAiJobs() {
     } catch (err) { toast(err.message, "error"); }  // раньше ошибка отката пропадала молча
     loadAiJobs();
     loadProducts();
-  })));
-  if (data.items.some((j) => j.status === "running")) {
-    aiTimer = setTimeout(() => { loadAiJobs(); refreshList(); }, 4000);
-  }
-}
+  });
+});
 
 // ---------- каталог с Prom ----------
 
@@ -807,9 +847,34 @@ $("#first-steps-hide").onclick = () => {
   $("#search").value = list.q;
   renderFilterControls();
   syncUrl();
+  const place = savedPlace();
+  if (place) {
+    // вернулись из карточки: столько же строк, те же отметки и та же прокрутка, что были
+    list.restoreCount = place.count;
+    list.selected = new Set(place.selected);
+  }
   await loadProducts();
+  if (place) requestAnimationFrame(() => window.scrollTo(0, place.scrollY));
   loadJobs();
 })();
+
+// ---------- список помнит место; порядок товаров для «← Пред. / След. →» в карточке ----------
+const PLACE_KEY = "promloader-list-place";
+function saveListPlace() {
+  try {
+    sessionStorage.setItem(PLACE_KEY, JSON.stringify({
+      url: location.pathname + location.search, at: Date.now(), scrollY: Math.round(window.scrollY),
+      count: list.items.length, selected: [...list.selected], ids: list.items.map((p) => p.id),
+    }));
+  } catch { /* приватный режим — просто не запоминаем */ }
+}
+function savedPlace() {
+  try {
+    const p = JSON.parse(sessionStorage.getItem(PLACE_KEY) || "null");
+    return p && p.url === location.pathname + location.search && Date.now() - p.at < 3 * 3600 * 1000 ? p : null;
+  } catch { return null; }
+}
+window.addEventListener("pagehide", saveListPlace);
 
 // ---------- 💲 цены ----------
 let pricesSel = { ids: [] };

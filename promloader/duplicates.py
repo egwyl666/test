@@ -59,11 +59,13 @@ def _best_key(r, table) -> tuple:
 DUP_SOURCE = "Дубли: оставлен выгодный"
 
 
-def keep_best() -> dict:
+def keep_best(stamp: str | None = None) -> dict:
     """«Оставить выгодный»: в каждой группе дублей выгодный остаётся как есть, остальные — в черновики с пометкой
     «скрыт как дубль» (dup_of). На Prom ничего не удаляется: уже выгруженные дубли там остаются, их число — в ответе."""
     groups = find()
+    stamp = stamp or db.now()
     hidden, on_prom, busy = 0, 0, 0
+    before = []  # как было у скрытых — для «↩ Отменить»
     with db.tx() as c:
         for g in groups:
             for pid in g["ids"][1:]:
@@ -74,13 +76,14 @@ def keep_best() -> dict:
                     busy += 1  # отправляется прямо сейчас — не трогаем, решится на следующем шаге
                     continue
                 c.execute("UPDATE products SET dup_of = ?, status = 'draft', updated_at = ? WHERE id = ?",
-                          (g["best"], db.now(), pid))
+                          (g["best"], stamp, pid))
+                before.append({"id": pid, "status": row["status"], "dup_of": None})
                 if row["status"] != "draft":
                     changes.record(c, pid, "status", products.STATUSES.get(row["status"], row["status"]), products.STATUSES["draft"],
                                    who=DUP_SOURCE)
                 hidden += 1
                 on_prom += 1 if row["synced_at"] else 0
-    return {"groups": len(groups), "hidden": hidden, "on_prom": on_prom, "busy": busy}
+    return {"groups": len(groups), "hidden": hidden, "on_prom": on_prom, "busy": busy, "before": before}
 
 
 def unhide(product_id: int) -> dict:

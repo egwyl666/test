@@ -1075,14 +1075,16 @@ def export_xlsx(flt: dict, sort: str = "updated") -> bytes:
     return buf.getvalue()
 
 
-def set_status(ids: list[int], status: str) -> int:
+def set_status(ids: list[int], status: str, stamp: str | None = None) -> int:
     """draft / ready — как раньше; synced — «Вернуть «На Prom»»: только товарам, которые уже выгружались.
-    Неотправленные изменения при этом не теряются — уйдут со следующей отправкой."""
+    Неотправленные изменения при этом не теряются — уйдут со следующей отправкой. stamp — время изменения у всех
+    затронутых товаров (по нему «↩ Отменить» узнаёт, что товар с тех пор не меняли)."""
+    stamp = stamp or db.now()
     if status == "synced":
         with db.tx() as c:
             return c.execute(f"UPDATE products SET status = 'synced', last_error = '', updated_at = ? "
                              f"WHERE id {db.IN_LIST} AND synced_at IS NOT NULL AND status NOT IN ('sending', 'deleting')",
-                             (db.now(), db.as_list(ids))).rowcount if ids else 0
+                             (stamp, db.as_list(ids))).rowcount if ids else 0
     if status not in ("draft", "ready"):
         raise ProductError("Вручную можно ставить только «черновик» или «готов»")
     with db.tx() as c:
@@ -1091,7 +1093,7 @@ def set_status(ids: list[int], status: str) -> int:
             c.execute(
                 "UPDATE products SET status = ?, updated_at = ?, dup_of = CASE WHEN ? = 'ready' THEN NULL ELSE dup_of END "
                 "WHERE id = ? AND status NOT IN ('sending', 'deleting')",
-                (status, db.now(), status, pid),
+                (status, stamp, status, pid),
             )
     return len(ids)
 
@@ -1123,20 +1125,26 @@ def promote_if_ready(ids: list[int], who: str) -> int:
     return moved
 
 
-def promote_ready(flt: dict | None = None) -> int:
-    """Все черновики, готовые для Prom (с фильтрами списка), — в «Готов к отправке», с записью в журнал."""
+def ready_drafts(flt: dict | None = None) -> list[int]:
+    """Черновики, готовые для Prom, с фильтрами списка."""
     flt = {k: v for k, v in (flt or {}).items() if k not in ("status", "readiness", "errors")}
     clause, args = _filter_where({**flt, "readiness": "ready_to_promote"})
-    ids = [r["id"] for r in db.query(f"SELECT p.id FROM products p {clause} ORDER BY p.id", args)]
+    return [r["id"] for r in db.query(f"SELECT p.id FROM products p {clause} ORDER BY p.id", args)]
+
+
+def promote_ready(flt: dict | None = None, ids: list[int] | None = None, stamp: str | None = None) -> int:
+    """Все черновики, готовые для Prom (с фильтрами списка), — в «Готов к отправке», с записью в журнал."""
+    ids = ready_drafts(flt) if ids is None else ids
     if not ids:
         return 0
     from . import changes
+    stamp = stamp or db.now()
     moved = 0
     with db.tx() as c:
         for pid in ids:
             # условие повторяем: пока считали, товар могли изменить или отправить
             if c.execute("UPDATE products SET status = 'ready', updated_at = ? WHERE id = ? AND status = 'draft'",
-                         (db.now(), pid)).rowcount:
+                         (stamp, pid)).rowcount:
                 changes.record(c, pid, "status", STATUSES["draft"], STATUSES["ready"],
                                who="Готовность: все подготовленные черновики")
                 moved += 1

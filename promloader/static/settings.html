@@ -62,6 +62,17 @@
       <p class="small muted" style="margin-top:-6px">Заполняйте, только если программа стоит на сервере с постоянным адресом.
         Для фото с домашнего компьютера — блок «Фото для Prom» ниже.</p>
       <label class="field"><span>Название магазина (для превью)</span><input name="shop_name"></label>
+      <div class="field">
+        <span>Логотип магазина</span>
+        <div class="toolbar" style="margin:4px 0 0">
+          <img id="logo-preview" class="logo-preview hidden" alt="">
+          <span id="logo-none" class="small muted">Не загружен — в шапке «Prom Loader»</span>
+          <button type="button" class="btn small" id="logo-upload">Загрузить…</button>
+          <button type="button" class="btn small danger hidden" id="logo-delete">Убрать</button>
+        </div>
+        <p class="small muted" style="margin:6px 0 0">PNG, JPEG или WebP, лучше на прозрачном фоне. Виден в шапке программы,
+          на странице входа и значком вкладки браузера.</p>
+      </div>
       <div class="toolbar">
         <button class="btn primary" id="save">Сохранить</button>
         <button class="btn" id="check">Проверить подключение</button>
@@ -998,7 +1009,39 @@
       supOut("Нажмите «Сохранить»", true);
     });
 
-    loadMeta().catch(() => {});
+    // ---------- логотип магазина ----------
+    function fillLogo() {
+      const v = META.shop_logo;
+      $("#logo-preview").classList.toggle("hidden", !v);
+      if (v) $("#logo-preview").src = `/shop-logo.png?v=${encodeURIComponent(v)}`;
+      $("#logo-none").classList.toggle("hidden", !!v);
+      $("#logo-delete").classList.toggle("hidden", !v);
+    }
+    $("#logo-upload").addEventListener("click", async () => {
+      const [file] = await pickFiles({ accept: "image/png,image/jpeg,image/webp,image/gif", multiple: false });
+      if (!file) return;
+      busy($("#logo-upload"), async () => {
+        try {
+          const body = new FormData();
+          body.append("file", file);
+          META.shop_logo = (await api("/api/settings/logo", { method: "POST", body })).version;
+          fillLogo();
+          renderBrand();
+          toast("Логотип сохранён", "ok");
+        } catch (err) { toast(err.message, "error"); }
+      });
+    });
+    $("#logo-delete").addEventListener("click", () => busy($("#logo-delete"), async () => {
+      try {
+        await api("/api/settings/logo", { method: "DELETE" });
+        META.shop_logo = "";
+        fillLogo();
+        renderBrand();
+        toast("Логотип убран", "ok");
+      } catch (err) { toast(err.message, "error"); }
+    }));
+
+    loadMeta().then(fillLogo).catch(() => {});
     loadSchedules().catch((err) => toast(`Расписание не загрузилось: ${err.message}`, "error"));
 
     // ---------- синхронизация с кабинетом Prom ----------

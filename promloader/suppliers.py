@@ -505,6 +505,7 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
     stats = {"total": len(items), "valid": 0, "created": 0, "updated": 0, "unchanged": 0, "price_changed": 0,
              "missing": 0, "returned": 0, "errors": 0, "error_samples": []}
     valid, seen = [], set()
+    unreadable: list[str] = []  # строки, которые в прайсе есть, но не прочитались (цена «уточняйте», нет названия)
     for item in items:
         sku = item["data"].get("external_id")
         if not sku:
@@ -520,8 +521,11 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
         if fatal or bad_cells:
             stats["errors"] += 1
             _sample(stats, f"строка {item['row']} ({sku}): {'; '.join(item['errors'])}"
-                           + ("" if fatal else " — это поле пропущено, остальное обновлено"))
+                           + (" — товар оставлен как был" if fatal else " — это поле пропущено, остальное обновлено"))
         if fatal:
+            # строка есть, просто не читается: товар не «пропал у поставщика» — не снимать его с продажи
+            seen.add(sku)
+            unreadable.append(sku)
             continue
         # одна непонятная ячейка (наличие «уточняйте», количество «много») не выбрасывает строку: иначе товар
         # считался бы пропавшим у поставщика и уходил в «нет в наличии»
@@ -530,6 +534,12 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
     stats["valid"] = len(valid)
 
     before = db.query_one("SELECT COUNT(*) AS n FROM supplier_items WHERE supplier_id = ? AND missing = 0", (s["id"],))["n"]
+    if not force and before and not valid:
+        # ни одного годного товара — сломан прайс (или не тот файл), даже у маленького поставщика
+        raise SupplierError(
+            f"В прайсе нет ни одного годного товара, а в прошлый раз было {before}. Похоже, прайс поставщика сломан — "
+            "обновление остановлено, ничего не изменено. Если товары действительно убрали, нажмите «Обновить принудительно»."
+        )
     if not force and before >= BROKEN_FEED_MIN and len(valid) < before * BROKEN_FEED_RATIO:
         raise SupplierError(
             f"В прайсе {len(valid)} годных товаров, а в прошлый раз было {before}. Похоже, прайс поставщика сломан — "
@@ -547,6 +557,9 @@ def apply_items(s: dict, items: list[dict], embedded: dict, run_id: int, force: 
         _drop_files(trash)
 
     with db.tx() as c:
+        if unreadable:
+            c.execute(f"UPDATE supplier_items SET seen_run = ? WHERE supplier_id = ? AND missing = 0 AND sku {db.IN_LIST}",
+                      (run_id, s["id"], db.as_list(unreadable)))
         gone = c.execute(
             "SELECT id, product_id FROM supplier_items WHERE supplier_id = ? AND missing = 0 AND seen_run != ?",
             (s["id"], run_id)).fetchall()

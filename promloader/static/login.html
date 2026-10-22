@@ -54,6 +54,16 @@
   <script>
     // отдельная маленькая страница: common.js здесь не нужен — без входа его запросы к программе всё равно отклоняются
     const next = new URLSearchParams(location.search).get("next") || "/";
+    // логотип магазина, если загружен (адрес открыт и без входа); нет — остаётся «Prom Loader»
+    const brand = new Image();
+    brand.onload = () => {
+      const logo = document.querySelector(".topbar .logo");
+      if (logo) { logo.classList.add("with-logo"); logo.replaceChildren(brand); }
+      const icon = document.querySelector('link[rel="icon"]');
+      if (icon) icon.href = brand.src;
+    };
+    brand.alt = "";
+    brand.src = "/shop-logo.png?v=" + Date.now();
     const $ = (s) => document.querySelector(s);
     const tr = (t) => (window.I18N ? I18N.tr(t) : t);
 

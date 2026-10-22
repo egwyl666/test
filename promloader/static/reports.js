@@ -171,6 +171,9 @@ async function load() {
   syncUrl();
   render();
   const seq = ++view.seq;
+  // считается — заготовка карточек итогов на месте отчёта (и при первом открытии, и при смене вкладки/периода)
+  if (!report || report.tab !== view.tab) $("#report").innerHTML = skeletonCards(3);
+  else $("#report").classList.add("is-stale");
   try {
     const r = await api(`/api/reports/${view.tab}?${query()}`);
     if (seq !== view.seq) return;  // пока считали, поменяли вкладку или период
@@ -178,7 +181,12 @@ async function load() {
     $("#error").textContent = "";
     render();
   } catch (err) {
-    if (seq === view.seq) $("#error").textContent = err.message;
+    if (seq === view.seq) {
+      $("#error").textContent = err.message;
+      if (!report) $("#report").innerHTML = "";
+    }
+  } finally {
+    if (seq === view.seq) $("#report").classList.remove("is-stale");
   }
 }
 
@@ -187,7 +195,6 @@ $("#tabs").addEventListener("click", (e) => {
   if (!b) return;
   view.tab = b.dataset.tab;
   report = null;
-  $("#report").innerHTML = `<p class="muted">${esc(I18N.tr("Считаю…"))}</p>`;
   load();
 });
 $("#periods").addEventListener("click", (e) => {

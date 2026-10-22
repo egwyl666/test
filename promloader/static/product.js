@@ -1046,4 +1046,42 @@ async function init() {
 
 $("#history").addEventListener("toggle", () => { if ($("#history").open) loadHistory(); });
 
-init();
+// «← Пред. / След. →»: соседние товары из того списка, откуда открыли карточку (порядок и фильтр — как там).
+// Перед переходом несохранённое сохраняется, чтобы правка не потерялась.
+function setupCardNav() {
+  let ids = [];
+  try { ids = (JSON.parse(sessionStorage.getItem("promloader-list-place") || "null") || {}).ids || []; } catch {}
+  const pos = ids.indexOf(state.id);
+  if (!state.id || pos < 0 || ids.length < 2) return;
+  const link = (el, id) => {
+    if (id) el.href = `/product?id=${id}`;
+    else el.setAttribute("aria-disabled", "true");
+  };
+  link($("#prev-link"), ids[pos - 1]);
+  link($("#next-link"), ids[pos + 1]);
+  $("#card-pos").textContent = `${pos + 1} / ${ids.length}`;
+  $("#card-nav").classList.remove("hidden");
+}
+async function goCard(el) {
+  if (!el.getAttribute("href") || el.getAttribute("aria-disabled")) return;
+  try { await flush(); } catch { return; }  // не сохранилось — остаёмся: сообщение уже на экране
+  location.href = el.getAttribute("href");
+}
+["#prev-link", "#next-link"].forEach((sel) => $(sel).addEventListener("click", (e) => {
+  if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;  // в новой вкладке — как обычная ссылка
+  e.preventDefault();
+  goCard(e.currentTarget);
+}));
+PAGE_KEYS.push(["Ctrl+S", "Сохранить сейчас"], ["←  →", "Предыдущий / следующий товар из списка"]);
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();  // не «сохранить страницу как…» браузера
+    if (!state.readonly) save().then(() => { if (!$("#save-state").textContent) setSaveState("saved", "Сохранено ✓"); }).catch(() => {});
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target) || document.querySelector(".modal:not(.hidden)")) return;
+  if (e.key === "ArrowLeft") goCard($("#prev-link"));
+  else if (e.key === "ArrowRight") goCard($("#next-link"));
+});
+
+init().then(setupCardNav);

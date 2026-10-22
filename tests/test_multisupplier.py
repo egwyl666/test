@@ -17,9 +17,9 @@ def supplier(name, rows, **settings):
     return sid
 
 
-def refresh(sid, rows):
+def refresh(sid, rows, force=False):
     suppliers.store_source(sid, csv(rows), "price.csv")
-    r = suppliers.run(sid)
+    r = suppliers.run(sid, force=force)
     assert r["status"] == "ok", r["message"]
     return r["stats"]
 
@@ -51,7 +51,7 @@ def test_cheapest_in_stock_wins_and_content_stays():
     assert p["cost_price"] == 100 and p["price"] == 150 and p["presence"] == "available"
 
     # у Альфы пропал из прайса, у Беты «нет» — нет в наличии
-    refresh(a, [])  # пустой прайс: защита сработает только от 20 товаров
+    refresh(a, [], force=True)  # пустой прайс — защита остановила бы обновление, поэтому «принудительно»
     p = only_product()
     assert p["presence"] == "not_available"
 

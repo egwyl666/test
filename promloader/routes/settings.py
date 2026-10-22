@@ -5,9 +5,10 @@ import json
 import re
 import secrets
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, File, HTTPException, UploadFile
+from fastapi.responses import Response
 
-from .. import ai, aiprice, config, db, notify, r2, reports, runtime, support, sync, updater
+from .. import ai, aiprice, branding, config, db, notify, r2, reports, runtime, support, sync, updater
 from ..prom_api import DEFAULT_IMPORT_SETTINGS, PromError
 
 router = APIRouter()
@@ -176,3 +177,28 @@ async def check_connection():
     except PromError as exc:
         return {"ok": False, "message": str(exc)}
     return {"ok": True, "message": "Подключение к Prom работает"}
+
+
+# ---------- логотип магазина ----------
+
+@router.post("/api/settings/logo")
+def upload_logo(file: UploadFile = File(...)):
+    try:
+        return {"version": branding.save_logo(file.file.read(branding.MAX_UPLOAD + 1))}
+    except branding.BrandingError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.delete("/api/settings/logo")
+def delete_logo():
+    branding.delete_logo()
+    return {"ok": True}
+
+
+@router.get("/shop-logo.png")
+def shop_logo():
+    """Без входа: логотип виден и на странице входа. Адрес с ?v=<версия> — после замены браузер возьмёт новый."""
+    data = branding.logo()
+    if not data:
+        raise HTTPException(404, "Логотип не загружен")
+    return Response(data, media_type="image/png", headers={"Cache-Control": "no-cache"})

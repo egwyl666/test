@@ -211,7 +211,7 @@ def test_keep_best_hides_others_and_keeps_them_out_of_pipeline(client):
     with db.tx() as conn:  # один дубль уже выгружен на Prom
         conn.execute("UPDATE products SET status = 'synced', synced_at = ? WHERE id = ?", (db.now(), b))
     r = client.post("/api/products/duplicates/keep-best").json()
-    assert r == {"groups": 1, "hidden": 2, "on_prom": 1, "busy": 0}
+    assert {k: v for k, v in r.items() if k != "undo"} == {"groups": 1, "hidden": 2, "on_prom": 1, "busy": 0} and r["undo"]
     assert products.get(a)["status"] == "draft" and products.get(a)["dup_of"] is None
     for pid in (b, c):
         p = products.get(pid)

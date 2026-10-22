@@ -153,7 +153,15 @@
       const offset = append ? view.items.length : 0;
       const limit = append ? PAGE : Math.max(PAGE, view.items.length);
       const seq = ++view.seq;
-      const res = await api(`/api/orders?${params(offset, limit)}`);
+      if (!append && !view.items.length) {
+        $("#list").innerHTML = skeletonCards(3);  // пока ответ в пути — заготовка, а не «Заказов пока нет»
+        $("#empty").classList.add("hidden");
+      }
+      let res;
+      try { res = await api(`/api/orders?${params(offset, limit)}`); } catch (err) {
+        $$("#list .skeleton").forEach((el) => el.remove());  // не оставлять «загрузку» навсегда
+        throw err;
+      }
       if (seq !== view.seq) return;  // пока шёл запрос, поиск или фильтр поменяли
       data = res;
       view.items = append ? view.items.concat(res.items) : res.items;
@@ -171,8 +179,10 @@
       $("#seen-all").classList.toggle("hidden", !res.unseen);
       $("#seen-all").textContent = `✓ Отметить все просмотренными (${res.unseen})`;
       $("#empty").classList.toggle("hidden", view.items.length > 0 || !res.enabled);
-      $("#empty").textContent = filtered || view.status ? "Ничего не найдено." : "Заказов пока нет.";
-      $("#list").innerHTML = view.items.map(orderCard).join("");
+      $("#empty").textContent = filtered || view.status
+        ? I18N.tr("Ничего не найдено — измените поиск, даты или статус («Сбросить» — все заказы).")
+        : I18N.tr("Заказов пока нет. Новые заказы с Prom появятся здесь сами — программа проверяет их каждые 5 минут.");
+      patchChildren($("#list"), view.items, (o) => o.id, orderCard);  // автообновление раз в минуту — без мигания
       $("#shown").textContent = view.total ? `показано ${view.items.length} из ${view.total}` : "";
       $("#more").classList.toggle("hidden", view.items.length >= view.total);
     }

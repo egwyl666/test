@@ -82,7 +82,28 @@ async function loadMeta() {
   const chatLink = document.querySelector('.topbar nav a[href="/chat"]');
   if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
   renderUserMenu();
+  renderBrand();
   return META;
+}
+
+// Логотип магазина (Настройки → Prom): в шапке вместо «Prom Loader» и значком вкладки браузера
+let brandDefault = null;
+function renderBrand(version = META.shop_logo) {
+  const logo = $(".topbar .logo");
+  if (logo && brandDefault === null) brandDefault = logo.innerHTML;
+  const icon = document.querySelector('link[rel="icon"]');
+  if (icon && !icon.dataset.default) icon.dataset.default = icon.getAttribute("href");
+  if (!version) {
+    if (logo) { logo.innerHTML = brandDefault; logo.classList.remove("with-logo"); }
+    if (icon) icon.href = icon.dataset.default;
+    return;
+  }
+  const src = `/shop-logo.png?v=${encodeURIComponent(version)}`;
+  if (logo) {
+    logo.classList.add("with-logo");
+    logo.innerHTML = `<img src="${src}" alt="">${META.shop_name ? `<span class="logo-name" translate="no">${esc(META.shop_name)}</span>` : ""}`;
+  }
+  if (icon) icon.href = src;
 }
 
 // Пропущенная выгрузка (компьютер был выключен): спрашиваем, что делать.
@@ -290,6 +311,73 @@ function toast(message, kind = "") {
   el.textContent = message;
   box.appendChild(el);
   setTimeout(() => el.remove(), kind === "error" ? 7000 : 3500);
+  return el;
+}
+
+// Действие уже выполнено, а несколько секунд его можно отменить — вместо вопроса «Вы уверены?» перед ним.
+// token — номер отмены из ответа сервера (нет номера — обычное уведомление); onUndone — перерисовать страницу.
+function undoToast(message, token, onUndone = () => {}) {
+  const el = toast(message, "ok");
+  if (!token) return el;
+  el.classList.add("with-undo");
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "toast-undo";
+  btn.textContent = I18N.tr("↩ Отменить");
+  el.appendChild(btn);
+  const timer = setTimeout(() => el.remove(), 8000);  // дольше обычного: надо успеть понять и нажать
+  btn.addEventListener("click", () => busy(btn, async () => {
+    try {
+      const r = await api(`/api/products/undo/${encodeURIComponent(token)}`, { method: "POST" });
+      clearTimeout(timer);
+      el.remove();
+      toast(I18N.tr(`Отменено: ${r.restored}`), "ok");
+      onUndone();
+    } catch (err) { toast(err.message, "error"); }
+  }));
+  return el;
+}
+
+// Заготовка на месте таблицы, пока идёт первая загрузка: страница не «прыгает», когда приходят данные
+function skeletonRows(cols, rows = 6) {
+  const cell = (n) => `<td><span class="sk" style="width:${40 + ((n * 37) % 50)}%"></span></td>`;
+  return Array.from({ length: rows }, (_, r) =>
+    `<tr class="skeleton" aria-hidden="true">${Array.from({ length: cols }, (_, c) => cell(r + c)).join("")}</tr>`).join("");
+}
+
+// То же для списков карточками (заказы, чат, поставщики)
+function skeletonCards(count = 3) {
+  return Array.from({ length: count }, () => `<div class="panel skeleton" aria-hidden="true">
+    <span class="sk" style="width:28%"></span><br><span class="sk" style="width:62%;margin-top:12px"></span><br>
+    <span class="sk" style="width:45%;margin-top:10px"></span></div>`).join("");
+}
+
+// Перерисовать список, не трогая строки, которые не изменились: при фоновом обновлении не мигают картинки, не
+// сбрасываются наведение, фокус и выделение текста. keyOf — номер строки, htmlOf — её разметка (один элемент).
+function patchChildren(container, items, keyOf, htmlOf) {
+  const old = new Map();
+  for (const el of container.children) if (el.dataset.key) old.set(el.dataset.key, el);
+  const tpl = document.createElement("template");  // <template> правильно разбирает и <tr>
+  const keep = new Set();
+  let prev = null;
+  for (const item of items) {
+    const key = String(keyOf(item));
+    const html = htmlOf(item).trim();
+    let el = old.get(key);
+    if (!el || el._html !== html) {
+      tpl.innerHTML = html;
+      const fresh = tpl.content.firstElementChild;
+      fresh.dataset.key = key;
+      fresh._html = html;
+      if (el) el.replaceWith(fresh);
+      el = fresh;
+    }
+    keep.add(el);
+    const want = prev ? prev.nextElementSibling : container.firstElementChild;
+    if (want !== el) container.insertBefore(el, want);
+    prev = el;
+  }
+  for (const el of [...container.children]) if (!keep.has(el)) el.remove();
 }
 
 const CURRENCY_SIGN = { UAH: "₴", USD: "$", EUR: "€" };
@@ -327,6 +415,38 @@ async function busy(btn, fn) {
     btn.classList.remove("is-busy");
   }
 }
+
+// Горячие клавиши на всех страницах: «/» — поиск, «?» — список клавиш. Страница добавляет свои в PAGE_KEYS
+// ([клавиша, что делает]) — они попадают в тот же список. В полях ввода клавиши не перехватываются.
+const PAGE_KEYS = [];
+function typingIn(el) {
+  return !!el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
+}
+function showKeysHelp() {
+  let box = $("#keys-help");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "keys-help";
+    box.className = "modal hidden";
+    document.body.appendChild(box);
+  }
+  const rows = [["/", "Поиск на странице"], ...PAGE_KEYS, ["Esc", "Закрыть окно"], ["?", "Эта подсказка"]];
+  box.innerHTML = `<div class="modal-box" style="max-width:420px"><h2>${esc(I18N.tr("Горячие клавиши"))}</h2>
+    <table class="keys">${rows.map(([k, t]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(I18N.tr(t))}</td></tr>`).join("")}</table>
+    <div class="toolbar" style="margin:12px 0 0"><span class="spacer"></span><button class="btn" type="button" data-close>${esc(I18N.tr("Закрыть"))}</button></div></div>`;
+  box.querySelector("[data-close]").onclick = () => box.classList.add("hidden");
+  box.classList.remove("hidden");
+}
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey || typingIn(e.target)) return;
+  if (e.key === "/") {
+    const search = $("#search") || $("#q");
+    if (search && search.offsetParent !== null) { e.preventDefault(); search.focus(); search.select(); }
+  } else if (e.key === "?") {
+    e.preventDefault();
+    showKeysHelp();
+  }
+});
 
 // Окна (.modal с id) закрываются клавишей Esc и кликом по затемнённому фону — как везде
 document.addEventListener("keydown", (e) => {
@@ -593,7 +713,9 @@ function addHelpButton() {
   const a = document.createElement("a");
   a.className = "help-fab" + (jsErrors().length ? " has-errors" : "");
   a.href = "/support?from=" + encodeURIComponent(location.pathname + location.search);
-  a.textContent = "🆘 Не получается?";
+  // на телефоне видно только «🆘»: кнопка поверх страницы не закрывает собой кнопки заказа и строки списка
+  a.innerHTML = `🆘 <span class="help-fab-text">${esc(I18N.tr("Не получается?"))}</span>`;
+  a.setAttribute("aria-label", I18N.tr("Не получается?"));
   a.title = "Сообщить о проблеме: описание и скриншот — разработчик разберётся";
   document.body.appendChild(a);
 }
