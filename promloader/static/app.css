@@ -145,7 +145,7 @@ tr.skeleton td { padding-top: 14px; padding-bottom: 14px; }
 .toolbar .spacer { flex: 1; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 20px; padding: 5px 12px; font-size: 13px; cursor: pointer; }
-.chip.active { background: var(--text); color: #fff; border-color: var(--text); }
+.chip.active { background: var(--text); color: var(--panel);  /* в тёмной теме фон светлый — текст тёмный */ border-color: var(--text); }
 .chip b { font-weight: 600; margin-left: 4px; }
 .readiness-bar { flex-wrap: wrap; gap: 6px; background: var(--bg); border-radius: var(--radius, 8px); padding: 8px 10px; }
 

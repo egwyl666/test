@@ -81,6 +81,16 @@ def _hit(page, selector) -> bool:
         return !!hit && (hit === el || el.contains(hit)); }""", selector)
 
 
+def _contrast(page, selector) -> float:
+    """Контраст текста и фона элемента (WCAG: 4.5 — читается)."""
+    return page.evaluate("""s => { const cs = getComputedStyle(document.querySelector(s));
+        const rgb = (c) => c.match(/[\\d.]+/g).slice(0, 3).map(Number);
+        const lum = (c) => { const [r, g, b] = rgb(c).map((v) => { v /= 255;
+            return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+        const [a, b] = [lum(cs.color), lum(cs.backgroundColor)].sort((x, y) => y - x);
+        return (a + 0.05) / (b + 0.05); }""", selector)
+
+
 def _status(pid):
     return db.query_one("SELECT status FROM products WHERE id = ?", (pid,))["status"]
 
@@ -117,6 +127,12 @@ def test_interface_in_a_real_browser(server):
         page.reload()
         page.wait_for_selector("tr.item")
         assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+        # выбранный период в «Отчётах» читается: текст не того же цвета, что фон
+        page.goto(url + "/reports")
+        page.wait_for_selector("#periods .chip.active")
+        assert _contrast(page, "#periods .chip.active") > 4.5
+        page.goto(url + "/")
+        page.wait_for_selector("tr.item")
         page.click("#user-menu summary")
         page.click('[data-theme-pick="light"]')
         page.mouse.click(5, 400)
