@@ -88,6 +88,7 @@ RULES = [
     ("/api/ai/check", "view", "admin"),
     ("/api/ai/models/check", "view", "admin"),
     ("/api/orders", "view", "orders"),
+    ("/api/chat/refresh", "view", "view"),  # «↻ Проверить новые» только читает Prom — и роли «просмотр»
     ("/api/chat", "view", "chat"),
     ("/api/np", "view", "orders"),
     ("/api/meta", "view", "view"),
@@ -96,6 +97,7 @@ RULES = [
     ("/api/reports", "view", "view"),
     ("/api/products", "view", "catalog"),
     ("/api/suppliers", "view", "catalog"),
+    ("/api/pricing/test", "view", "view"),  # «Проверить расчёт» только считает — и роли «просмотр» тоже
     ("/api/pricing", "view", "catalog"),
     ("/api/rates", "view", "catalog"),
     ("/api/import", "catalog", "catalog"),

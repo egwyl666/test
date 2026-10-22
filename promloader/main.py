@@ -439,11 +439,14 @@ def _same_origin(origin: str, request: Request) -> bool:
     return any(netloc == h.strip().lower() for h in hosts if h.strip())
 
 
+# Отказ на странице: в стиле программы (тема, перевод) и с выходом — раньше это был тупик без единой ссылки
 _REFUSED_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>Prom Loader</title>
-<style>body{font-family:system-ui,sans-serif;background:#f4f5f7;color:#1d2129;margin:0;padding:40px 20px}
-.box{max-width:440px;margin:0 auto;background:#fff;border-radius:10px;padding:24px}</style></head>
-<body><div class="box"><h2>Prom Loader</h2><p>{text}.</p></div></body></html>"""
+<script src="/static/i18n-uk.js"></script><script src="/static/i18n.js"></script>
+<link rel="stylesheet" href="/static/app.css"></head>
+<body><main class="refused"><div class="panel"><h2>🔒 Нет доступа</h2><p>{text}.</p>
+<div class="toolbar"><a class="btn primary" href="/today">← На главную «Сегодня»</a>
+<a class="btn" href="/login">Войти другим пользователем</a></div></div></main></body></html>"""
 
 
 # без входа: страницы входа и первого запуска, их запросы, значок и файлы приложения на телефоне
@@ -487,7 +490,7 @@ def _sign_in_gate(request: Request, access: str):
     if not users.can(user, perm):
         log.info("Нет прав (%s): %s %s — %s", perm, request.method, path, user["login"])
         needed = ", ".join(users.PERM_LABELS.get(x, x) for x in ((perm,) if isinstance(perm, str) else perm))
-        return _refused(request, f"Недостаточно прав ({needed}). Ваша роль — "
+        return _refused(request, f"Недостаточно прав: нужно право «{needed}». Ваша роль — "
                                  f"«{user['role_label']}». Обратитесь к администратору программы", forbidden=True)
     return None
 

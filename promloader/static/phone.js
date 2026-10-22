@@ -24,9 +24,19 @@ function fillPhone(st, { form = true } = {}) {
   if (st.lan && !st.launcher) note = I18N.tr("Работает, когда программа запущена ярлыком «Prom Loader» (START.bat).");
   else if (st.lan && !st.lan_active) note = I18N.tr("Включится после перезапуска программы.");
   else if (st.lan_active && !st.lan_urls.length) note = I18N.tr("Компьютер не подключён к домашней сети — адрес не найден.");
-  else if (st.lan_active) note = I18N.tr("Наведите камеру телефона на QR-код или наберите адрес в браузере телефона. Если не открывается — попробуйте другой адрес из списка или проверьте, что телефон подключён к тому же Wi‑Fi.");
+  else if (st.lan_active) note = I18N.tr("Наведите камеру телефона на QR-код или наберите адрес в браузере телефона. Телефон должен быть подключён к тому же Wi‑Fi, что и компьютер.");
   $("#phone-lan-note").textContent = note;
-  $("#phone-lan-urls").innerHTML = st.lan_active ? st.lan_urls.map(phoneUrl).join("") : "";
+  // У компьютера бывает несколько адресов (VPN, Hyper-V, WSL, VirtualBox), а с телефона открывается один — сеть
+  // роутера. Его показываем, остальные — свёрнуто, на случай если главный не подошёл
+  const [main, ...rest] = st.lan_active ? st.lan_urls : [];
+  const seen = !!(main && st.lan_seen && main.includes(`//${st.lan_seen}:`));
+  $("#phone-lan-urls").innerHTML = main ? `${phoneUrl(main)}
+    <p class="small ${seen ? "ok-text" : "muted"}" id="phone-lan-main-note">${esc(I18N.tr(seen
+      ? "✓ По этому адресу телефон уже открывал программу."
+      : "Это адрес сети, через которую компьютер выходит в интернет, — обычно он и нужен телефону."))}</p>
+    ${rest.length ? `<details class="phone-more"><summary>${esc(I18N.tr("Другие адреса компьютера"))} (${rest.length})</summary>
+      <p class="small muted">${esc(I18N.tr("Это VPN и виртуальные сети (Hyper-V, WSL, VirtualBox) — с телефона они обычно не открываются. Пробуйте их, только если главный адрес не открылся."))}</p>
+      ${rest.map(phoneUrl).join("")}</details>` : ""}` : "";
 
   $("#phone-remote-box").classList.toggle("hidden", !st.remote);
   let state = "";

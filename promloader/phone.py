@@ -146,7 +146,10 @@ def client_kind(request, allowed_hosts: set[str]) -> str | None:
     if runtime.lan_bound:  # программа слушает домашнюю сеть: заголовку Host здесь верить нельзя
         # и пока пользователей нет (только что обновились) — «телефон»: проверка входа объяснит, что сначала нужно
         # создать администратора на компьютере, а не скажет непонятное «только localhost»
-        return "phone" if db.get_setting("phone_lan") == "1" else None
+        if db.get_setting("phone_lan") != "1":
+            return None
+        note_lan_visit(host)  # для пометки «✓ открывался с телефона», не для доступа
+        return "phone"
     # программа запущена не через START.bat (Docker, свой uvicorn): как раньше, по адресу в Host
     return "local" if host in allowed_hosts else None
 
@@ -161,20 +164,28 @@ def safe_next(value: str | None) -> str:
 
 # ---------- адреса ----------
 
-def lan_addresses() -> list[str]:
-    """Адреса компьютера в домашней сети. Первый — тот, через который компьютер выходит в интернет (UDP-«подключение»
-    ничего не отправляет, только выбирает сетевую карту)."""
-    found = []
+def _route_ip() -> str:
+    """Адрес сетевой карты, через которую компьютер выходит в интернет (UDP-«подключение» ничего не отправляет)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
-            found.append(s.getsockname()[0])
+            return s.getsockname()[0]
     except OSError:
-        pass
+        return ""
+
+
+def _host_ips() -> list[str]:
     try:
-        found += [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+        return [info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
     except OSError:
-        pass
+        return []
+
+
+def lan_addresses() -> list[str]:
+    """Адреса компьютера в домашней сети. Первый — тот, через который компьютер выходит в интернет (UDP-«подключение»
+    ничего не отправляет, только выбирает сетевую карту)."""
+    route = _route_ip()
+    found = ([route] if route else []) + _host_ips()
     result = []
     for ip in found:
         try:
@@ -183,15 +194,45 @@ def lan_addresses() -> list[str]:
             continue
         if addr.is_private and not addr.is_loopback and not addr.is_link_local and ip not in result:
             result.append(ip)
-    # домашний роутер почти всегда 192.168.*; 172.16–31.* чаще у VPN, Hyper-V и WSL — их ниже
+    if not result:
+        return []
+    # Первый — сеть, через которую компьютер выходит в интернет: это и есть домашний Wi‑Fi/роутер. Остальные (VPN,
+    # Hyper-V, WSL, VirtualBox) — после него; раньше сортировка могла поставить выше адаптер VirtualBox 192.168.56.*.
+    # Среди остальных: 192.168.* выше 10.*, 172.16–31.* (чаще VPN и WSL) — ниже
     order = {"192": 0, "10.": 1}
-    return sorted(result, key=lambda ip: order.get(ip[:3], 2))
+    main = route if route in result else None
+    rest = sorted((ip for ip in result if ip != main), key=lambda ip: order.get(ip[:3], 2))
+    return ([main] if main else []) + rest
+
+
+# Адрес, по которому телефон уже действительно открывал программу: его показываем первым и с пометкой «✓».
+# Пишем в базу только при смене — запрос с телефона не должен каждый раз писать в базу
+_lan_seen = {"host": None}
+
+
+def note_lan_visit(host: str) -> None:
+    """Запрос пришёл с другого устройства по адресу домашней сети (Host) — значит, этот адрес с телефона работает."""
+    try:
+        if not ipaddress.ip_address(host).is_private:
+            return
+    except ValueError:
+        return
+    if _lan_seen["host"] == host:
+        return
+    _lan_seen["host"] = host
+    if db.get_setting("phone_lan_seen") != host:
+        db.set_setting("phone_lan_seen", host)
 
 
 def lan_urls() -> list[str]:
+    """Адреса для телефона: проверенный телефоном (если он среди адресов компьютера) — первым."""
     if not runtime.port:
         return []
-    return [f"http://{ip}:{runtime.port}/" for ip in lan_addresses()]
+    ips = lan_addresses()
+    seen = db.get_setting("phone_lan_seen")
+    if seen in ips:
+        ips = [seen] + [ip for ip in ips if ip != seen]
+    return [f"http://{ip}:{runtime.port}/" for ip in ips]
 
 
 def qr_svg(text: str) -> str:
@@ -287,6 +328,7 @@ def status() -> dict:
         "remote": db.get_setting("phone_remote") == "1",
         "lan_active": runtime.lan_bound and lan_enabled(),
         "lan_urls": lan_urls() if runtime.lan_bound else [],
+        "lan_seen": db.get_setting("phone_lan_seen") or "",
         "remote_active": remote["active"],
         "remote_url": remote["url"],
         "remote_error": remote["error"] if remote_enabled() else "",

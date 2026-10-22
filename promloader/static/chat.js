@@ -50,8 +50,9 @@ async function openRoom(ident, { markRead = true } = {}) {
     const r = await api(`/api/chat/rooms/${encodeURIComponent(ident)}/messages`);
     if (view.room !== ident) return;
     renderRoom(r);
-    // покупатель видит «прочитано» — отмечаем, только когда диалог действительно открыт
-    if (markRead && r.room.unread) {
+    // покупатель видит «прочитано» — отмечаем, только когда диалог действительно открыт и тем, кто отвечает в чате:
+    // у роли без права «чат» сервер отказывал, и каждое открытие диалога показывало ошибку
+    if (markRead && r.room.unread && can("chat")) {
       api(`/api/chat/rooms/${encodeURIComponent(ident)}/read`, { method: "POST" })
         .then(() => { loadRooms(); loadMeta().catch(() => {}); })
         .catch((err) => toast(err.message, "error"));

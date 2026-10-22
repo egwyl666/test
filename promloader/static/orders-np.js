@@ -11,7 +11,7 @@ function shipmentBlock(o) {
   const s = o.shipment;
   if (s) {
     const label = s.own ? `<button class="btn small" data-ttn-label="${o.id}">🖨 Этикетка 100×100</button>` : "";
-    const del = s.own && s.stage === "created" ? `<button class="btn small danger" data-ttn-delete="${o.id}">Удалить ТТН</button>` : "";
+    const del = s.own && s.stage === "created" ? `<button class="btn small danger" data-ttn-delete="${o.id}" data-perm="orders">Удалить ТТН</button>` : "";
     // посылка на отделении: сколько дней ждёт и «🔔 Напомнить в чат» (раз в сутки, отметка — у всех операторов)
     const waiting = s.stage === "arrived" && s.days_waiting !== null && s.days_waiting !== undefined
       ? `<span class="small ${s.days_waiting >= 3 ? "err-text" : "muted"}">${esc(I18N.tr(`ждёт на отделении: ${s.days_waiting} дн.`))}</span>` : "";
@@ -32,7 +32,7 @@ function shipmentBlock(o) {
 // «📦 Создать ТТН» — в общей строке действий заказа (вместе с «Упакован» и сменой статуса), а не отдельной строкой
 function ttnCreateButton(o) {
   if (o.shipment || o.prom_ttn || !o.nova_poshta || ["canceled", "delivered"].includes(o.status)) return "";
-  return `<button class="btn small primary" data-ttn-create="${o.id}">📦 Создать ТТН</button>`;
+  return `<button class="btn small primary" data-ttn-create="${o.id}" data-perm="orders">📦 Создать ТТН</button>`;
 }
 
 // ⚠️ у покупателя были отказы от посылок или отмены — спросите предоплату вместо наложенного платежа

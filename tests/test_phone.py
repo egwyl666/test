@@ -249,3 +249,44 @@ def test_dead_tunnel_is_recreated_with_new_address(monkeypatch):
     # пока проверка не подошла по времени — адрес не трогаем
     state["reachable"] = False
     assert phone.keep_tunnel() == "https://new-one.trycloudflare.com" and closed == [1]
+
+
+# ---------- адрес для телефона: один главный, проверенный телефоном — первым ----------
+
+def _fake_net(monkeypatch, route_ip, host_ips):
+    monkeypatch.setattr(phone, "_route_ip", lambda: route_ip)
+    monkeypatch.setattr(phone, "_host_ips", lambda: list(host_ips))
+
+
+def test_route_address_goes_first_even_if_it_is_10_x(monkeypatch):
+    # раньше сортировка ставила выше VirtualBox 192.168.56.1, хотя роутер в сети 10.0.0.*
+    _fake_net(monkeypatch, "10.0.0.7", ["192.168.56.1", "172.20.16.1", "10.0.0.7"])
+    assert phone.lan_addresses() == ["10.0.0.7", "192.168.56.1", "172.20.16.1"]
+
+
+def test_no_route_keeps_old_order(monkeypatch):
+    _fake_net(monkeypatch, "", ["172.20.16.1", "192.168.1.5"])  # нет интернета — маршрута нет
+    assert phone.lan_addresses() == ["192.168.1.5", "172.20.16.1"]
+
+
+def test_phone_visit_marks_working_address(monkeypatch):
+    _fake_net(monkeypatch, "192.168.1.5", ["172.20.16.1", "192.168.50.102", "192.168.1.5"])
+    monkeypatch.setattr(runtime, "port", 8000)
+    phone._lan_seen["host"] = None
+    c = lan_client(monkeypatch)  # Host: 192.168.1.5 — телефон пришёл по этому адресу
+    c.get("/login")
+    assert phone.status()["lan_seen"] == "192.168.1.5"
+    assert phone.lan_urls()[0] == "http://192.168.1.5:8000/"
+    # телефон открыл по другому адресу компьютера — теперь первым он
+    TestClient(app, base_url="http://192.168.50.102:8000", client=LAN).get("/login")
+    assert phone.lan_urls()[0] == "http://192.168.50.102:8000/"
+
+
+def test_visit_with_name_host_is_not_marked(monkeypatch):
+    phone._lan_seen["host"] = None
+    c = TestClient(app, base_url="http://my-pc.local:8000", client=LAN)
+    monkeypatch.setattr(runtime, "lan_bound", True)
+    make_user()
+    phone.update({"lan": True})
+    c.get("/login")
+    assert phone.status()["lan_seen"] == ""

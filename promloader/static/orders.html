@@ -70,7 +70,7 @@
       <button class="btn small" id="scan-btn" title="ТТН с этикетки Новой Почты или номер заказа — камерой телефона">📷 Сканировать</button>
       <label class="small pack-toggle" data-perm="orders"><input type="checkbox" id="pack-mode"> 📦 Режим упаковки</label>
       <span class="spacer"></span>
-      <button class="btn small hidden" id="seen-all">✓ Отметить все просмотренными</button>
+      <button class="btn small hidden" id="seen-all" data-perm="orders">✓ Отметить все просмотренными</button>
     </div>
     <div id="scan-result" class="hidden"></div>
     <div class="chips" id="chips" style="margin-bottom:14px"></div>
@@ -203,12 +203,12 @@
         </div>`).join("");
       // только допустимые переходы: выполненный и отменённый заказ кнопками не меняются
       const actions = Object.entries(o.actions || {})
-        .map(([k, v]) => `<button class="btn small ${k === "canceled" ? "danger" : k === "received" ? "primary" : ""}" data-id="${o.id}" data-set="${k}">${esc(v)}</button>`).join("");
+        .map(([k, v]) => `<button class="btn small ${k === "canceled" ? "danger" : k === "received" ? "primary" : ""}" data-id="${o.id}" data-set="${k}" data-perm="orders">${esc(v)}</button>`).join("");
       return `<div class="panel order ${o.new ? "is-new" : ""}" data-order="${o.id}">
         <div class="toolbar" style="margin-bottom:8px">
           <b>№${o.id}</b>
           <span class="badge ${STATUS_CLASS[o.status] || "draft"}">${esc(o.status_label)}</span>
-          ${o.new ? `<button class="badge ready seen-btn" data-seen="${o.id}" title="Отметить просмотренным">не просмотрен ✓</button>` : ""}
+          ${o.new ? `<button class="badge ready seen-btn" data-seen="${o.id}" data-perm="orders" title="Отметить просмотренным">не просмотрен ✓</button>` : ""}
           <span class="muted small">${esc(formatDate(o.date))}${o.source ? ` · <span translate="no">${esc(o.source)}</span>` : ""}</span>
           <span class="spacer"></span>
           <b style="font-size:17px">${esc(o.price)}</b>

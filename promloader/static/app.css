@@ -2,20 +2,21 @@
   --bg: #f4f5f7;
   --panel: #ffffff;
   --text: #1d2129;
-  --muted: #6b7280;
+  --muted: #5f6672;
   --line: #e3e5e8;
   --accent: #6d3fe0;
   --accent-soft: #efe9fd;
-  --ok: #1e9e4a;
+  --on-accent: #ffffff;     /* текст на кнопке цвета акцента; в тёмной теме акцент светлый — текст тёмный */
+  --ok: #137535;
   --ok-soft: #e4f6ea;
-  --warn: #b7791f;
+  --warn: #8f5d12;
   --warn-soft: #fdf3e1;
-  --err: #d93a3a;
+  --err: #c42b2b;
   --err-soft: #fde8e8;
   --panel-2: #fafafb;      /* фон второго уровня: шапки таблиц, панели инструментов */
   --chip-bg: #eef0f3;
   --line-strong: #c9ccd1;
-  --info: #1f6fd1;
+  --info: #1a5fb4;
   --info-soft: #e3effd;
   --ok-line: #bfe3cc;
   --warn-strong: #8a5a00;
@@ -75,7 +76,7 @@ main { max-width: 1400px; margin: 0 auto; padding: 24px; }
 }
 .btn:hover { border-color: var(--line-strong); text-decoration: none; }
 .btn:disabled { opacity: .5; cursor: default; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.danger { color: var(--err); }
 .btn.small { padding: 5px 10px; font-size: 13px; }
@@ -205,7 +206,7 @@ kbd {
 .photo img { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
 .photo.dragging { opacity: .4; }
 .photo.drop-before { box-shadow: -4px 0 0 var(--accent); }
-.photo .main-label { position: absolute; left: 4px; bottom: 4px; background: var(--accent); color: #fff; font-size: 11px; padding: 2px 6px; border-radius: 4px; }
+.photo .main-label { position: absolute; left: 4px; bottom: 4px; background: var(--accent); color: var(--on-accent); font-size: 11px; padding: 2px 6px; border-radius: 4px; }
 .photo .del { position: absolute; right: 4px; top: 4px; width: 22px; height: 22px; border-radius: 50%; border: none; background: rgba(0, 0, 0, .55); color: #fff; cursor: pointer; font-size: 13px; line-height: 22px; padding: 0; }
 .photo .ext { position: absolute; left: 4px; top: 4px; background: rgba(0, 0, 0, .55); color: #fff; font-size: 10px; padding: 1px 5px; border-radius: 4px; }
 .photo.uploading { display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--muted); cursor: default; }
@@ -278,7 +279,7 @@ kbd {
 /* ---------- импорт ---------- */
 .steps { display: flex; gap: 8px; margin-bottom: 18px; }
 .steps .step { padding: 7px 14px; border-radius: 20px; background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 600; border: 1px solid var(--line); }
-.steps .step.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.steps .step.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 .steps .step.done { color: var(--ok); border-color: var(--ok); }
 .grid-wrap { overflow: auto; max-height: 62vh; border: 1px solid var(--line); border-radius: 8px; }
 table.grid { border-collapse: separate; border-spacing: 0; font-size: 13px; }
@@ -394,7 +395,7 @@ div.field { margin-bottom: 14px; }
 .pp .desc td, .pp .desc th { border-bottom: 1px dotted #ddd; padding: 6px 14px 6px 0; }
 
 /* ---------- обновления ---------- */
-.update-banner { background: var(--accent); color: #fff; padding: 9px 24px; font-size: 14px; }
+.update-banner { background: var(--accent); color: var(--on-accent); padding: 9px 24px; font-size: 14px; }
 .update-banner a { color: #fff; text-decoration: underline; margin-left: 6px; }
 .update-notes { background: var(--accent-soft); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 13px; }
 .update-notes h4 { margin: 6px 0 4px; }
@@ -410,7 +411,7 @@ div.field { margin-bottom: 14px; }
 .schedule-row .days { display: inline-flex; gap: 3px; }
 .schedule-row .day { border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; font-size: 12px; cursor: pointer; user-select: none; }
 .schedule-row .day input { display: none; }
-.schedule-row .day.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.schedule-row .day.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .schedule-row .time { width: 110px; }
 .schedule-row select { width: auto; padding: 5px 8px; }
 .schedule-row .info { flex-basis: 100%; }
@@ -482,6 +483,13 @@ details.panel[open] > summary { margin-bottom: 10px; }
   .btn.small { min-height: 36px; }
   input[type=checkbox], input[type=radio] { width: 20px; height: 20px; }
   .chip { min-height: 34px; }
+  /* обход 2.29.3: на телефоне были 22–29 px — промахи пальцем */
+  .lang-switch button, .ai-chip, .user-menu summary, .stage, .lang-tabs button, .rt-toolbar button { min-height: 36px; }
+  .rt-toolbar button { min-width: 36px; }
+  .role-banner button, .toast button, .modal-x { min-width: 36px; min-height: 36px; }
+  .theme-pick button, input[type=time] { min-height: 36px; }
+  .photo .del { width: 32px; height: 32px; line-height: 32px; font-size: 15px; }
+  details > summary { min-height: 36px; padding-block: 8px; }
 }
 main { padding-bottom: 70px; }
 
@@ -962,6 +970,7 @@ body.no-chat :is(button, a, .btn, summary, label)[data-perm="chat"]::after {
   --chip-bg: #262b33;
   --accent: #a58bff;
   --accent-soft: #2b2346;
+  --on-accent: #14111f;
   --info: #6ea8ff;
   --info-soft: #172a45;
   --ok: #4cc777;
@@ -1075,3 +1084,7 @@ body.login-hero .login-logo { background: rgba(255, 255, 255, .92); border-radiu
 .install-steps { padding-left: 20px; margin: 0 0 10px; line-height: 1.55; }
 .install-steps li { margin: 6px 0; }
 .install-steps svg.i { vertical-align: -3px; color: var(--accent); }
+
+/* отказ «Нет доступа» (страница без прав): в стиле программы и с выходом на главную */
+main.refused { max-width: 520px; margin: 48px auto; padding: 0 16px; }
+main.refused .toolbar { flex-wrap: wrap; gap: 8px; margin-top: 12px; }

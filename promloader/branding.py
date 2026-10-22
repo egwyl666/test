@@ -67,7 +67,28 @@ def accent_from(img: Image.Image) -> str:
     light = min(max(light, 0.32), 0.45)  # не светлее 45%: белый текст на кнопке; не темнее 32%: видно, что цвет
     s = max(s, 0.55)
     r, g, b = colorsys.hls_to_rgb(h, light, s)
-    return "#{:02x}{:02x}{:02x}".format(*(round(x * 255) for x in (r, g, b)))
+    return readable("#{:02x}{:02x}{:02x}".format(*(round(x * 255) for x in (r, g, b))))
+
+
+MIN_CONTRAST = 5.5  # к белому: белый текст на кнопке и цветной текст на светлой подложке (бейдж «Готов») читаются
+
+
+def _luminance(rgb) -> float:
+    v = [x / 255 for x in rgb]
+    v = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in v]
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+
+
+def readable(color: str) -> str:
+    """Тот же оттенок, но темнее, пока белый на нём не станет читаться (жёлтый, салатовый логотип)."""
+    if not color or len(color) != 7:
+        return color
+    rgb = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    h, light, s = colorsys.rgb_to_hls(*(x / 255 for x in rgb))
+    while 1.05 / (_luminance(rgb) + 0.05) < MIN_CONTRAST and light > 0.05:
+        light -= 0.01
+        rgb = [round(x * 255) for x in colorsys.hls_to_rgb(h, light, s)]
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
 
 
 def save_logo(content: bytes, slot: str = "logo") -> str:
@@ -114,7 +135,8 @@ def delete_logo(slot: str = "logo") -> None:
 
 def accent() -> str:
     """Цвет программы: из логотипа, если он есть и не выключен в «Оформлении»."""
-    return "" if db.get_setting("brand_accent_off") == "1" else db.get_setting("brand_accent")
+    # readable() и при чтении: цвет, сохранённый версией до 2.29.3, мог быть слишком светлым
+    return "" if db.get_setting("brand_accent_off") == "1" else readable(db.get_setting("brand_accent"))
 
 
 def public() -> dict:

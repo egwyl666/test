@@ -117,8 +117,11 @@ def main() -> None:
     print(f" Prom Loader {updater.current_version()} запущен")
     print(f" Адрес в браузере: http://localhost:{port}/")
     if runtime.lan_bound:
-        for lan_url in phone.lan_urls():
-            print(f" С телефона по Wi‑Fi: {lan_url}")
+        lan = phone.lan_urls()
+        if lan:  # первый — сеть роутера; остальные (VPN, виртуальные сети) с телефона обычно не открываются
+            print(f" С телефона по Wi‑Fi: {lan[0]}")
+        if len(lan) > 1:
+            print(f"   (если не открывается — запасные: {', '.join(lan[1:])})")
     if not os.environ.get("PROMLOADER_TRAY"):
         print()
         print(" НЕ ЗАКРЫВАЙТЕ это окно, пока работаете с программой.")
