@@ -34,12 +34,16 @@ PY_SKIP_NAMES = {
     "XLSX_TABLES", "QUALITY_LABELS",     # reports.py — заголовки листов Excel
     "MISMATCH_HEADERS", "CAT_HEADERS", "COD_WORDS", "NP_DEFAULTS",                  # categories.py — колонки файла для кабинета Prom
     "RESET_FILE",                        # users.py — имя файла с кодом сброса пароля
+    "ERRORS_SQL", "BLANK_SQL",           # products.py — условие SQL
+    "XLSX_HEADERS",                      # stock.py — колонки файла заказа поставщику
 }
 PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt"}     # ai.py, aicategory.py — что возвращается, уходит модели
 PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
                  "prompt_for",          # aicategory.py — задание для модели
                  "build_batch_prompt",  # ai.py — задание для модели
                  "ttn_message",         # chat.py — сообщение покупателю по-украински
+                 "notify_text",         # stock.py — сообщение в Telegram (Telegram — по-русски)
+                 "purchase_xlsx",       # stock.py — файл для поставщика
                  "remind_message",      # chat.py — напоминание покупателю по-украински
                  "prepay_message",      # chat.py — просьба о предоплате по-украински
                  "waiting_alert_text",  # novaposhta.py — сообщение в Telegram (Telegram — по-русски)

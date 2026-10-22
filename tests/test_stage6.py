@@ -11,7 +11,7 @@ STATIC = pathlib.Path(main.__file__).parent / "static"
 def nav_items():
     js = (STATIC / "common.js").read_text(encoding="utf-8")
     block = re.search(r"const NAV = \[(.*?)\n\];", js, re.S).group(1)
-    return re.findall(r'\["(/[a-z]*)", "([^"]+)"(?:, \[([^\]]*)\])?\]', block)
+    return re.findall(r'\["(/[a-z]*)", "([^"]+)"(?:, \[([^\]]*)\])?(?:, true)?\]', block)  # true — пункт в «Ещё ▾»
 
 
 def test_menu_is_defined_once():

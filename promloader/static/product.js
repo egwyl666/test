@@ -95,6 +95,8 @@ function youtubeId(url) {
 
 function renderVideos(list) {
   videoList = [...list];
+  $("#video-count").textContent = videoList.length ? `(${videoList.length})` : I18N.tr("— нет");
+  if (videoList.length) $("#video-panel").open = true;
   const box = $("#videos");
   box.innerHTML = videoList.length ? videoList.map((url, i) => `<div class="video-item">
       <a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">

@@ -5,13 +5,14 @@
 
 const PACK_ACTIVE = ["pending", "received", "paid"];
 
+// «Упакован» — кусок общей строки действий заказа (orderCard), без своей обёртки
 function packBlock(o) {
   if (o.packed_at) {
-    return `<div class="toolbar" style="margin:8px 0 0"><span class="badge synced">📦 ${esc(I18N.tr("Упакован"))} ${esc(formatDate(o.packed_at))}${o.packed_by ? ` · <span translate="no">${esc(o.packed_by)}</span>` : ""}</span>
-      <button class="btn small link" data-unpack="${o.id}" data-perm="orders">${esc(I18N.tr("снять отметку"))}</button></div>`;
+    return `<span class="badge synced">📦 ${esc(I18N.tr("Упакован"))} ${esc(formatDate(o.packed_at))}${o.packed_by ? ` · <span translate="no">${esc(o.packed_by)}</span>` : ""}</span>
+      <button class="btn small link" data-unpack="${o.id}" data-perm="orders">${esc(I18N.tr("снять отметку"))}</button>`;
   }
   if (!PACK_ACTIVE.includes(o.status)) return "";
-  return `<div class="toolbar" style="margin:8px 0 0"><button class="btn small" data-pack="${o.id}" data-perm="orders">📦 ${esc(I18N.tr("Упакован"))}</button></div>`;
+  return `<button class="btn small" data-pack="${o.id}" data-perm="orders">📦 ${esc(I18N.tr("Упакован"))}</button>`;
 }
 
 function handlePackClick(e) {

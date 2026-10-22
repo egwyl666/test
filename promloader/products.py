@@ -411,7 +411,8 @@ def offer_items(product_id: int) -> list[dict]:
     rows = db.query("""SELECT si.supplier_id, si.sku, si.missing, si.data, s.name AS supplier_name
                        FROM supplier_items si JOIN suppliers s ON s.id = si.supplier_id
                        WHERE si.product_id = ? ORDER BY si.supplier_id""", (product_id,))
-    return [{**dict(r), "data": json.loads(r["data"])["data"]} for r in rows]
+    # без поля data (старая или повреждённая строка) — пустые данные, а не «Товар не найден» из-за KeyError
+    return [{**dict(r), "data": (json.loads(r["data"] or "{}") or {}).get("data") or {}} for r in rows]
 
 
 def offers(product_id: int) -> list[dict]:
@@ -436,7 +437,7 @@ def search_clause(q: str, prefix: str = "") -> tuple[str, list]:
     return f"({cols})", [like] * len(SEARCH_COLUMNS)
 
 
-FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors",
+FILTER_KEYS = ("status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "low_stock",
                "prom_category", "cat_mismatch", "readiness", "profit", "duplicates", "conflict")
 
 # Готовность черновика к Prom (полоска над черновиками): цена, фото, название, украинский текст, ключевые слова.
@@ -458,12 +459,16 @@ READINESS = {
     # для «✨ Заполнить через ИИ»: не хватает того, что делает «Подготовить для Prom» (и ИИ есть из чего писать)
     "missing_ai": f"(NOT ({_HAS_UA}) OR NOT {_FILLED.format(f='keywords')}) AND NOT {_NEEDS_MANUAL}",
     "needs_manual": _NEEDS_MANUAL,
+    # этап конвейера «нет цены или фото»: тексты уже есть (ИИ не нужен), не хватает цены или фото
+    "stage_fill": f"NOT {_NEEDS_MANUAL} AND {_HAS_UA} AND {_FILLED.format(f='keywords')} "
+                  f"AND (COALESCE(p.price, 0) < 1 OR NOT {_PHOTO})",
 }
 # скрытые дубли (dup_of) — не «готовы», не «заполнить через ИИ»: их убрали ради выгодного товара
 READINESS = {k: f"p.dup_of IS NULL AND {v}" for k, v in READINESS.items()}
 READINESS_LABELS = {"ready_to_promote": "готовы для Prom", "missing_ua": "без украинского текста",
                     "missing_keywords": "без ключевых слов", "missing_price_or_photo": "без цены или фото",
-                    "needs_manual": "мало данных — заполнить вручную"}
+                    "needs_manual": "мало данных — заполнить вручную", "missing_ai": "ждут ИИ",
+                    "stage_fill": "нет цены или фото"}
 SORTS = {
     "updated": "p.updated_at DESC, p.id DESC",
     "created": "p.created_at DESC, p.id DESC",
@@ -518,6 +523,11 @@ def _filter_where(flt: dict, with_status: bool = True) -> tuple[str, list]:
                      "AND p.target_category_id != p.prom_category_id")
     if flt.get("conflict") in _TRUE:
         where.append("p.prom_conflict != ''")
+    if flt.get("errors") in _TRUE:
+        where.append(ERRORS_SQL.format(min_price=MIN_PRICE))
+    if flt.get("low_stock") in _TRUE:
+        from . import stock
+        where.append(stock.low_sql())
     if flt.get("readiness") in READINESS:
         where.append(f"p.status = 'draft' AND {READINESS[flt['readiness']]}")
     q = flt.get("q") or ""
@@ -535,8 +545,13 @@ LIST_SELECT = """SELECT p.*, (SELECT COALESCE(i.url, '/media/' || i.file) FROM i
                  FROM products p"""
 
 
-def _has_errors(row) -> bool:
-    return bool(validate(_row_to_dict(row), image_count=row["image_count"])["errors"])
+# Ошибки (errors) из validate одним условием SQL: фильтр «с ошибками» работает как обычный фильтр — с постраничным
+# выводом, без проверки каждого товара в Python (на 20 000 товаров это было полсекунды на каждое открытие).
+# Совпадение с validate проверяет tests/test_v228.py — меняете одно, меняйте и другое.
+BLANK_SQL = "' ' || char(9) || char(10) || char(13)"  # пробельные символы для TRIM — как strip() в Python
+ERRORS_SQL = (f"(TRIM(COALESCE(p.name, ''), {BLANK_SQL}) = '' OR length(p.name) > 255 OR p.price IS NULL OR p.price <= 0 "
+              f"OR (p.price < {{min_price}} AND lower_u(COALESCE(NULLIF(p.currency, ''), 'UAH')) IN ('uah', 'грн')))")
+
 
 
 def ids_for_filter(flt: dict) -> list[int]:
@@ -544,8 +559,6 @@ def ids_for_filter(flt: dict) -> list[int]:
     if flt.get("profit") in PROFIT_FILTERS or flt.get("duplicates") in _TRUE:
         return sorted(r["id"] for r in _rows(flt)[0])
     clause, args = _filter_where(flt)
-    if flt.get("errors") in _TRUE:
-        return [r["id"] for r in db.query(f"{LIST_SELECT} {clause} ORDER BY p.id", args) if _has_errors(r)]
     return [r["id"] for r in db.query(f"SELECT p.id FROM products p {clause} ORDER BY p.id", args)]
 
 
@@ -653,8 +666,9 @@ def resolve_conflict(product_id: int, action: str, fields: list[str] | None = No
 def list_alerts() -> dict:
     """Предупреждения над списком: конфликты с кабинетом Prom и возможные дубли."""
     conflicts = db.query_one("SELECT COUNT(*) AS n FROM products WHERE prom_conflict != ''")["n"]
-    from . import duplicates
-    return {"conflicts": conflicts, "duplicates": sum(len(g["ids"]) for g in duplicates.find())}
+    from . import duplicates, stock
+    return {"conflicts": conflicts, "duplicates": duplicates.count(), "low_stock": stock.low_count(),
+            "low_stock_threshold": stock.threshold()}
 
 
 def profit_order(ids: list[int]) -> list[int]:
@@ -670,17 +684,23 @@ def profit_order(ids: list[int]) -> list[int]:
     return sorted(ids, key=lambda i: (keyed.get(i, (False, False, False, 0.0)), -i), reverse=True)
 
 
-def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: int = 0) -> tuple[list, int, dict]:
-    """Строки страницы, всего по фильтру и счётчики статусов (с теми же фильтрами, но по всем статусам)."""
+def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: int = 0,
+          dup_groups: list | None = None) -> tuple[list, int, dict]:
+    """Строки страницы, всего по фильтру и счётчики статусов (с теми же фильтрами, но по всем статусам).
+    dup_groups — уже найденные группы дублей (list_products ищет их один раз и для строк, и для пометок)."""
     order = SORTS.get(sort) or SORTS["updated"]
     clause, args = _filter_where(flt)
     count_clause, count_args = _filter_where(flt, with_status=False)
     if flt.get("duplicates") in _TRUE:
         # дубли — группами рядом: внутри группы сначала выгодный (его и оставлять), группы — по названию
         from . import duplicates
-        groups = duplicates.find()
+        groups = duplicates.find() if dup_groups is None else dup_groups
         position = {pid: (gi, n) for gi, g in enumerate(groups) for n, pid in enumerate(g["ids"])}
-        all_rows = [r for r in db.query(f"{LIST_SELECT} {count_clause}", count_args) if r["id"] in position]
+        if not position:
+            return [], 0, {}
+        # только товары из групп, а не весь каталог с подзапросами фото
+        only = f"{count_clause} {'AND' if count_clause else 'WHERE'} p.id {db.IN_LIST}"
+        all_rows = db.query(f"{LIST_SELECT} {only}", count_args + [db.as_list(list(position))])
         if flt.get("profit") in PROFIT_FILTERS or sort in PROFIT_SORTS:
             all_rows = _profit_rows(all_rows, flt, sort)
         all_rows.sort(key=lambda r: position[r["id"]])  # группа за группой, в группе первым — выгодный
@@ -692,18 +712,7 @@ def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: in
         return page, len(matching), counts
     if sort in PROFIT_SORTS or flt.get("profit") in PROFIT_FILTERS:
         all_rows = db.query(f"{LIST_SELECT} {count_clause} ORDER BY {SORTS['updated']}", count_args)
-        if flt.get("errors") in _TRUE:
-            all_rows = [r for r in all_rows if _has_errors(r)]
         all_rows = _profit_rows(all_rows, flt, sort)
-        counts: dict = {}
-        for r in all_rows:
-            counts[r["status"]] = counts.get(r["status"], 0) + 1
-        matching = [r for r in all_rows if not flt.get("status") or r["status"] == flt["status"]]
-        page = matching[offset:offset + limit] if limit is not None else matching[offset:]
-        return page, len(matching), counts
-    if flt.get("errors") in _TRUE:
-        # «с ошибками заполнения» — проверка в Python (как в карточке), поэтому страницу режем здесь
-        all_rows = [r for r in db.query(f"{LIST_SELECT} {count_clause} ORDER BY {order}", count_args) if _has_errors(r)]
         counts: dict = {}
         for r in all_rows:
             counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -719,18 +728,25 @@ def _rows(flt: dict, sort: str = "updated", limit: int | None = None, offset: in
 
 
 def list_products(flt: dict | None = None, sort: str = "updated", limit: int = 200, offset: int = 0) -> dict:
-    rows, total, counts = _rows(flt or {}, sort, limit, offset)
+    groups = None
+    if (flt or {}).get("duplicates") in _TRUE:
+        from . import duplicates
+        groups = duplicates.find()
+    rows, total, counts = _rows(flt or {}, sort, limit, offset, dup_groups=groups)
     from . import rates
 
     ids = [r["id"] for r in rows]
     last_price = {}
     if ids:
-        # последнее изменение цены по журналу — чтобы в списке было видно «было 120 ₴»
+        # последнее изменение цены по журналу — чтобы в списке было видно «было 120 ₴». Поиск валюты — по индексу
+        # (товар, номер записи): «ABS(…) <= 30» и индекс по источнику («Поставщик» у всех) перебирали весь журнал,
+        # и список из 20 000 товаров открывался 2 секунды
         marks = ",".join("?" * len(ids))
         last_price = {r["product_id"]: dict(r) for r in db.query(
             f"""SELECT product_id, old, new, at, source,
-                  (SELECT c2.old FROM product_changes c2 WHERE c2.product_id = pc.product_id AND c2.field = 'currency'
-                     AND c2.at = pc.at AND c2.source = pc.source AND ABS(c2.id - pc.id) <= 30
+                  (SELECT c2.old FROM product_changes c2 WHERE c2.product_id = pc.product_id
+                     AND c2.id BETWEEN pc.id - 30 AND pc.id + 30 AND c2.field = 'currency'
+                     AND c2.at = pc.at AND +c2.source = pc.source
                      ORDER BY c2.id DESC LIMIT 1) AS old_currency
                 FROM product_changes pc WHERE id IN (
                   SELECT MAX(id) FROM product_changes WHERE field = 'price' AND product_id IN ({marks})
@@ -740,7 +756,7 @@ def list_products(flt: dict | None = None, sort: str = "updated", limit: int = 2
     if (flt or {}).get("duplicates") in _TRUE:  # «дубль по: штрихкод 4820…» — чтобы было видно, что их объединяет
         from . import duplicates
         dup = {pid: {"group": n, "kind": duplicates.KINDS[g["kind"]], "key": g["key"], "best": pid == g["best"]}
-               for n, g in enumerate(duplicates.find()) for pid in g["ids"]}
+               for n, g in enumerate(groups) for pid in g["ids"]}
     items = []
     for r in rows:
         p = _row_to_dict(r)

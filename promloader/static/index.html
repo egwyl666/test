@@ -37,7 +37,7 @@
       <ol class="steps" id="first-steps-list"></ol>
     </div>
 
-    <div class="panel" id="jobs-panel" style="margin-bottom:16px">
+    <div class="panel hidden" id="jobs-panel" style="margin-bottom:16px">
       <div class="toolbar" style="margin-bottom:6px">
         <h2 style="margin:0">Отправка на Prom</h2>
         <span class="spacer"></span>
@@ -145,16 +145,15 @@
     </div>
 
     <div class="panel">
-      <div class="toolbar">
-        <div class="chips" id="chips"></div>
-        <span class="spacer"></span>
-        <select id="supplier-filter" style="max-width:220px"></select>
-        <input id="search" placeholder="Поиск: название, артикул, группа" style="max-width:300px">
-        <button class="btn" id="scan-product" title="Найти товар по штрихкоду камерой телефона" style="flex:0 0 auto">📷</button>
-      </div>
+      <!-- конвейер: черновики (по этапам) → готов к отправке → на Prom; клик — фильтр, у этапа — своё действие -->
+      <div class="pipeline" id="pipeline"></div>
+      <div class="toolbar stage-action hidden" id="stage-action"></div>
       <div class="chips list-alerts hidden" id="list-alerts"></div>
-      <div class="toolbar readiness-bar hidden" id="readiness"></div>
       <div class="toolbar list-filters" id="filters">
+        <input id="search" placeholder="Поиск: название, артикул, группа" class="list-search">
+        <button class="btn" id="scan-product" title="Найти товар по штрихкоду камерой телефона" style="flex:0 0 auto">📷</button>
+        <button class="btn" id="filters-toggle" type="button">Фильтры ▾</button>
+        <select id="supplier-filter" style="max-width:200px"></select>
         <select id="f-group" title="Группа"></select>
         <select id="f-presence" title="Наличие"></select>
         <select id="f-profit" title="Выгода">
@@ -169,6 +168,7 @@
             <label><input type="checkbox" id="f-errors"> с ошибками заполнения</label>
             <label><input type="checkbox" id="f-no_photo"> без фото</label>
             <label><input type="checkbox" id="f-gone"> пропали у поставщика</label>
+            <label><input type="checkbox" id="f-low_stock"> заканчиваются (мало на остатке)</label>
             <label><input type="checkbox" id="f-cat_mismatch"> Prom поставил не ту категорию</label>
             <label class="field" style="margin:6px 0 0"><span>Категория Prom</span>
               <select id="f-prom_category"></select></label>
@@ -195,7 +195,9 @@
       <div class="toolbar" id="bulk" data-perm="catalog">
         <label class="small"><input type="checkbox" id="check-all"> выбрать все</label>
         <span class="small muted" id="selected-count"></span>
+        <span class="small muted bulk-hint">Отметьте товары — появятся действия: отправить, ИИ, цены, изменить</span>
         <span class="spacer"></span>
+        <span class="bulk-actions">
         <button class="btn primary" data-action="send" disabled>Отправить на Prom</button>
         <button class="btn" data-action="ai" data-perm="ai" disabled title="Перевод, описания, ключевые слова для выбранных товаров">✨ ИИ</button>
         <button class="btn" data-action="prices" disabled title="Опт → закупка, наценка, курс, ±%">💲 Цены</button>
@@ -209,8 +211,9 @@
             <button class="btn danger" data-action="delete" disabled>Удалить</button>
           </div>
         </details>
+        </span>
       </div>
-      <div class="dropzone" id="quick-drop" style="margin-bottom:14px">
+      <div class="dropzone hidden" id="quick-drop" style="margin-bottom:14px">
         <b>Быстрое создание:</b> перетащите сюда фото — на каждое фото создастся черновик товара
         <span class="small">(название возьмётся из имени файла, дальше заполните цену и описание)</span>
       </div>

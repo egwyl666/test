@@ -382,14 +382,18 @@ def store_report(start: date, end: date) -> dict:
     from . import aiprice
 
     statuses = {r["status"]: r["n"] for r in db.query("SELECT status, COUNT(*) AS n FROM products GROUP BY status")}
-    rows = db.query(products.LIST_SELECT)
+    # только нужные колонки: полные строки списка (фото, поставщик, описание целиком) на 20 000 товаров — секунда
+    errors_sql = products.ERRORS_SQL.format(min_price=products.MIN_PRICE)
+    rows = db.query(f"""SELECT p.name, p.name_ua, TRIM(COALESCE(p.description, ''), {products.BLANK_SQL}) != '' AS has_description,
+                              EXISTS (SELECT 1 FROM images i WHERE i.product_id = p.id) AS has_photo,
+                              {errors_sql} AS has_errors FROM products p""")
     quality = {"no_photo": 0, "no_description": 0, "no_ua": 0, "errors": 0}
     for r in rows:
-        quality["no_photo"] += 0 if r["image_count"] else 1
-        quality["no_description"] += 0 if (r["description"] or "").strip() else 1
+        quality["no_photo"] += 0 if r["has_photo"] else 1
+        quality["no_description"] += 0 if r["has_description"] else 1
         if not (r["name_ua"] or "").strip() and not products.looks_ukrainian(r["name"] or ""):
             quality["no_ua"] += 1
-        quality["errors"] += 1 if products._has_errors(r) else 0
+        quality["errors"] += 1 if r["has_errors"] else 0
     first, last = start.isoformat(), (end + timedelta(days=1)).isoformat()
     ups = downs = 0
     pct = []

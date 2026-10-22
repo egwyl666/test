@@ -2,6 +2,8 @@
 
 import asyncio
 
+from datetime import date
+
 from fastapi import (
     APIRouter,
     Body,
@@ -9,10 +11,12 @@ from fastapi import (
     HTTPException,
     UploadFile,
 )
+from fastapi.responses import Response
 
 from .. import (
     excel,
     rates,
+    stock,
     suppliers,
 )
 from ..web import _background, log
@@ -34,6 +38,26 @@ def create_supplier(name: str = Body("", embed=True)):
 @router.get("/api/suppliers/{supplier_id}")
 def get_supplier(supplier_id: int):
     return suppliers.get(supplier_id)
+
+
+@router.get("/api/suppliers/{supplier_id}/purchase")
+def supplier_purchase(supplier_id: int, days: str = "", cover: str = ""):
+    """Что заказать у поставщика: продажи за days дней → запас на cover дней с учётом остатка."""
+    try:
+        return stock.purchase(supplier_id, days, cover)
+    except stock.StockError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.get("/api/suppliers/{supplier_id}/purchase.xlsx")
+def supplier_purchase_xlsx(supplier_id: int, days: str = "", cover: str = ""):
+    try:
+        report = stock.purchase(supplier_id, days, cover)
+    except stock.StockError as exc:
+        raise HTTPException(400, str(exc)) from None
+    name = f"zakaz-postavshchiku-{supplier_id}-{date.today().isoformat()}.xlsx"
+    return Response(stock.purchase_xlsx(report), headers={"Content-Disposition": f'attachment; filename="{name}"'},
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
 @router.patch("/api/suppliers/{supplier_id}")

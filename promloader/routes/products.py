@@ -32,6 +32,7 @@ from .. import (
     promdelete,
     r2,
     schedule,
+    stock,
     suppliers,
     undo,
     updater,
@@ -374,6 +375,15 @@ def set_status(status: str = Body(...), ids: list[int] | None = Body(None), filt
 
 
 UNDO_LABELS = {"draft": "В черновики", "ready": "Пометить «готов»", "synced": "Вернуть «На Prom»"}
+
+
+@router.post("/api/products/low-stock-threshold")
+def low_stock_threshold(value: str = Body(..., embed=True)):
+    """Порог «заканчивается»: остаток не больше него — товар в плашке «📉 Заканчиваются» и в уведомлении."""
+    try:
+        return {"threshold": stock.set_threshold(value)}
+    except stock.StockError as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
 @router.post("/api/products/undo/{token}")

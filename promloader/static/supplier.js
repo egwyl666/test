@@ -336,3 +336,31 @@ async function showRate() {
     .map((x) => I18N.tr(x.trim())).filter(Boolean).join(" ");
 }
 ["#rate-mode", "#rate-value", "#def-currency"].forEach((sel) => $(sel).addEventListener("input", showRate));
+
+// ---------- 📦 заказ поставщику: продажи за N дней → сколько заказать, чтобы хватило на M дней ----------
+const PURCHASE_SHOWN = 100;  // на странице — самые нужные; у большого поставщика их тысячи, весь список — в Excel
+async function loadPurchase() {
+  const q = new URLSearchParams({ days: $("#pur-days").value, cover: $("#pur-cover").value });
+  $("#pur-xlsx").href = `/api/suppliers/${sid}/purchase.xlsx?${q}`;
+  $("#pur-table").innerHTML = skeletonRows(5, 3);
+  try {
+    const r = await api(`/api/suppliers/${sid}/purchase?${q}`);
+    const toOrder = r.rows.filter((x) => x.order > 0);
+    $("#pur-summary").textContent = r.rows.length
+      ? I18N.tr(`Заказать: ${toOrder.length} товаров, ${r.total_units} шт.`)
+        + (r.rows.some((x) => !x.stock_known) ? " " + I18N.tr("Где остаток неизвестен («?»), он считается нулём.") : "")
+        + (r.rows.length > PURCHASE_SHOWN ? " " + I18N.tr(`Здесь — первые ${PURCHASE_SHOWN}, весь список — в Excel.`) : "")
+      : I18N.tr("За этот период продаж товаров поставщика не было, и ничего не заканчивается.");
+    $("#pur-table").innerHTML = r.rows.length ? `<thead><tr><th>${esc(I18N.tr("Товар"))}</th><th>${esc(I18N.tr("Артикул поставщика"))}</th>
+        <th class="num">${esc(I18N.tr("Продано"))}</th><th class="num">${esc(I18N.tr("Остаток"))}</th><th class="num">${esc(I18N.tr("Заказать"))}</th></tr></thead>
+      <tbody>${r.rows.slice(0, PURCHASE_SHOWN).map((x) => `<tr>
+        <td><a href="/product?id=${x.product_id}" translate="no">${esc(x.name)}</a>${x.low ? ` <span class="small err-text">📉</span>` : ""}</td>
+        <td translate="no">${esc(x.supplier_sku)}</td><td class="num">${x.sold}</td>
+        <td class="num">${x.stock_known ? x.stock : "?"}</td><td class="num"><b>${x.order}</b></td></tr>`).join("")}</tbody>` : "";
+  } catch (err) {
+    $("#pur-table").innerHTML = "";
+    $("#pur-summary").textContent = err.message;
+  }
+}
+$("#purchase-panel").addEventListener("toggle", () => { if ($("#purchase-panel").open) loadPurchase(); });
+["#pur-days", "#pur-cover"].forEach((sel) => $(sel).addEventListener("change", loadPurchase));

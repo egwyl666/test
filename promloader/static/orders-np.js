@@ -26,10 +26,13 @@ function shipmentBlock(o) {
     </div>`;
   }
   if (o.prom_ttn) return `<div class="small" style="margin-top:8px">🚚 ТТН <b translate="no">${esc(o.prom_ttn)}</b></div>`;
-  if (o.nova_poshta && !["canceled", "delivered"].includes(o.status)) {
-    return `<div class="toolbar" style="margin:10px 0 0"><button class="btn small primary" data-ttn-create="${o.id}">📦 Создать ТТН</button></div>`;
-  }
   return "";
+}
+
+// «📦 Создать ТТН» — в общей строке действий заказа (вместе с «Упакован» и сменой статуса), а не отдельной строкой
+function ttnCreateButton(o) {
+  if (o.shipment || o.prom_ttn || !o.nova_poshta || ["canceled", "delivered"].includes(o.status)) return "";
+  return `<button class="btn small primary" data-ttn-create="${o.id}">📦 Создать ТТН</button>`;
 }
 
 // ⚠️ у покупателя были отказы от посылок или отмены — спросите предоплату вместо наложенного платежа
@@ -51,7 +54,8 @@ function prepayBlock(o) {
   const asked = o.prepay_requested_at
     ? `<span class="small muted">💬 ${esc(I18N.tr("Предоплату попросили"))} ${esc(formatDate(o.prepay_requested_at))}</span>`
     : `<button class="btn small" data-prepay-request="${o.id}" data-perm="chat">💬 ${esc(I18N.tr("Запросить предоплату в чат Prom"))}</button>`;
-  return `<div class="risky-banner">${flagged && b ? `<b>${esc(I18N.tr(`⚠️ Рисковый покупатель (отказов: ${b.refused}, отмен: ${b.canceled}) — рекомендуется предоплата`))}</b>` : ""}
+  // одна плашка вместо двух: заголовок с числами отказов и отмен (или значки истории) и кнопки
+  return `<div class="risky-banner">${flagged && b ? `<b>${esc(I18N.tr(`⚠️ Рисковый покупатель (отказов: ${b.refused}, отмен: ${b.canceled}) — рекомендуется предоплата`))}</b>` : buyerBadge(b)}
     <span class="toolbar" style="margin:0">${asked}
     ${flagged ? `<button class="btn small" data-prepay-ok="${o.id}" data-perm="orders">${esc(I18N.tr("Предоплата получена / снять пометку"))}</button>` : ""}</span></div>`;
 }

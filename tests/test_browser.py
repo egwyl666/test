@@ -94,6 +94,20 @@ def test_interface_in_a_real_browser(server):
         page.wait_for_selector(".topbar .logo.with-logo img")
         assert "/shop-logo.png" in page.get_attribute('link[rel="icon"]', "href")
 
+        # конвейер вместо статусов: этап «Готов к отправке» → своя кнопка; массовые действия — только при выборе
+        assert not page.locator('#bulk [data-action="send"]').is_visible()
+        page.click('#pipeline [data-stage="ready"]')
+        page.wait_for_selector("#send-stage")
+        assert "(30)" in page.inner_text("#send-stage")
+        page.click('#pipeline [data-stage=""]')
+        page.wait_for_selector("#stage-action.hidden", state="attached")
+        # редкие разделы — в «Ещё ▾»
+        assert not page.locator('.topbar nav a[href="/changes"]').is_visible()
+        page.click(".nav-more summary")
+        assert page.locator('.topbar nav a[href="/changes"]').is_visible()
+        page.mouse.click(5, 400)  # клик мимо — меню закрылось
+        assert not page.locator('.topbar nav a[href="/changes"]').is_visible()
+
         # заготовка, пока список в пути (ответ задерживаем)
         page.route("**/api/products?*", lambda route: (time.sleep(0.6), route.continue_()))
         page.goto(url + "/?q=Товар")

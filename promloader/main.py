@@ -45,6 +45,7 @@ from . import (
     rates,
     reports,
     schedule,
+    stock,
     suppliers,
     support,
     sync,
@@ -201,6 +202,7 @@ async def notify_worker(stop: asyncio.Event) -> None:
             if not db.paused():  # после переезда уведомления шлёт новый компьютер — без дублей
                 await asyncio.to_thread(notify.flush)
                 await asyncio.to_thread(reports.maybe_daily_summary)
+                await asyncio.to_thread(stock.maybe_notify)
         except Exception:
             log.exception("Сбой отправки уведомлений Telegram")
         try:

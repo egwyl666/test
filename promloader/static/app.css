@@ -460,11 +460,7 @@ details.panel[open] > summary { margin-bottom: 10px; }
 @media (max-width: 640px) {
   .help-fab { right: 10px; bottom: 10px; padding: 8px 11px; opacity: .9; }
   .help-fab-text { display: none; }
-  /* отметили товары — панель действий едет вместе со списком, не надо листать наверх */
-  #bulk.has-selection {
-    position: sticky; top: 0; z-index: 30; background: var(--panel); margin: 0 -12px 14px; padding: 8px 12px;
-    box-shadow: 0 4px 14px rgba(0, 0, 0, .12); border-radius: 0 0 10px 10px;
-  }
+  #bulk.has-selection { margin: 0 -12px 14px; padding: 8px 12px; }
 }
 /* сенсорный экран: кнопки и галочки под палец */
 @media (pointer: coarse) {
@@ -612,6 +608,12 @@ table.list a.name:hover { color: var(--accent); }
     padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .15); }
   .actions-menu .actions-box .btn { justify-content: flex-start; width: 100%; }
 }
+/* меню, свёрнутое и на компьютере (карточка товара: редкие действия) */
+.actions-menu.menu-always > summary { display: inline-flex; cursor: pointer; }
+.actions-menu.menu-always .actions-box { position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; flex-direction: column;
+  align-items: stretch; min-width: 220px; background: #fff; border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, .15); }
+.actions-menu.menu-always .actions-box .btn { justify-content: flex-start; width: 100%; }
 .ext-steps { padding-left: 20px; display: grid; gap: 10px; }
 .ext-steps ul { margin: 6px 0 0; padding-left: 18px; }
 
@@ -856,3 +858,54 @@ body.no-chat [data-perm="chat"], body.no-admin [data-perm="admin"] { display: no
 .pack-toggle { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .ok-text { color: var(--ok, #1b8a3a); }
 .warn-text { color: #9a6200; }
+
+/* ---------- конвейер товаров (2.28.0) ---------- */
+.pipeline { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; margin-bottom: 10px; }
+.stage {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: #fff; border-radius: 10px;
+  padding: 7px 12px; font: inherit; font-size: 14px; cursor: pointer; color: var(--text);
+}
+.stage b { font-weight: 700; }
+.stage:hover { border-color: #c9ccd1; }
+.stage.active { background: var(--text); border-color: var(--text); color: #fff; }
+.stage.all { color: var(--muted); }
+.stage.all.active { color: #fff; }
+.stage.bad { color: var(--err); border-color: #f3c2c2; margin-left: 8px; }
+.stage.bad.active { background: var(--err); border-color: var(--err); color: #fff; }
+.stage.dim { color: var(--muted); }
+.stage.sub { font-size: 13px; padding: 4px 10px; border-radius: 8px; }
+.stage.sub.good { border-color: #bfe3cc; }
+.stage-group { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.stage-group .substages { display: flex; flex-wrap: wrap; gap: 4px; padding-left: 10px; border-left: 2px solid var(--line); }
+.stage-arrow { color: var(--muted); padding: 8px 0; }
+.stage-action { background: var(--accent-soft); border-radius: 10px; padding: 8px 10px; margin-bottom: 12px; }
+.list-search { flex: 1 1 260px; max-width: 360px; }
+/* массовые действия — только когда что-то отмечено; тогда панель едет вместе со списком */
+#bulk:not(.has-selection) .bulk-actions { display: none; }
+#bulk.has-selection .bulk-hint { display: none; }
+.bulk-actions { display: contents; }
+#bulk.has-selection {
+  position: sticky; top: var(--topbar-h, 0px); z-index: 15; background: var(--panel); padding: 8px 10px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .1); border-radius: 0 0 10px 10px;
+}
+#filters-toggle { display: none; }
+@media (max-width: 640px) {
+  .stage-arrow { display: none; }
+  .stage { padding: 6px 10px; }
+  /* телефон: под поиском — одна кнопка «Фильтры ▾», а не четыре строки выпадающих списков */
+  #filters-toggle { display: inline-flex; }
+  #filters:not(.open) > :not(.list-search):not(#scan-product):not(#filters-toggle):not(#active-filters) { display: none; }
+  .list-search { max-width: none; }
+}
+
+/* «Ещё ▾» в меню */
+.nav-more { position: relative; }
+.nav-more summary { list-style: none; cursor: pointer; padding: 8px 12px; border-radius: 8px; color: var(--muted); font-weight: 500; white-space: nowrap; }
+.nav-more summary::-webkit-details-marker { display: none; }
+.nav-more summary:hover { background: var(--bg); color: var(--text); }
+.nav-more summary.active { background: var(--accent-soft); color: var(--accent); }
+.nav-more-box { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; background: #fff; border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: var(--shadow); padding: 6px; display: flex; flex-direction: column; min-width: 200px; }
+.topbar .nav-more-box a { padding: 8px 12px; }
+.low-threshold input { width: 70px; margin-left: 4px; padding: 4px 6px; }
+.purchase-table td.num, .purchase-table th.num { text-align: right; }

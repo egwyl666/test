@@ -2,7 +2,7 @@
 
 const PAGE = 200;
 // фильтры списка — те же имена, что у /api/products; хранятся и в адресе страницы (?group=…&sort=…)
-const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "prom_category", "cat_mismatch",
+const FILTERS = ["status", "q", "supplier", "group", "presence", "on_prom", "no_photo", "gone", "errors", "low_stock", "prom_category", "cat_mismatch",
                  "readiness", "profit", "duplicates", "conflict"];
 const START = new URLSearchParams(location.search);
 const list = {
@@ -67,7 +67,8 @@ async function loadProducts(append = false) {
   // отметки сохраняем для всех показанных строк (раньше «Показать ещё» сбрасывал отмеченные выше)
   const ids = new Set(list.items.map((p) => p.id));
   list.selected = new Set([...list.selected].filter((id) => ids.has(id)));
-  renderChips(data.counts);
+  list.counts = data.counts;
+  renderPipeline();
   renderRows();
   if (!append) {
     loadReadiness().catch(() => {});
@@ -84,31 +85,93 @@ function refreshList(delay = 0) {
   list.refreshTimer = setTimeout(() => loadProducts().catch(() => {}), delay);
 }
 
-function renderChips(counts) {
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
-  const chips = [["", "Все", total], ...Object.entries(META.statuses).map(([k, v]) => [k, v, counts[k] || 0])];
-  $("#chips").innerHTML = chips
-    .filter(([k, , n]) => !k || n)
-    .map(([k, label, n]) => `<button class="chip ${k === list.status ? "active" : ""}" data-status="${k}">${esc(label)}<b>${n}</b></button>`)
-    .join("");
-  $$("#chips .chip").forEach((c) => c.addEventListener("click", () => {
-    list.status = c.dataset.status;
-    if (list.status !== "draft") list.readiness = "";  // «готовность» — фильтр только по черновикам
-    applyFilters();
-  }));
+// ---------- конвейер: черновики по этапам → готов к отправке → на Prom ----------
+// Этапы черновиков не пересекаются: мало данных (только вручную) → ждут ИИ (перевод, ключевые слова) → нет цены
+// или фото → готовы для Prom. Счётчики — с остальными фильтрами списка (поставщик, поиск, группа).
+const DRAFT_STAGES = [["needs_manual", "мало данных"], ["missing_ai", "ждут ИИ"], ["stage_fill", "нет цены или фото"],
+                      ["ready_to_promote", "готовы для Prom"]];
+
+function stageKey() {
+  return list.status === "draft" && list.readiness ? `draft:${list.readiness}` : list.status;
 }
+
+function renderPipeline() {
+  const c = list.counts || {};
+  const r = list.ready || {};
+  const cur = stageKey();
+  const total = Object.values(c).reduce((a, b) => a + b, 0);
+  const btn = (key, label, n, cls = "") =>
+    `<button class="stage ${cls} ${key === cur ? "active" : ""}" data-stage="${key}"><span>${esc(I18N.tr(label))}</span><b>${n}</b></button>`;
+  const arrow = `<span class="stage-arrow" aria-hidden="true">→</span>`;
+  const status = (k) => META.statuses[k] || k;
+  const subs = DRAFT_STAGES.filter(([k]) => r[k] || cur === `draft:${k}`)
+    .map(([k, label]) => btn(`draft:${k}`, label, r[k] || 0, `sub ${k === "ready_to_promote" ? "good" : ""}`)).join("");
+  $("#pipeline").innerHTML = btn("", "Все", total, "all")
+    + `<div class="stage-group ${cur.startsWith("draft") ? "open" : ""}">${btn("draft", status("draft"), c.draft || 0)}`
+    + (subs ? `<div class="substages">${subs}</div>` : "") + `</div>`
+    + arrow + btn("ready", status("ready"), c.ready || 0)
+    + (c.sending ? arrow + btn("sending", status("sending"), c.sending) : "")
+    + arrow + btn("synced", status("synced"), c.synced || 0)
+    + (c.error ? btn("error", status("error"), c.error, "bad") : "")
+    + (c.deleting ? btn("deleting", status("deleting"), c.deleting, "dim") : "");
+  renderStageAction();
+}
+
+// Действие выбранного этапа — одна понятная кнопка рядом с конвейером, а не всё сразу
+function renderStageAction() {
+  const r = list.ready || {};
+  const c = list.counts || {};
+  const cur = stageKey();
+  const parts = [];
+  const ai = aiTarget(r);
+  if ((cur === "draft" || ["draft:missing_ai", "draft:missing_ua", "draft:missing_keywords"].includes(cur)) && ai) {
+    parts.push(`<button class="btn small" id="readiness-ai" data-perm="ai" data-n="${ai}">✨ ${esc(I18N.tr(`Заполнить через ИИ (${ai})`))}</button>`);
+  }
+  if (cur === "draft:needs_manual" && r.needs_manual) {
+    parts.push(`<button class="btn small" id="readiness-photo" data-perm="ai" data-n="${r.needs_manual}">📷 ${esc(I18N.tr(`Заполнить по фото (${r.needs_manual})`))}</button>`,
+      `<span class="small muted">${esc(I18N.tr("ИИ опишет товар по главному фото — или откройте товар и заполните вручную"))}</span>`);
+  }
+  if (cur === "draft:stage_fill") {
+    parts.push(`<span class="small muted">${esc(I18N.tr("Добавьте цену и фото в карточке. Цены сразу у многих: отметьте товары → «💲 Цены»"))}</span>`);
+  }
+  if ((cur === "draft" || cur === "draft:ready_to_promote") && r.ready_to_promote) {
+    parts.push(`<button class="btn small primary" id="promote-ready" data-perm="catalog">${esc(I18N.tr(`В «Готов к отправке» (${r.ready_to_promote})`))}</button>`);
+  }
+  if (cur === "ready" && c.ready) {
+    parts.push(`<button class="btn small primary" id="send-stage" data-perm="catalog" data-n="${c.ready}">${esc(I18N.tr(`Отправить на Prom все (${c.ready})`))}</button>`);
+  }
+  if (cur === "error" && c.error) {
+    parts.push(`<button class="btn small primary" id="send-stage" data-perm="catalog" data-n="${c.error}">${esc(I18N.tr(`Отправить ещё раз (${c.error})`))}</button>`,
+      `<span class="small muted">${esc(I18N.tr("Причина — красным под названием товара"))}</span>`);
+  }
+  $("#stage-action").innerHTML = parts.join("");
+  $("#stage-action").classList.toggle("hidden", !parts.length);
+}
+
+$("#pipeline").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-stage]");
+  if (!b) return;
+  const [status, readiness = ""] = b.dataset.stage.split(":");
+  list.status = status;
+  list.readiness = readiness;
+  applyFilters();
+});
 
 // Предупреждения над списком: конфликты с кабинетом Prom (поменяли и там, и в программе) и возможные дубли
 async function loadAlerts() {
   const r = await api("/api/products/alerts");
   const chip = (key, label, n, cls) => `<button class="chip ${list[key] ? "active" : ""} ${cls}" data-alert="${key}">${esc(I18N.tr(label))}<b>${n}</b></button>`;
   const html = [r.conflicts ? chip("conflict", "⚡ Конфликты с кабинетом Prom", r.conflicts, "alert-conflict") : "",
-                r.duplicates ? chip("duplicates", "🔍 Возможные дубли", r.duplicates, "") : ""].join("");
+                r.duplicates ? chip("duplicates", "🔍 Возможные дубли", r.duplicates, "") : "",
+                r.low_stock ? chip("low_stock", "📉 Заканчиваются", r.low_stock, "") : ""].join("");
+  // в режиме «заканчиваются» — порог рядом: что считать «мало»
+  const lowEdit = list.low_stock
+    ? `<label class="small low-threshold">${esc(I18N.tr("остаток не больше"))} <input id="low-threshold" type="number" min="0" value="${r.low_stock_threshold}" data-perm="catalog"></label>` : "";
   // в режиме «дубли»: одной кнопкой оставить в каждой группе выгодный, остальные — в черновики
   const keep = list.duplicates && r.duplicates
     ? `<button class="btn small primary" id="dup-keep-best" data-perm="catalog">${esc(I18N.tr("Оставить выгодный (скрыть дубли в черновик)"))}</button>` : "";
-  $("#list-alerts").innerHTML = html + keep;
-  $("#list-alerts").classList.toggle("hidden", !html && !list.conflict && !list.duplicates);
+  $("#list-alerts").innerHTML = html + keep + lowEdit;
+  $("#list-alerts").classList.toggle("hidden", !html && !list.conflict && !list.duplicates && !list.low_stock);
 }
 
 async function keepBestDuplicates(btn) {
@@ -123,6 +186,13 @@ async function keepBestDuplicates(btn) {
   } catch (err) { toast(err.message, "error"); }
 }
 
+$("#list-alerts").addEventListener("change", async (e) => {
+  if (e.target.id !== "low-threshold") return;
+  try {
+    await api("/api/products/low-stock-threshold", { method: "POST", json: { value: e.target.value } });
+    applyFilters();
+  } catch (err) { toast(err.message, "error"); }
+});
 $("#list-alerts").addEventListener("click", (e) => {
   const keep = e.target.closest("#dup-keep-best");
   if (keep) { busy(keep, () => keepBestDuplicates(keep)); return; }
@@ -132,25 +202,14 @@ $("#list-alerts").addEventListener("click", (e) => {
   applyFilters();
 });
 
-// Полоска над черновиками: сколько готовы для Prom (кнопка «В «Готов к отправке»») и чего не хватает остальным.
-// Учитывает остальные фильтры списка (поставщик, поиск, группа). Видна, только когда выбраны «Черновики».
-const READINESS_ORDER = ["missing_ua", "missing_keywords", "missing_price_or_photo", "needs_manual"];
+// Счётчики этапов черновиков для конвейера (с теми же фильтрами списка, кроме статуса)
 let readinessSeq = 0;
 async function loadReadiness() {
-  const bar = $("#readiness");
-  if (list.status !== "draft") { bar.classList.add("hidden"); return; }
   const seq = ++readinessSeq;
   const r = await api(`/api/products/readiness?${new URLSearchParams(filterParams())}`);
   if (seq !== readinessSeq) return;
-  const pill = (key, n) => `<button class="chip ${list.readiness === key ? "active" : ""}" data-readiness="${key}">${esc(I18N.tr(r.labels[key]))}<b>${n}</b></button>`;
-  bar.innerHTML = `<span class="small muted">Черновики:</span> ${pill("ready_to_promote", r.ready_to_promote)}
-    ${READINESS_ORDER.filter((k) => r[k]).map((k) => pill(k, r[k])).join(" ")}
-    <span class="spacer"></span>
-    ${list.readiness === "needs_manual" && r.needs_manual
-      ? `<button class="btn small" id="readiness-photo" data-perm="ai" data-n="${r.needs_manual}">📷 Заполнить по фото (${r.needs_manual})</button>`
-      : aiTarget(r) ? `<button class="btn small" id="readiness-ai" data-perm="ai" data-n="${aiTarget(r)}">✨ Заполнить через ИИ (${aiTarget(r)})</button>` : ""}
-    ${r.ready_to_promote ? `<button class="btn small primary" id="promote-ready">В «Готов к отправке» (${r.ready_to_promote})</button>` : ""}`;
-  bar.classList.toggle("hidden", !r.drafts);
+  list.ready = r;
+  renderPipeline();
 }
 // «✨ Заполнить через ИИ»: выбран фильтр «без украинского текста» или «без ключевых слов» — ровно эти черновики,
 // иначе — все черновики, которым не хватает перевода или ключевых слов (вместе с остальными фильтрами списка)
@@ -158,7 +217,25 @@ function aiTarget(r) {
   if (["missing_ua", "missing_keywords"].includes(list.readiness)) return r[list.readiness];
   return r.missing_ai || 0;
 }
-$("#readiness").addEventListener("click", (e) => {
+$("#stage-action").addEventListener("click", (e) => {
+  const send = e.target.closest("#send-stage");
+  if (send) {
+    // на Prom уходит сразу много товаров — один вопрос перед этим
+    if (!confirm(I18N.tr(`Отправить на Prom товаров: ${send.dataset.n}?`))) return;
+    busy(send, async () => {
+      try {
+        const res = await api("/api/sync", { method: "POST", json: { filter: filterParams() } });
+        if (res.accepted) toast(`В очереди на Prom: ${res.accepted}`, "ok");
+        if (res.rejected.length) {
+          const first = res.rejected[0];
+          toast(`Не отправлено ${res.rejected.length}: «${first.name || "без названия"}» — ${first.reasons.map(I18N.tr).join("; ")}`, "error");
+        }
+        loadJobs();
+        loadProducts();
+      } catch (err) { toast(err.message, "error"); }
+    });
+    return;
+  }
   const photo = e.target.closest("#readiness-photo");
   if (photo) {
     // «мало данных»: ИИ описывает товар по его фото (по одному товару на запрос)
@@ -171,12 +248,6 @@ $("#readiness").addEventListener("click", (e) => {
     const base = Object.fromEntries(Object.entries(filterParams()).filter(([k]) => k !== "readiness"));
     const readiness = ["missing_ua", "missing_keywords"].includes(list.readiness) ? list.readiness : "missing_ai";
     openAiModal({ filter: { ...base, status: "draft", readiness } }, { count: Number(ai.dataset.n), action: "prepare_prom" });
-    return;
-  }
-  const pill = e.target.closest("[data-readiness]");
-  if (pill) {
-    list.readiness = list.readiness === pill.dataset.readiness ? "" : pill.dataset.readiness;
-    applyFilters();
     return;
   }
   const btn = e.target.closest("#promote-ready");
@@ -226,6 +297,8 @@ function renderRows() {
   $("#empty").classList.toggle("hidden", list.items.length > 0 || filtered);
   $("#nothing-found").classList.toggle("hidden", list.items.length > 0 || !filtered);
   if (!list.items.length && filtered) $("#nothing-text").textContent = I18N.tr(nothingText());
+  // «перетащите фото» — подсказка для пустого магазина; перетаскивание на страницу работает всегда
+  $("#quick-drop").classList.toggle("hidden", list.items.length > 0 || filtered);
   patchChildren(tbody, list.items, (p) => p.id, (p) => {
     const problems = p.check.errors.length ? `<div class="err-text">${esc(p.check.errors.map(I18N.tr).join(" · "))}</div>` : "";
     const promError = p.status === "error" && p.last_error ? `<div class="err-text" title="${esc(p.last_error)}">Prom: ${esc(p.last_error.slice(0, 120))}</div>` : "";
@@ -288,7 +361,7 @@ function nothingText() {
   if (only.length === 1) {
     const good = { duplicates: "Возможных дублей нет ✓", conflict: "Конфликтов с кабинетом Prom нет ✓",
       errors: "Товаров с ошибками заполнения нет ✓", no_photo: "Все товары с фото ✓", gone: "Пропавших у поставщика нет ✓",
-      cat_mismatch: "Категории на Prom совпадают с нужными ✓" }[only[0]];
+      cat_mismatch: "Категории на Prom совпадают с нужными ✓", low_stock: "Ничего не заканчивается ✓" }[only[0]];
     if (good) return good;
     if (only[0] === "status" && list.status === "error") return "Товаров с ошибкой отправки нет ✓";
   }
@@ -326,7 +399,7 @@ $("#reset-filters").addEventListener("click", () => {
 });
 
 // ---------- фильтры и сортировка ----------
-const FLAG_LABELS = { errors: "с ошибками заполнения", no_photo: "без фото", gone: "пропали у поставщика",
+const FLAG_LABELS = { errors: "с ошибками заполнения", no_photo: "без фото", gone: "пропали у поставщика", low_stock: "заканчиваются",
   cat_mismatch: "Prom поставил не ту категорию" };
 const ON_PROM_LABELS = { yes: "есть на Prom", no: "нет на Prom" };
 
@@ -403,6 +476,7 @@ $("#scan-product").addEventListener("click", () => openScanner({
 }));
 
 $("#more").addEventListener("click", () => loadProducts(true));
+$("#filters-toggle").addEventListener("click", () => $("#filters").classList.toggle("open"));
 $("#supplier-filter").addEventListener("change", (e) => { list.supplier = e.target.value; applyFilters(); });
 
 $$("#bulk [data-action]").forEach((b) => b.addEventListener("click", () => busy(b, async () => {
@@ -493,6 +567,8 @@ async function loadJobs() {
     photos && photos.error ? `📷 ${photos.error}` : "",
     active ? "обновляется автоматически" : "",
   ].filter(Boolean).map(I18N.tr).join(" · ");
+  // панель «Отправка на Prom» — только когда есть что показать (задания или загрузка каталога)
+  $("#jobs-panel").classList.toggle("hidden", !jobs.length && $("#catalog-state").classList.contains("hidden"));
   if (jobs.length) {
     patchChildren($("#jobs"), jobs.slice(0, 6), (j) => j.id, (j) => {
       const [cls, label] = JOB_STATUS[j.status] || ["draft", j.status];
@@ -697,6 +773,7 @@ async function showCatalogState(state) {
   const box = $("#catalog-state");
   if (!state.running && !state.finished_at) { box.classList.add("hidden"); return; }
   box.classList.remove("hidden");
+  $("#jobs-panel").classList.remove("hidden");
   if (state.running) {
     box.innerHTML = `<span class="badge sending">Загружаю каталог с Prom</span> обработано товаров: ${state.seen || 0}…`;
     catalogTimer = setTimeout(async () => {

@@ -7,23 +7,30 @@ import re
 from . import changes, db, products, rates
 
 
+_NOT_DIGIT = re.compile(r"\D")
+_NOT_CODE = re.compile(r"[^0-9a-zа-яіїєґ]")
+_PUNCT = re.compile(r"[^\w\s]")
+_SPACES = re.compile(r"\s+")
+
+
 def _norm_code(value) -> str:
-    return re.sub(r"[^0-9a-zа-яіїєґ]", "", str(value or "").lower())
+    return _NOT_CODE.sub("", str(value or "").lower())
 
 
 def _norm_name(value) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", str(value or "").lower())).strip()
+    return _SPACES.sub(" ", _PUNCT.sub(" ", str(value or "").lower())).strip()
 
 
-def find() -> list[dict]:
+def find(rank: bool = True) -> list[dict]:
     """Группы товаров, похожих на один и тот же: одинаковый штрихкод, код поставщика (от 4 символов) или название.
     Удаляемые и уже скрытые как дубль не учитываются. Товар попадает в одну группу (первое совпадение: штрихкод →
-    код → название). В каждой группе ids упорядочены: первый — выгодный (best)."""
+    код → название). В каждой группе ids упорядочены: первый — выгодный (best). rank=False — без выбора выгодного
+    (для счётчика над списком: на большом каталоге это половина времени)."""
     rows = db.query("""SELECT p.id, p.name, p.barcode, p.vendor_code, p.supplier_id, p.status
                        FROM products p WHERE p.status != 'deleting' AND p.dup_of IS NULL""")
     groups: dict = {}
     taken: set = set()
-    for kind, keyfn, minimum in (("barcode", lambda r: re.sub(r"\D", "", r["barcode"] or ""), 8),
+    for kind, keyfn, minimum in (("barcode", lambda r: _NOT_DIGIT.sub("", r["barcode"] or ""), 8),
                                  ("vendor_code", lambda r: _norm_code(r["vendor_code"]), 4),
                                  ("name", lambda r: _norm_name(r["name"]), 6)):
         by_key: dict = {}
@@ -38,7 +45,7 @@ def find() -> list[dict]:
                 groups[(kind, key)] = ids
                 taken.update(ids)
     found = [{"kind": kind, "key": key, "ids": ids} for (kind, key), ids in groups.items()]
-    if found:
+    if found and rank:
         table = rates.Table()
         detail = {r["id"]: r for r in db.query(f"{products.LIST_SELECT} WHERE p.id {db.IN_LIST}",
                                                 (db.as_list([i for g in found for i in g["ids"]]),))}
@@ -46,6 +53,11 @@ def find() -> list[dict]:
             g["ids"].sort(key=lambda i: _best_key(detail[i], table), reverse=True)
             g["best"] = g["ids"][0]
     return found
+
+
+def count() -> int:
+    """Сколько товаров похожи на дубли (подсказка над списком)."""
+    return sum(len(g["ids"]) for g in find(rank=False))
 
 
 def _best_key(r, table) -> tuple:

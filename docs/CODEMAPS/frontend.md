@@ -1,6 +1,6 @@
 # Страницы и JS (`promloader/static/`)
 
-_Обновлено: 2026-10-22 · версия 2.27.0_
+_Обновлено: 2026-10-22 · версия 2.28.0_
 
 Чистый JS без сборки. Сторонние файлы — только в `static/vendor/` (версия, лицензия и sha256 — в `vendor/README.md`). Каждая страница подключает в `<head>` `i18n-uk.js` + `i18n.js` (язык интерфейса, см. ниже) и в конце `common.js` (`api()`, `$`/`$$`, `esc`, `toast`, `formatPrice`,
 `formatDate`, `statusBadge`, `loadMeta` → `META` (+ полоски: обновление, нет токена Prom, сбой поставщика, пропущенная выгрузка), `showPreview` (окно «Что изменится»), `busy(btn, fn)` (кнопка занята на время запроса — без двойных действий), `sanitizeHtml` + `safeUrl` (в описании только http/https/mailto/tel), закрытие окон `.modal[id]` по Esc и клику по фону, `initNav`, кнопка «🆘 Не получается?»). `formatDate` показывает год, если он не текущий. Стили — `app.css`
@@ -24,6 +24,20 @@ _Обновлено: 2026-10-22 · версия 2.27.0_
 | `/reports` | `reports.html`, `reports.js` | Отчёты: период, вкладки «Продажи / Товары / Поставщики и группы / Магазин», карточки итогов, график SVG без библиотек, таблицы с сортировкой (`table`), «≈», «⬇ Excel» (`/api/reports/{tab}.xlsx`) |
 | `/categories` | `categories.html`, `categories.js` | Категории Prom по группам: что стоит на Prom, «разнёс по N категориям», «не та категория» (ссылка на фильтр списка), выбор категории (поиск prom.ua, ссылка, уже известные) с окном «Что изменится» |
 | `/diagnose` | `diagnose.html` | Пошаговая проверка выгрузки одного товара |
+
+## Упрощение (2.28.0)
+
+- Меню: `NAV` — четвёртый элемент `true` = пункт в «Ещё ▾» (`details.nav-more`); на ≤ 640 px `renderNav` рисует всё
+  в ряд. Высота липкой шапки — `--topbar-h` (`measureTopbar`).
+- «Товары»: `#pipeline` (`renderPipeline` по `list.counts` и `list.ready` = `/api/products/readiness`; этапы
+  черновиков `DRAFT_STAGES` → `status=draft&readiness=…`), `#stage-action` (`renderStageAction`: ИИ, по фото,
+  «В Готов», `#send-stage` → `/api/sync` с фильтром). `#bulk .bulk-actions` видны только при `.has-selection`
+  (липкая панель). `#jobs-panel` и `#quick-drop` скрыты, пока не нужны; `#filters-toggle` — фильтры на телефоне;
+  плашка «📉 Заканчиваются» и порог `#low-threshold` — в `#list-alerts`.
+- Карточка: редкие действия — `details.actions-menu.menu-always` (свёрнуто и на компьютере), «Видео» —
+  `details#video-panel` в конце формы. Заказы: `ttnCreateButton` + `packBlock` + смена статуса — одна строка
+  `.order-actions`; `prepayBlock(o) || buyerBadge(o.buyer)` — одна плашка риска.
+- Поставщик: `details#purchase-panel` → `loadPurchase` (первые `PURCHASE_SHOWN` = 100 строк, остальное — в Excel).
 
 ## Плавность и удобство (2.27.0) — общие помощники `common.js`
 

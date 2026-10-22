@@ -83,8 +83,18 @@ async function loadMeta() {
   if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
   renderUserMenu();
   renderBrand();
+  measureTopbar();
   return META;
 }
+
+// Высота «липкой» шапки — чтобы закреплённые панели (массовые действия) вставали под неё, а не за неё
+function measureTopbar() {
+  const bar = document.querySelector(".topbar");
+  const h = bar && getComputedStyle(bar).position === "sticky" ? bar.offsetHeight : 0;
+  document.documentElement.style.setProperty("--topbar-h", `${h}px`);
+}
+window.addEventListener("resize", measureTopbar);
+window.addEventListener("load", measureTopbar);
 
 // Логотип магазина (Настройки → Prom): в шапке вместо «Prom Loader» и значком вкладки браузера
 let brandDefault = null;
@@ -509,28 +519,42 @@ function descriptionHtml(text) {
 
 // Меню — одно на все страницы (раньше его копия была в каждом HTML). Новая страница: HTML в static/, строка в
 // main.PAGES и пункт здесь. Третий элемент — адреса, при которых пункт тоже подсвечен (карточка товара — «Товары»).
+// [адрес, название, другие адреса раздела, true — в «Ещё ▾»]. Каждый день нужны первые пять и «Настройки»,
+// остальное — реже: на компьютере оно в выпадающем «Ещё», на телефоне меню и так листается вбок — там всё в ряд.
 const NAV = [
   ["/", "Товары", ["/product"]],
   ["/orders", "Заказы"],
   ["/chat", "Чат"],
-  ["/reports", "Отчёты"],
   ["/suppliers", "Поставщики", ["/supplier"]],
-  ["/pricing", "Наценка"],
-  ["/categories", "Категории"],
-  ["/changes", "Журнал"],
-  ["/import", "Импорт файла"],
-  ["/diagnose", "Проверка выгрузки"],
+  ["/reports", "Отчёты"],
+  ["/pricing", "Наценка", [], true],
+  ["/categories", "Категории", [], true],
+  ["/changes", "Журнал", [], true],
+  ["/import", "Импорт файла", [], true],
+  ["/diagnose", "Проверка выгрузки", [], true],
+  ["/support", "Поддержка", [], true],
   ["/settings", "Настройки"],
-  ["/support", "Поддержка"],
 ];
 
 function renderNav() {
   const nav = document.querySelector(".topbar nav");
   if (!nav || nav.children.length) return;
   const path = location.pathname;
-  nav.innerHTML = NAV.map(([href, label, also = []]) =>
-    `<a href="${href}"${href === path || also.includes(path) ? ' class="active"' : ""}>${esc(label)}</a>`).join("");
+  const link = ([href, label, also = []]) =>
+    `<a href="${href}"${href === path || also.includes(path) ? ' class="active"' : ""}>${esc(label)}</a>`;
+  const flat = window.matchMedia("(max-width: 640px)").matches;
+  const main = NAV.filter((n) => flat || !n[3]);
+  const more = flat ? [] : NAV.filter((n) => n[3]);
+  const inMore = more.find(([href, , also = []]) => href === path || also.includes(path));
+  nav.innerHTML = main.filter((n) => n[0] !== "/settings").map(link).join("")
+    + (more.length ? `<details class="nav-more"><summary class="${inMore ? "active" : ""}"><span>${esc(inMore ? inMore[1] : "Ещё")}</span> ▾</summary>
+        <div class="nav-more-box">${more.map(link).join("")}</div></details>` : "")
+    + main.filter((n) => n[0] === "/settings").map(link).join("");
 }
+document.addEventListener("click", (e) => {  // «Ещё ▾» закрывается кликом мимо и после выбора раздела
+  const open = document.querySelector(".nav-more[open]");
+  if (open && (!open.contains(e.target) || e.target.closest("a"))) open.open = false;
+});
 
 function initNav() { renderNav(); }
 
@@ -724,12 +748,11 @@ function addHelpButton() {
 // «Действия ▾», чтобы не занимать три-четыре ряда экрана. Нажатие на действие или мимо меню его закрывает.
 const NARROW = window.matchMedia("(max-width: 640px)");
 function syncActionMenus() {
-  $$("details.actions-menu").forEach((d) => { d.open = !NARROW.matches; });
+  $$("details.actions-menu:not(.menu-always)").forEach((d) => { d.open = !NARROW.matches; });
 }
 NARROW.addEventListener("change", syncActionMenus);
 document.addEventListener("click", (e) => {
-  if (!NARROW.matches) return;
-  $$("details.actions-menu[open]").forEach((d) => {
+  $$(NARROW.matches ? "details.actions-menu[open]" : "details.actions-menu.menu-always[open]").forEach((d) => {
     if (!d.contains(e.target) || e.target.closest(".actions-box .btn")) d.open = false;
   });
 });

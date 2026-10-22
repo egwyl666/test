@@ -125,6 +125,19 @@
           <th>Цена в прайсе</th><th></th></tr></thead><tbody></tbody></table></div>
     </div>
 
+    <!-- что заказать у поставщика по продажам (считается при раскрытии) -->
+    <details class="panel history" id="purchase-panel">
+      <summary><h2>📦 Заказ поставщику</h2> <span class="small muted">— что заканчивается и сколько заказать по продажам</span></summary>
+      <div class="toolbar" style="margin:4px 0 10px">
+        <label class="small">Продажи за <input id="pur-days" type="number" min="1" max="365" value="30" style="width:70px"> дн.</label>
+        <label class="small">хватить на <input id="pur-cover" type="number" min="1" max="365" value="30" style="width:70px"> дн.</label>
+        <span class="spacer"></span>
+        <a class="btn small" id="pur-xlsx" href="#">⬇ Excel для поставщика</a>
+      </div>
+      <p class="small muted" id="pur-summary"></p>
+      <div class="table-scroll"><table class="list purchase-table" id="pur-table"></table></div>
+    </details>
+
     <div class="panel">
       <h2>История обновлений</h2>
       <table class="runs" id="runs"></table>

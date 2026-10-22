@@ -217,8 +217,7 @@
           <div>
             <div>${o.client ? `<b translate="no">${esc(o.client)}</b>` : "<b>Покупатель</b>"}</div>
             ${o.phone ? `<div><a href="tel:${esc(o.phone)}" data-call="${o.id}">${esc(o.phone)}</a></div>` : ""}
-            ${buyerBadge(o.buyer)}
-            ${prepayBlock(o)}
+            ${prepayBlock(o) || buyerBadge(o.buyer)}
             ${o.email ? `<div class="small muted">${esc(o.email)}</div>` : ""}
             ${o.delivery ? `<div class="small" style="margin-top:6px" translate="no">🚚 ${esc(o.delivery)}${o.address ? `: ${esc(o.address)}` : ""}</div>` : ""}
             ${o.payment ? `<div class="small" translate="no">💳 ${esc(o.payment)}</div>` : ""}
@@ -227,8 +226,10 @@
           <div>${items}</div>
         </div>
         ${shipmentBlock(o)}
-        ${packBlock(o)}
-        ${actions ? `<div class="toolbar" style="margin:10px 0 0">${actions}</div>` : ""}
+        ${(() => {  // все действия заказа — одной строкой: ТТН и «Упакован» слева, смена статуса справа
+          const left = ttnCreateButton(o) + packBlock(o);
+          return left || actions ? `<div class="toolbar order-actions" style="margin:10px 0 0">${left}<span class="spacer"></span>${actions}</div>` : "";
+        })()}
       </div>`;
     }
 
