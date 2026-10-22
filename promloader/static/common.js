@@ -595,9 +595,15 @@ function placeNavMore(d) {
   box.style.top = `${Math.round(r.bottom + 6)}px`;
   box.style.left = `${Math.round(Math.max(8, Math.min(r.left, innerWidth - box.offsetWidth - 8)))}px`;
 }
-document.addEventListener("toggle", (e) => {
-  if (e.target.classList && e.target.classList.contains("nav-more")) placeNavMore(e.target);
-}, true);
+// открываем сами, а не ждём «toggle»: он приходит позже, и первый кадр список был бы обрезан
+document.addEventListener("click", (e) => {
+  const summary = e.target.closest && e.target.closest(".nav-more > summary");
+  if (!summary) return;
+  e.preventDefault();
+  const d = summary.parentElement;
+  d.open = !d.open;
+  placeNavMore(d);
+});
 for (const ev of ["scroll", "resize"]) {  // список fixed — при прокрутке страницы или меню закрываем, а не оставляем висеть
   window.addEventListener(ev, (e) => {
     const open = document.querySelector(".nav-more[open]");

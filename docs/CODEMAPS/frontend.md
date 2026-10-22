@@ -49,7 +49,7 @@ _Обновлено: 2026-10-22 · версия 2.29.0_
 ## Упрощение (2.28.0)
 
 - Меню: `NAV` — четвёртый элемент `true` = пункт в «Ещё ▾» (`details.nav-more`); на ≤ 640 px `renderNav` рисует всё
-  в ряд. Высота липкой шапки — `--topbar-h` (`measureTopbar`). Список «Ещё ▾» при открытии ставится `position: fixed`
+  в ряд. Высота липкой шапки — `--topbar-h` (`measureTopbar`). Список «Ещё ▾» открывается своим обработчиком клика (не по асинхронному `toggle`) и ставится `position: fixed`
   под кнопкой (`placeNavMore`): на ≤ 1440 px `.topbar nav` с `overflow-x: auto` обрезал бы `absolute`-список;
   прокрутка и смена размера окна его закрывают.
 - «Товары»: `#pipeline` (`renderPipeline` по `list.counts` и `list.ready` = `/api/products/readiness`; этапы
