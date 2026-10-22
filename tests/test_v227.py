@@ -254,5 +254,5 @@ def test_logo_replace_and_remove(client):
     v1 = client.post("/api/settings/logo", files={"file": ("a.png", _png((100, 100)), "image/png")}).json()["version"]
     v2 = client.post("/api/settings/logo", files={"file": ("b.png", _png((50, 80), "RGB"), "image/png")}).json()["version"]
     assert v1 != v2  # новый адрес ?v= — браузер не покажет старый из кеша
-    assert client.delete("/api/settings/logo").json() == {"ok": True}
+    assert client.delete("/api/settings/logo").json()["ok"] is True
     assert client.get("/shop-logo.png").status_code == 404 and client.get("/api/meta").json()["shop_logo"] == ""

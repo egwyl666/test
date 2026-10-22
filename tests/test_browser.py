@@ -19,7 +19,7 @@ from .conftest import make_image  # noqa: E402
 from .test_novaposhta import prom_order  # noqa: E402
 
 PASSWORD = "browser-password-1"
-PAGES = ["/", "/orders", "/chat", "/reports", "/suppliers", "/changes", "/categories", "/import", "/pricing",
+PAGES = ["/today", "/", "/orders", "/chat", "/reports", "/suppliers", "/changes", "/categories", "/import", "/pricing",
          "/settings", "/product?id=1"]
 
 
@@ -36,6 +36,7 @@ def server(data_dir):
     from promloader.main import app
 
     users.create("admin", PASSWORD, "admin")
+    users.create("viewer", PASSWORD, "viewer")
     ids = [products.create({"name": f"Товар {n:02d}", "price": 100 + n, "external_id": f"T-{n:02d}"}) for n in range(1, 31)]
     with db.tx() as c:
         c.execute("UPDATE products SET status = 'ready'")
@@ -68,7 +69,8 @@ def _login(ctx, url, errors):
     page.fill("#login-name", "admin")
     page.fill("#password", PASSWORD)
     page.click("#go")
-    page.wait_for_url(url + "/")
+    page.wait_for_url(url + "/today")  # после входа — главная «Сегодня»
+    page.goto(url + "/")
     return page
 
 
@@ -86,13 +88,31 @@ def test_interface_in_a_real_browser(server):
         ctx = browser.new_context(viewport={"width": 1366, "height": 900})
         login = ctx.new_page()
         login.goto(url + "/login")
-        login.wait_for_selector(".topbar .logo.with-logo img")  # логотип магазина — уже на странице входа
+        login.wait_for_selector("img.login-logo")  # логотип магазина — уже на странице входа, над формой
         login.close()
         page = _login(ctx, url, errors)
         page.wait_for_selector("tr.item")
         assert page.locator("tr.item").count() == 30
         page.wait_for_selector(".topbar .logo.with-logo img")
         assert "/shop-logo.png" in page.get_attribute('link[rel="icon"]', "href")
+
+        # эмодзи в кнопках — значки Lucide; «Сегодня» показывает, что требует внимания
+        assert page.locator("button svg.i, a svg.i").count() > 3
+        page.goto(url + "/today")
+        page.wait_for_selector(".attention-item")
+        assert "Готовы к отправке на Prom" in page.inner_text("#attention")
+        page.goto(url + "/")
+        page.wait_for_selector("tr.item")
+        # тёмная тема из меню пользователя — сразу, без перезагрузки, и запоминается
+        page.click("#user-menu summary")
+        page.click('[data-theme-pick="dark"]')
+        assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+        page.reload()
+        page.wait_for_selector("tr.item")
+        assert page.evaluate("document.documentElement.dataset.theme") == "dark"
+        page.click("#user-menu summary")
+        page.click('[data-theme-pick="light"]')
+        page.mouse.click(5, 400)
 
         # конвейер вместо статусов: этап «Готов к отправке» → своя кнопка; массовые действия — только при выборе
         assert not page.locator('#bulk [data-action="send"]').is_visible()
@@ -185,9 +205,31 @@ def test_interface_in_a_real_browser(server):
             page.goto(url + "/")
             page.wait_for_selector("tr.item")
             assert not page.locator(".help-fab-text").is_visible()  # на телефоне — только «🆘»
+            assert page.locator(".bottom-nav").is_visible()  # нижняя панель вместо меню сверху
+            assert not page.locator(".topbar nav").is_visible()
+            page.click(".bottom-nav .bn-more")
+            assert page.locator('.topbar nav a[href="/changes"]').is_visible()
             page.check("tr.item .sel >> nth=0")
             assert page.evaluate("getComputedStyle(document.querySelector('#bulk')).position") == "sticky"
             ctx.close()
+
+        # ---------- роль без права «товары»: кнопки видны, но заперты, и объяснено почему ----------
+        ctx = browser.new_context(viewport={"width": 1366, "height": 900})
+        page = ctx.new_page()
+        page.on("pageerror", lambda e: errors.append(f"{page.url}: {e}"))
+        page.goto(url + "/login")
+        page.fill("#login-name", "viewer")
+        page.fill("#password", PASSWORD)
+        page.click("#go")
+        page.wait_for_url(url + "/today")
+        page.wait_for_selector(".role-banner")
+        assert "нельзя" in page.inner_text(".role-banner")
+        btn = page.locator('.today-links [data-perm="catalog"]')
+        assert btn.is_visible() and float(btn.evaluate("e => getComputedStyle(e).opacity")) < 1
+        btn.click()
+        page.wait_for_selector("text=Нет права")
+        assert page.url.endswith("/today")  # не перешли
+        ctx.close()
 
         # ---------- украинский ----------
         ctx = browser.new_context(viewport={"width": 1366, "height": 900})

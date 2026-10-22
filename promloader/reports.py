@@ -73,6 +73,20 @@ def _num(value) -> float:
         return 0.0
 
 
+def order_items(data: dict) -> list[dict]:
+    """Позиции заказа Prom: номер товара на Prom, артикулы, название, штуки, сумма."""
+    items = []
+    for p in (data.get("products") if isinstance(data, dict) else None) or []:
+        if not isinstance(p, dict):
+            continue
+        qty = _num(p.get("quantity")) or 1.0
+        total = _num(p.get("total_price")) or _num(p.get("price")) * qty
+        items.append({"prom_id": p.get("id"), "external_id": p.get("external_id") or "", "sku": p.get("sku") or "",
+                      "name": p.get("name") or (p.get("name_multilang") if isinstance(p.get("name_multilang"), dict) else {}).get("ru") or "",
+                      "qty": qty, "total": total})
+    return items
+
+
 def _load_orders(start: date | None = None, end: date | None = None) -> list[dict]:
     """Заказы периода (по местной дате создания) в удобном виде."""
     out = []
@@ -88,15 +102,7 @@ def _load_orders(start: date | None = None, end: date | None = None) -> list[dic
         data = json.loads(row["data"] or "{}")
         commission = data.get("cpa_commission") or {}
         cancellation = data.get("cancellation") or {}
-        items = []
-        for p in data.get("products") or []:
-            if not isinstance(p, dict):
-                continue
-            qty = _num(p.get("quantity")) or 1.0
-            total = _num(p.get("total_price")) or _num(p.get("price")) * qty
-            items.append({"prom_id": p.get("id"), "external_id": p.get("external_id") or "", "sku": p.get("sku") or "",
-                          "name": p.get("name") or (p.get("name_multilang") if isinstance(p.get("name_multilang"), dict) else {}).get("ru") or "",
-                          "qty": qty, "total": total})
+        items = order_items(data)
         out.append({
             "id": row["id"], "status": row["status"], "when": when, "day": when.date(),
             "total": _num(data.get("price")) or sum(i["total"] for i in items),

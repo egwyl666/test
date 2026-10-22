@@ -416,6 +416,8 @@ MIGRATIONS = {
         "prepay_requested_at": "TEXT NOT NULL DEFAULT ''",
         "packed_at": "TEXT NOT NULL DEFAULT ''",   # упакован (скан на складе)
         "packed_by": "TEXT NOT NULL DEFAULT ''",   # кто упаковал (имя пользователя)
+        # остаток товаров уменьшен по этому выполненному заказу (один раз); 'legacy' — заказ выполнен до 2.29.0
+        "stock_applied_at": "TEXT NOT NULL DEFAULT ''",
     },
     "shipments": {
         "warehouse": "TEXT NOT NULL DEFAULT ''",     # отделение получателя (из отслеживания)

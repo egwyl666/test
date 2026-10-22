@@ -91,6 +91,8 @@ RULES = [
     ("/api/chat", "view", "chat"),
     ("/api/np", "view", "orders"),
     ("/api/meta", "view", "view"),
+    ("/api/today", "view", "view"),
+    ("/api/brand", "view", "view"),  # открыт и без входа (PUBLIC_PATHS) — для страницы входа
     ("/api/reports", "view", "view"),
     ("/api/products", "view", "catalog"),
     ("/api/suppliers", "view", "catalog"),

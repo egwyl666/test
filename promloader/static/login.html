@@ -15,7 +15,7 @@
   <meta name="apple-mobile-web-app-title" content="Prom Loader">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
 </head>
-<body>
+<body class="login-page">
   <header class="topbar">
     <a class="logo" href="/">Prom<span>Loader</span></a>
   </header>
@@ -53,17 +53,27 @@
   </main>
   <script>
     // отдельная маленькая страница: common.js здесь не нужен — без входа его запросы к программе всё равно отклоняются
-    const next = new URLSearchParams(location.search).get("next") || "/";
-    // логотип магазина, если загружен (адрес открыт и без входа); нет — остаётся «Prom Loader»
-    const brand = new Image();
-    brand.onload = () => {
-      const logo = document.querySelector(".topbar .logo");
-      if (logo) { logo.classList.add("with-logo"); logo.replaceChildren(brand); }
-      const icon = document.querySelector('link[rel="icon"]');
-      if (icon) icon.href = brand.src;
-    };
-    brand.alt = "";
-    brand.src = "/shop-logo.png?v=" + Date.now();
+    const next = new URLSearchParams(location.search).get("next") || "/today";
+    // оформление магазина (адрес открыт и без входа): малый логотип — над формой и значком вкладки, большой —
+    // во весь фон, цвет кнопок — из логотипа. Ничего не загружено — обычная страница «Prom Loader».
+    fetch("/api/brand").then((r) => (r.ok ? r.json() : null)).then((b) => {
+      if (!b) return;
+      if (window.THEME) window.THEME.brand(b.accent || "");
+      if (b.logo) {
+        const src = `/shop-logo.png?v=${encodeURIComponent(b.logo)}`;
+        const img = document.createElement("img");
+        img.className = "login-logo";
+        img.alt = "";
+        img.src = src;
+        document.querySelector("main").prepend(img);
+        const icon = document.querySelector('link[rel="icon"]');
+        if (icon) icon.href = src;
+      }
+      if (b.big) {
+        document.body.classList.add("login-hero");
+        document.body.style.setProperty("--login-bg", `url("/shop-logo-big?v=${encodeURIComponent(b.big)}")`);
+      }
+    }).catch(() => {});
     const $ = (s) => document.querySelector(s);
     const tr = (t) => (window.I18N ? I18N.tr(t) : t);
 

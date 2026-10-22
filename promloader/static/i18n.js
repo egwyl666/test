@@ -2,6 +2,56 @@
 // Переводится всё, что видно: текст, подсказки (title), placeholder, окна confirm/prompt, заголовок вкладки, ответы
 // программы. Данные пользователя (названия товаров, описания, заказы, прайсы) помечены translate="no" и не трогаются.
 // Подключается в <head> каждой страницы — до того, как страница нарисуется, чтобы не мелькал русский текст.
+// Тема оформления (2.29.0): светлая, тёмная или как в системе — выбор хранится в этом браузере.
+// Тоже здесь, в <head>: data-theme ставится до отрисовки, и страница не мигает белым перед тёмной.
+(function () {
+  try { setupTheme(); } catch { /* оформление не должно мешать переводу и работе страницы */ }
+})();
+function setupTheme() {
+  const KEY = "promloader-theme";
+  const media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  const read = () => { try { return localStorage.getItem(KEY) || "auto"; } catch { return "auto"; } };
+  const apply = () => {
+    const pick = read();
+    const dark = pick === "dark" || (pick === "auto" && media && media.matches);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  };
+  // цвет программы из логотипа магазина: запоминается здесь, чтобы при открытии страницы не мелькал фиолетовый
+  const setBrand = (color) => {
+    const root = document.documentElement;
+    if (/^#[0-9a-f]{6}$/i.test(color || "")) {
+      root.style.setProperty("--brand", color);
+      root.dataset.brand = "1";
+    } else {
+      root.style.removeProperty("--brand");
+      delete root.dataset.brand;
+    }
+  };
+  window.THEME = {
+    get: read,
+    set(value) {
+      try { localStorage.setItem(KEY, value); } catch { /* не запомнится — до перезагрузки */ }
+      apply();
+    },
+    brand(color) {
+      try { localStorage.setItem("promloader-brand", color || ""); } catch { /* не страшно */ }
+      setBrand(color);
+    },
+  };
+  apply();
+  try { setBrand(localStorage.getItem("promloader-brand")); } catch { /* стандартный цвет */ }
+  // компактный список товаров — больше строк на экране (тоже на этом устройстве)
+  const density = () => { try { return localStorage.getItem("promloader-density") || ""; } catch { return ""; } };
+  if (density() === "compact") document.documentElement.dataset.density = "compact";
+  window.THEME.density = (value) => {
+    try { localStorage.setItem("promloader-density", value); } catch { /* до перезагрузки */ }
+    if (value === "compact") document.documentElement.dataset.density = "compact";
+    else delete document.documentElement.dataset.density;
+  };
+  window.THEME.getDensity = density;
+  if (media && media.addEventListener) media.addEventListener("change", apply);  // «как в системе» — следом за ней
+}
+
 (function () {
   const KEY = "promloader-lang";
   let lang = "ru";

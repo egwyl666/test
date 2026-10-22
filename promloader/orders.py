@@ -8,6 +8,7 @@
 очень много, загрузка продолжается со следующей проверки с того же места.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -361,7 +362,11 @@ def store(orders: list[dict], notify_new: bool = True, first_run: bool | None = 
     if first_run is None:
         first_run = db.get_setting("orders_initialized") != "1"
     new = _store(orders, first_run)
-    if not first_run:
+    from . import stock
+    if first_run:
+        stock.mark_legacy()  # история магазина при первом подключении — уже учтена в остатках
+    else:
+        stock.apply_delivered()  # заказ стал «Выполнен» в кабинете Prom — уменьшить остаток
         db.set_setting("orders_initialized", "1")
     _flag_new(new)
     if notify_new and new:
@@ -500,6 +505,9 @@ async def set_status(client, order_id: int, status: str, reason: str = "", text:
     with db.tx() as c:
         c.execute("UPDATE orders SET status = ?, data = ?, seen = 1, updated_at = ? WHERE id = ?",
                   (status, json.dumps(data, ensure_ascii=False), db.now(), order_id))
+    if status == "delivered":
+        from . import stock
+        await asyncio.to_thread(stock.apply_delivered)  # «Выполнен» из программы — так же уменьшает остаток
     return view(db.query_one("SELECT * FROM orders WHERE id = ?", (order_id,)))
 
 

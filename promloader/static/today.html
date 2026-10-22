@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Сегодня — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#6d3fe0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prom Loader">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav></nav>
+  </header>
+
+  <main class="today">
+    <div class="toolbar">
+      <h1 style="margin:0" id="greet">Сегодня</h1>
+      <span class="spacer"></span>
+      <span class="small muted" id="today-time"></span>
+    </div>
+    <div class="kpis today-kpis" id="today-kpis"></div>
+    <div class="panel" style="margin-top:16px">
+      <h2>Требует внимания</h2>
+      <div class="attention" id="attention"></div>
+      <p class="small muted hidden" id="all-good">Всё спокойно: новых заказов, ошибок и срочных дел нет ✓</p>
+    </div>
+    <div class="today-links">
+      <a class="btn" href="/">📦 Товары</a>
+      <a class="btn" href="/orders">🛒 Заказы</a>
+      <a class="btn" href="/reports">Отчёты</a>
+      <a class="btn" href="/product" data-perm="catalog">+ Новый товар</a>
+    </div>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/today.js"></script>
+</body>
+</html>

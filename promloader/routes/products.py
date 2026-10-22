@@ -43,6 +43,13 @@ from .suppliers import _run_supplier_bg
 router = APIRouter()
 
 
+@router.get("/api/today")
+def today_overview():
+    """Главная «Сегодня»: итоги заказов и что требует внимания."""
+    from .. import today
+    return today.overview()
+
+
 @router.get("/api/meta")
 def meta(request: Request):
     return {
@@ -55,6 +62,8 @@ def meta(request: Request):
         "max_images": products.MAX_IMAGES,
         "shop_name": db.get_setting("shop_name"),
         "shop_logo": branding.version(),  # версия логотипа магазина ("" — не загружен)
+        "shop_logo_big": branding.version("big"),
+        "brand_accent": branding.accent(),  # цвет программы из логотипа ("" — стандартный)
         "prom_token_set": bool(config.get("prom_token")),
         "failed_suppliers": suppliers.failed(),
         "version": updater.current_version(),

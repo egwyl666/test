@@ -1,6 +1,6 @@
 # Страницы и JS (`promloader/static/`)
 
-_Обновлено: 2026-10-22 · версия 2.28.0_
+_Обновлено: 2026-10-22 · версия 2.29.0_
 
 Чистый JS без сборки. Сторонние файлы — только в `static/vendor/` (версия, лицензия и sha256 — в `vendor/README.md`). Каждая страница подключает в `<head>` `i18n-uk.js` + `i18n.js` (язык интерфейса, см. ниже) и в конце `common.js` (`api()`, `$`/`$$`, `esc`, `toast`, `formatPrice`,
 `formatDate`, `statusBadge`, `loadMeta` → `META` (+ полоски: обновление, нет токена Prom, сбой поставщика, пропущенная выгрузка), `showPreview` (окно «Что изменится»), `busy(btn, fn)` (кнопка занята на время запроса — без двойных действий), `sanitizeHtml` + `safeUrl` (в описании только http/https/mailto/tel), закрытие окон `.modal[id]` по Esc и клику по фону, `initNav`, кнопка «🆘 Не получается?»). `formatDate` показывает год, если он не текущий. Стили — `app.css`
@@ -24,6 +24,27 @@ _Обновлено: 2026-10-22 · версия 2.28.0_
 | `/reports` | `reports.html`, `reports.js` | Отчёты: период, вкладки «Продажи / Товары / Поставщики и группы / Магазин», карточки итогов, график SVG без библиотек, таблицы с сортировкой (`table`), «≈», «⬇ Excel» (`/api/reports/{tab}.xlsx`) |
 | `/categories` | `categories.html`, `categories.js` | Категории Prom по группам: что стоит на Prom, «разнёс по N категориям», «не та категория» (ссылка на фильтр списка), выбор категории (поиск prom.ua, ссылка, уже известные) с окном «Что изменится» |
 | `/diagnose` | `diagnose.html` | Пошаговая проверка выгрузки одного товара |
+
+## Оформление (2.29.0)
+
+- Тема: `i18n.js` (в `<head>`, до отрисовки) — `setupTheme()` ставит `html[data-theme]` из `localStorage
+  promloader-theme` (auto/light/dark, «auto» следит за системой), `html[data-brand]` + `--brand` из
+  `promloader-brand`, `html[data-density]` из `promloader-density`; `window.THEME.set/get/brand/density`. Ошибка
+  внутри не мешает переводу (try). Цвета — только переменные `:root` в `app.css` (`--panel`, `--panel-2`, `--chip-bg`,
+  `--line-strong`, `--info*`, `--warn-*`, `--err-*`, `--ok-line`, `--input-bg`, `--overlay`); тёмные значения —
+  `:root[data-theme="dark"]`. Превью Prom (`.pp`, `.tile`) — всегда светлое.
+- Значки: `vendor/lucide-1.49.0.svg` (спрайт `<symbol>`), `ICONS` (эмодзи → имя) в `common.js`; `iconize` заменяет
+  эмодзи на `<svg class="i"><use>` в тексте страницы — **после** перевода (`startIcons` по `DOMContentLoaded`, его
+  наблюдатель создаётся после переводчика), кроме `translate="no"`, полей, `option`, превью Prom. Тексты и словарь
+  с эмодзи не меняются. `iconSvg(name)` — значок для кода (нижняя панель).
+- `/today` (`today.html`, `today.js`) — первый пункт `NAV`, логотип ведёт сюда, вход без `next` — сюда.
+- Телефон: `renderBottomNav` (`BOTTOM_NAV`, «Ещё» → `body.nav-open` раскрывает меню сверху), счётчики заказов и чата —
+  в `loadMeta`.
+- Права: `[data-perm]` у кнопок/ссылок без права — видны, бледные, с замком (CSS, `--lock-icon`), нажатие перехватывает
+  обработчик в фазе захвата → toast «Нет права…»; блоки (не кнопки) по-прежнему скрываются. `showRoleBanner` —
+  строка «Ваша роль … — нельзя: …» под шапкой.
+- «Настройки» → `#look` (вкладка «Оформление»): тема, `.look-logo[data-slot]`, компактный список, цвет из логотипа.
+  `login.html` берёт `/api/brand`: `.login-logo` над формой, `body.login-hero` с `--login-bg` — большой логотип на фоне.
 
 ## Упрощение (2.28.0)
 

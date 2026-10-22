@@ -81,6 +81,12 @@ async function loadMeta() {
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
   const chatLink = document.querySelector('.topbar nav a[href="/chat"]');
   if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
+  for (const [href, n] of [["/orders", META.orders_unseen], ["/chat", META.chat_unseen]]) {  // счётчики и в нижней панели
+    const icon = document.querySelector(`.bottom-nav a[href="${href}"] .bn-icon`);
+    if (!icon) continue;
+    icon.querySelector(".nav-badge")?.remove();
+    if (n) icon.insertAdjacentHTML("beforeend", `<span class="nav-badge">${n}</span>`);
+  }
   renderUserMenu();
   renderBrand();
   measureTopbar();
@@ -99,6 +105,7 @@ window.addEventListener("load", measureTopbar);
 // Логотип магазина (Настройки → Prom): в шапке вместо «Prom Loader» и значком вкладки браузера
 let brandDefault = null;
 function renderBrand(version = META.shop_logo) {
+  window.THEME?.brand(META.brand_accent || "");  // цвет из логотипа (или стандартный) — и запомнить для <head>
   const logo = $(".topbar .logo");
   if (logo && brandDefault === null) brandDefault = logo.innerHTML;
   const icon = document.querySelector('link[rel="icon"]');
@@ -522,6 +529,7 @@ function descriptionHtml(text) {
 // [адрес, название, другие адреса раздела, true — в «Ещё ▾»]. Каждый день нужны первые пять и «Настройки»,
 // остальное — реже: на компьютере оно в выпадающем «Ещё», на телефоне меню и так листается вбок — там всё в ряд.
 const NAV = [
+  ["/today", "Сегодня"],
   ["/", "Товары", ["/product"]],
   ["/orders", "Заказы"],
   ["/chat", "Чат"],
@@ -546,11 +554,32 @@ function renderNav() {
   const main = NAV.filter((n) => flat || !n[3]);
   const more = flat ? [] : NAV.filter((n) => n[3]);
   const inMore = more.find(([href, , also = []]) => href === path || also.includes(path));
+  const logo = document.querySelector(".topbar .logo");
+  if (logo) logo.href = "/today";  // логотип ведёт на главную «Сегодня»
   nav.innerHTML = main.filter((n) => n[0] !== "/settings").map(link).join("")
     + (more.length ? `<details class="nav-more"><summary class="${inMore ? "active" : ""}"><span>${esc(inMore ? inMore[1] : "Ещё")}</span> ▾</summary>
         <div class="nav-more-box">${more.map(link).join("")}</div></details>` : "")
     + main.filter((n) => n[0] === "/settings").map(link).join("");
 }
+// Телефон: нижняя панель как в приложении (Сегодня · Товары · Заказы · Чат · Ещё) — под большим пальцем.
+// «Ещё» раскрывает полное меню сверху.
+const BOTTOM_NAV = [["/today", "Сегодня", "house"], ["/", "Товары", "boxes", ["/product"]], ["/orders", "Заказы", "shopping-cart"],
+                    ["/chat", "Чат", "message-circle"]];
+function renderBottomNav() {
+  if (!window.matchMedia("(max-width: 640px)").matches || document.querySelector(".bottom-nav")
+      || !document.querySelector(".topbar nav")) return;
+  const path = location.pathname;
+  const bar = document.createElement("nav");
+  bar.className = "bottom-nav";
+  bar.innerHTML = BOTTOM_NAV.map(([href, label, , also = []]) =>
+    `<a href="${href}" class="${href === path || also.includes(path) ? "active" : ""}"><span class="bn-icon"></span><span>${esc(label)}</span></a>`).join("")
+    + `<button type="button" class="bn-more"><span class="bn-icon"></span><span>${esc(I18N.tr("Ещё"))}</span></button>`;
+  [...bar.querySelectorAll(".bn-icon")].forEach((el, i) => el.appendChild(iconSvg(i < BOTTOM_NAV.length ? BOTTOM_NAV[i][2] : "menu")));
+  bar.querySelector(".bn-more").onclick = () => document.body.classList.toggle("nav-open");
+  document.body.appendChild(bar);
+  document.body.classList.add("has-bottom-nav");
+}
+
 document.addEventListener("click", (e) => {  // «Ещё ▾» закрывается кликом мимо и после выбора раздела
   const open = document.querySelector(".nav-more[open]");
   if (open && (!open.contains(e.target) || e.target.closest("a"))) open.open = false;
@@ -572,11 +601,39 @@ function applyNavPerms() {
     if (perm) a.classList.toggle("hidden", !can(perm));
   });
   document.body.dataset.role = META.me.role;
+  showRoleBanner();
   // кнопки, которые роли всё равно не разрешены (сервер ответит «Недостаточно прав»), — прячем: класс на body
   // действует и на то, что страница дорисует потом (полоска готовности, окна)
   for (const p of ["catalog", "ai", "orders", "chat", "admin"]) document.body.classList.toggle(`no-${p}`, !can(p));
   applyPagePerm();
 }
+
+// Чего нельзя этой роли — одной строкой под шапкой (можно скрыть до конца сеанса), чтобы «бледные» кнопки с замком
+// не казались поломкой. У администратора и у ролей со всеми рабочими правами плашки нет.
+const PERM_NAMES = { catalog: "менять товары и цены", ai: "ИИ", orders: "заказы и ТТН", chat: "отвечать в чате" };
+function showRoleBanner() {
+  const missing = Object.keys(PERM_NAMES).filter((p) => !can(p));
+  if (!missing.length || document.querySelector(".role-banner")) return;
+  try { if (sessionStorage.getItem("promloader-role-banner") === "hidden") return; } catch {}
+  const bar = document.createElement("div");
+  bar.className = "role-banner";
+  bar.innerHTML = `<span>🔒 ${esc(I18N.tr("Ваша роль"))} «<b translate="no">${esc(META.me.role_label)}</b>» — ${esc(I18N.tr("нельзя"))}:
+    ${missing.map((p) => esc(I18N.tr(PERM_NAMES[p]))).join(", ")}. ${esc(I18N.tr("Такие кнопки — бледные, с замком. Нужен доступ — попросите администратора."))}</span>
+    <span class="spacer"></span><button type="button" title="Скрыть">✕</button>`;
+  bar.querySelector("button").onclick = () => {
+    bar.remove();
+    try { sessionStorage.setItem("promloader-role-banner", "hidden"); } catch {}
+  };
+  document.querySelector(".topbar")?.after(bar);
+}
+// Нажатие на «запертую» кнопку — объяснение вместо действия (сервер всё равно ответил бы «Недостаточно прав»)
+document.addEventListener("click", (e) => {
+  const el = e.target.closest("[data-perm]");
+  if (!el || !META.me || can(el.dataset.perm) || !el.matches("button, a, .btn, summary, label")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  toast(I18N.tr(`Нет права: ${PERM_NAMES[el.dataset.perm] || el.dataset.perm}. Попросите администратора дать доступ.`), "error");
+}, true);
 
 // Страница целиком для изменений (поставщики, наценка, категории), а у роли нет права: всё видно, но поля и кнопки
 // закрыты — и те, что страница дорисует потом (таблицы правил, окна)
@@ -614,11 +671,21 @@ function renderUserMenu() {
   box.innerHTML = `<summary title="${esc(me.role_label)}">👤 <span translate="no">${esc(me.name || me.login)}</span> ▾</summary>
     <div class="user-menu-list">
       <div class="small muted"><span translate="no">${esc(me.login)}</span> · ${esc(me.role_label)}</div>
+      <div class="theme-pick" role="group" aria-label="Оформление">
+        <button type="button" data-theme-pick="light" title="Светлая тема">☀</button>
+        <button type="button" data-theme-pick="dark" title="Тёмная тема">☾</button>
+        <button type="button" data-theme-pick="auto" title="Как в системе">Авто</button>
+      </div>
       <button type="button" class="btn small" data-act="password">Сменить пароль</button>
       ${can("admin") ? `<a class="btn small" href="/settings#users">Пользователи</a>` : ""}
       <button type="button" class="btn small" data-act="logout">Выйти</button>
     </div>`;
+  const markTheme = () => $$("[data-theme-pick]", box).forEach((b) =>
+    b.classList.toggle("active", b.dataset.themePick === window.THEME.get()));
+  markTheme();
   box.addEventListener("click", async (e) => {
+    const pick = e.target.closest("[data-theme-pick]");
+    if (pick) { window.THEME.set(pick.dataset.themePick); markTheme(); return; }
     const act = e.target.closest("[data-act]")?.dataset.act;
     if (act === "logout") {
       await api("/api/logout", { method: "POST" }).catch(() => {});
@@ -1159,3 +1226,76 @@ window.addEventListener("beforeinstallprompt", (e) => {
 if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }
+
+// ---------- значки вместо эмодзи (2.29.0) ----------
+// Эмодзи на Windows, Android и iPhone рисуются по-разному и выглядят несерьёзно. Тексты (и словарь перевода) их
+// сохраняют, а здесь, уже после перевода, эмодзи в кнопках, меню, заголовках и плашках заменяются аккуратными
+// значками Lucide из static/vendor (без интернета). Данные пользователя (translate="no"), поля ввода, выпадающие
+// списки и превью страницы Prom не трогаются. Стрелки, ✓ и ▾ — обычные символы шрифта, их не меняем.
+const ICON_SPRITE = "/static/vendor/lucide-1.49.0.svg";
+const ICONS = {
+  "✨": "sparkles", "📦": "package", "🔒": "lock", "⚠": "triangle-alert", "⬇": "download", "📷": "camera",
+  "💲": "circle-dollar-sign", "🚚": "truck", "👤": "user", "👁": "eye", "🔔": "bell", "🔍": "search", "🔎": "search",
+  "✅": "circle-check", "💬": "message-circle", "👥": "users", "✏": "pencil", "📉": "trending-down", "⏳": "hourglass",
+  "📲": "smartphone", "📱": "smartphone", "⚡": "zap", "🔐": "lock-keyhole", "👋": "hand", "📄": "file-text", "📨": "send",
+  "⏰": "alarm-clock", "🔄": "refresh-cw", "☁": "cloud", "🕘": "history", "💱": "arrow-left-right", "💳": "credit-card",
+  "🔗": "link", "❌": "circle-x", "🛒": "shopping-cart", "🔧": "wrench", "🖼": "image", "💾": "save", "🖨": "printer",
+  "⏸": "pause", "🚀": "rocket", "☀": "sun", "☾": "moon", "📎": "paperclip", "🆘": "life-buoy", "🗂": "folder-tree",
+  "🎨": "palette", "▶": "play",
+};
+const ICON_RE = new RegExp(`(${Object.keys(ICONS).map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\ufe0f?`, "u");
+const ICON_SKIP = "[translate='no'], textarea, input, select, option, script, style, [contenteditable], .pp, .tile, svg";
+
+function iconSvg(name) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", `i i-${name}`);
+  svg.setAttribute("aria-hidden", "true");
+  for (const [k, v] of Object.entries({ fill: "none", stroke: "currentColor", "stroke-width": "2",
+    "stroke-linecap": "round", "stroke-linejoin": "round" })) svg.setAttribute(k, v);
+  const use = document.createElementNS(ns, "use");
+  use.setAttribute("href", `${ICON_SPRITE}#${name}`);
+  svg.appendChild(use);
+  return svg;
+}
+
+function iconizeText(node) {
+  const parent = node.parentElement;
+  if (!parent || !ICON_RE.test(node.data) || parent.closest(ICON_SKIP)) return;
+  const frag = document.createDocumentFragment();
+  let rest = node.data;
+  let m;
+  while ((m = rest.match(ICON_RE))) {
+    if (m.index) frag.appendChild(document.createTextNode(rest.slice(0, m.index)));
+    frag.appendChild(iconSvg(ICONS[m[1]]));
+    rest = rest.slice(m.index + m[0].length);
+  }
+  if (rest) frag.appendChild(document.createTextNode(rest));
+  node.replaceWith(frag);
+}
+
+function iconize(root) {
+  if (root.nodeType === 3) { iconizeText(root); return; }
+  if (root.nodeType !== 1 || root.closest(ICON_SKIP)) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const found = [];
+  while (walker.nextNode()) if (ICON_RE.test(walker.currentNode.data)) found.push(walker.currentNode);
+  found.forEach(iconizeText);
+}
+
+// Только после перевода (i18n.js переводит по DOMContentLoaded и следит за изменениями): иначе строка «… меню 👤»
+// разрезалась бы на кусочки раньше, чем переводчик найдёт её в словаре, и осталась бы по-русски. Наблюдатель
+// создаётся позже переводчика — и срабатывает после него на тех же изменениях.
+function startIcons() {
+  iconize(document.body);
+  new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.type === "characterData") iconizeText(r.target);
+      else r.addedNodes.forEach(iconize);
+    }
+  }).observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", startIcons);
+else startIcons();
+
+renderBottomNav();  // после значков: панели нужны iconSvg и ICON_SPRITE

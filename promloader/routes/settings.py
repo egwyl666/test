@@ -179,26 +179,53 @@ async def check_connection():
     return {"ok": True, "message": "Подключение к Prom работает"}
 
 
-# ---------- логотип магазина ----------
+# ---------- оформление: логотипы и цвет ----------
 
 @router.post("/api/settings/logo")
-def upload_logo(file: UploadFile = File(...)):
+def upload_logo(file: UploadFile = File(...), slot: str = "logo"):
+    """slot=logo — малый (шапка, вкладка), slot=big — большой (фон страницы входа)."""
+    if slot not in branding.SLOTS:
+        raise HTTPException(400, "Неизвестный логотип")
     try:
-        return {"version": branding.save_logo(file.file.read(branding.MAX_UPLOAD + 1))}
+        return {"version": branding.save_logo(file.file.read(branding.MAX_UPLOAD + 1), slot), **branding.public()}
     except branding.BrandingError as exc:
         raise HTTPException(400, str(exc)) from None
 
 
 @router.delete("/api/settings/logo")
-def delete_logo():
-    branding.delete_logo()
-    return {"ok": True}
+def delete_logo(slot: str = "logo"):
+    if slot not in branding.SLOTS:
+        raise HTTPException(400, "Неизвестный логотип")
+    branding.delete_logo(slot)
+    return {"ok": True, **branding.public()}
+
+
+@router.post("/api/settings/brand-accent")
+def brand_accent(on: bool = Body(..., embed=True)):
+    """«Цвет программы из логотипа»: включить или вернуть стандартный."""
+    db.set_setting("brand_accent_off", "" if on else "1")
+    return branding.public()
+
+
+@router.get("/api/brand")
+def brand():
+    """Без входа: логотипы и цвет — для страницы входа."""
+    return branding.public()
+
+
+def _logo_response(slot: str):
+    data = branding.logo(slot)
+    if not data:
+        raise HTTPException(404, "Логотип не загружен")
+    return Response(data, media_type=branding.media_type(data), headers={"Cache-Control": "no-cache"})
 
 
 @router.get("/shop-logo.png")
 def shop_logo():
     """Без входа: логотип виден и на странице входа. Адрес с ?v=<версия> — после замены браузер возьмёт новый."""
-    data = branding.logo()
-    if not data:
-        raise HTTPException(404, "Логотип не загружен")
-    return Response(data, media_type="image/png", headers={"Cache-Control": "no-cache"})
+    return _logo_response("logo")
+
+
+@router.get("/shop-logo-big")
+def shop_logo_big():
+    return _logo_response("big")

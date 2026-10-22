@@ -67,7 +67,7 @@ PAGES = {
     "/": "index.html", "/product": "product.html", "/import": "import.html", "/settings": "settings.html",
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
     "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
-    "/categories": "categories.html", "/reports": "reports.html", "/chat": "chat.html",
+    "/categories": "categories.html", "/reports": "reports.html", "/chat": "chat.html", "/today": "today.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -115,6 +115,7 @@ async def lifespan(app: FastAPI):
     for name in ("photo-tunnel", "phone-tunnel"):  # cloudflared, оставшийся от прошлого запуска, держал бы старый адрес
         await asyncio.to_thread(phototunnel.kill_stale, name)
     suppliers.recover()
+    stock.apply_delivered()  # первый запуск 2.29.0: уже выполненные заказы помечаются учтёнными, остаток не трогается
     fixed = sync.repair_false_success()
     if fixed:
         log.warning("Выгрузки, в которых Prom не нашёл товаров, помечены как неудачные: %d", fixed)
@@ -447,7 +448,8 @@ _REFUSED_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 
 # без входа: страницы входа и первого запуска, их запросы, значок и файлы приложения на телефоне
 PUBLIC_PATHS = {"/login", "/setup", "/api/login", "/api/logout", "/api/setup", "/api/password/reset-code",
-                "/api/password/reset", "/favicon.ico", "/manifest.webmanifest", "/sw.js", "/shop-logo.png"}
+                "/api/password/reset", "/favicon.ico", "/manifest.webmanifest", "/sw.js", "/shop-logo.png",
+                "/shop-logo-big", "/api/brand"}
 
 
 def _refused(request: Request, text: str, status: int = 403, **extra):

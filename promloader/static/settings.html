@@ -43,6 +43,7 @@
       <a href="#telegram" data-tab="notify">📨 Уведомления</a>
       <a href="#np" data-tab="np">🚚 Новая Почта</a>
       <a href="#users" data-tab="access">👥 Пользователи и доступ</a>
+      <a href="#look" data-tab="look">🎨 Оформление</a>
       <a href="#updates" data-tab="service">🔧 Обслуживание</a>
     </nav>
     <form id="form" class="panel" data-tab="prom" onsubmit="return false">
@@ -62,17 +63,6 @@
       <p class="small muted" style="margin-top:-6px">Заполняйте, только если программа стоит на сервере с постоянным адресом.
         Для фото с домашнего компьютера — блок «Фото для Prom» ниже.</p>
       <label class="field"><span>Название магазина (для превью)</span><input name="shop_name"></label>
-      <div class="field">
-        <span>Логотип магазина</span>
-        <div class="toolbar" style="margin:4px 0 0">
-          <img id="logo-preview" class="logo-preview hidden" alt="">
-          <span id="logo-none" class="small muted">Не загружен — в шапке «Prom Loader»</span>
-          <button type="button" class="btn small" id="logo-upload">Загрузить…</button>
-          <button type="button" class="btn small danger hidden" id="logo-delete">Убрать</button>
-        </div>
-        <p class="small muted" style="margin:6px 0 0">PNG, JPEG или WebP, лучше на прозрачном фоне. Виден в шапке программы,
-          на странице входа и значком вкладки браузера.</p>
-      </div>
       <div class="toolbar">
         <button class="btn primary" id="save">Сохранить</button>
         <button class="btn" id="check">Проверить подключение</button>
@@ -351,6 +341,46 @@
           <div id="phone-remote-url" class="phone-urls"></div>
         </div>
       </div>
+    </div>
+
+    <div class="panel" id="look" data-tab="look">
+      <h2>🎨 Оформление</h2>
+      <div class="field">
+        <span>Тема — на этом устройстве (у каждого пользователя своя, ещё она есть в меню 👤)</span>
+        <div class="theme-pick look-theme" role="group">
+          <button type="button" data-theme-pick="auto">Как в системе</button>
+          <button type="button" data-theme-pick="light">☀ Светлая</button>
+          <button type="button" data-theme-pick="dark">☾ Тёмная</button>
+        </div>
+      </div>
+      <div class="field look-logo" data-slot="logo">
+        <span>Логотип — в шапке программы и значком вкладки браузера</span>
+        <div class="toolbar" style="margin:4px 0 0">
+          <img class="logo-preview hidden" alt="">
+          <span class="small muted logo-none">Не загружен — в шапке «Prom Loader»</span>
+          <button type="button" class="btn small logo-upload">Загрузить…</button>
+          <button type="button" class="btn small danger hidden logo-delete">Убрать</button>
+        </div>
+        <p class="small muted" style="margin:6px 0 0">PNG, JPEG или WebP, лучше на прозрачном фоне, небольшой и широкий.</p>
+      </div>
+      <div class="field look-logo" data-slot="big">
+        <span>Большой логотип — во весь фон страницы входа</span>
+        <div class="toolbar" style="margin:4px 0 0">
+          <img class="logo-preview big hidden" alt="">
+          <span class="small muted logo-none">Не загружен — на странице входа малый логотип над формой</span>
+          <button type="button" class="btn small logo-upload">Загрузить…</button>
+          <button type="button" class="btn small danger hidden logo-delete">Убрать</button>
+        </div>
+        <p class="small muted" style="margin:6px 0 0">Картинка или фото магазина, лучше горизонтальное (например, 1600×900).</p>
+      </div>
+      <label class="small" style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input type="checkbox" id="density-compact"> Компактный список товаров — больше строк на экране (на этом устройстве)
+      </label>
+      <label class="small" style="display:flex;gap:8px;align-items:center">
+        <input type="checkbox" id="brand-accent-on"> Цвет кнопок и выделения — из логотипа
+        <span class="brand-swatch" id="brand-swatch"></span>
+      </label>
+      <p class="small muted" style="margin:4px 0 0" id="brand-accent-note"></p>
     </div>
 
     <div class="panel" id="updates" data-tab="service">
@@ -1009,39 +1039,66 @@
       supOut("Нажмите «Сохранить»", true);
     });
 
-    // ---------- логотип магазина ----------
-    function fillLogo() {
-      const v = META.shop_logo;
-      $("#logo-preview").classList.toggle("hidden", !v);
-      if (v) $("#logo-preview").src = `/shop-logo.png?v=${encodeURIComponent(v)}`;
-      $("#logo-none").classList.toggle("hidden", !!v);
-      $("#logo-delete").classList.toggle("hidden", !v);
+    // ---------- оформление: тема, логотипы, цвет из логотипа ----------
+    function fillLook() {
+      for (const box of $$(".look-logo")) {
+        const slot = box.dataset.slot;
+        const v = slot === "big" ? META.shop_logo_big : META.shop_logo;
+        const img = box.querySelector(".logo-preview");
+        img.classList.toggle("hidden", !v);
+        if (v) img.src = `${slot === "big" ? "/shop-logo-big" : "/shop-logo.png"}?v=${encodeURIComponent(v)}`;
+        box.querySelector(".logo-none").classList.toggle("hidden", !!v);
+        box.querySelector(".logo-delete").classList.toggle("hidden", !v);
+      }
+      $$("#look [data-theme-pick]").forEach((b) => b.classList.toggle("active", b.dataset.themePick === window.THEME.get()));
+      $("#brand-accent-on").checked = !!META.brand_accent;
+      $("#brand-accent-on").disabled = !META.shop_logo;
+      $("#brand-swatch").style.background = META.brand_accent || "";
+      $("#brand-swatch").classList.toggle("hidden", !META.brand_accent);
+      $("#brand-accent-note").textContent = !META.shop_logo ? I18N.tr("Сначала загрузите логотип.")
+        : META.brand_accent ? "" : I18N.tr("Стандартный фиолетовый (в логотипе нет яркого цвета или цвет выключен).");
     }
-    $("#logo-upload").addEventListener("click", async () => {
-      const [file] = await pickFiles({ accept: "image/png,image/jpeg,image/webp,image/gif", multiple: false });
-      if (!file) return;
-      busy($("#logo-upload"), async () => {
-        try {
-          const body = new FormData();
-          body.append("file", file);
-          META.shop_logo = (await api("/api/settings/logo", { method: "POST", body })).version;
-          fillLogo();
-          renderBrand();
-          toast("Логотип сохранён", "ok");
-        } catch (err) { toast(err.message, "error"); }
-      });
+    function applyBrand(r) {
+      Object.assign(META, { shop_logo: r.logo, shop_logo_big: r.big, brand_accent: r.accent });
+      fillLook();
+      renderBrand();
+    }
+    $("#look").addEventListener("click", async (e) => {
+      const theme = e.target.closest("[data-theme-pick]");
+      if (theme) { window.THEME.set(theme.dataset.themePick); fillLook(); return; }
+      const box = e.target.closest(".look-logo");
+      if (!box) return;
+      const slot = box.dataset.slot;
+      const up = e.target.closest(".logo-upload");
+      const del = e.target.closest(".logo-delete");
+      if (up) {
+        const [file] = await pickFiles({ accept: "image/png,image/jpeg,image/webp,image/gif", multiple: false });
+        if (!file) return;
+        busy(up, async () => {
+          try {
+            const body = new FormData();
+            body.append("file", file);
+            applyBrand(await api(`/api/settings/logo?slot=${slot}`, { method: "POST", body }));
+            toast("Логотип сохранён", "ok");
+          } catch (err) { toast(err.message, "error"); }
+        });
+      } else if (del) {
+        busy(del, async () => {
+          try {
+            applyBrand(await api(`/api/settings/logo?slot=${slot}`, { method: "DELETE" }));
+            toast("Логотип убран", "ok");
+          } catch (err) { toast(err.message, "error"); }
+        });
+      }
     });
-    $("#logo-delete").addEventListener("click", () => busy($("#logo-delete"), async () => {
-      try {
-        await api("/api/settings/logo", { method: "DELETE" });
-        META.shop_logo = "";
-        fillLogo();
-        renderBrand();
-        toast("Логотип убран", "ok");
-      } catch (err) { toast(err.message, "error"); }
-    }));
+    $("#density-compact").checked = window.THEME.getDensity() === "compact";
+    $("#density-compact").addEventListener("change", (e) => window.THEME.density(e.target.checked ? "compact" : ""));
+    $("#brand-accent-on").addEventListener("change", async (e) => {
+      try { applyBrand(await api("/api/settings/brand-accent", { method: "POST", json: { on: e.target.checked } })); }
+      catch (err) { toast(err.message, "error"); }
+    });
 
-    loadMeta().then(fillLogo).catch(() => {});
+    loadMeta().then(fillLook).catch(() => {});
     loadSchedules().catch((err) => toast(`Расписание не загрузилось: ${err.message}`, "error"));
 
     // ---------- синхронизация с кабинетом Prom ----------

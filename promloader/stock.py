@@ -4,16 +4,22 @@
 умолчанию 3). Видно плашкой над списком товаров (фильтр low_stock); раз в день в Telegram — о товарах, которые
 стали такими с прошлого раза (low_notified_at: повторно — только после пополнения).
 
+Выполненный заказ уменьшает остаток (apply_delivered): у товаров с известным количеством — на проданные штуки
+(до нуля → «нет в наличии»), один раз на заказ (orders.stock_applied_at), и изменение сразу уходит на Prom. Это
+не ручная правка: 🔒 не ставится, следующий прайс поставщика пришлёт его остаток как обычно. Заказы, выполненные
+до появления этой функции или загруженные при первом подключении магазина, остаток не трогают ('legacy').
+
 «Заказ поставщику»: продажи товаров поставщика за N дней (без отменённых заказов) → сколько заказать, чтобы
 хватило на M дней с учётом остатка: ceil(продано / N × M − остаток). Остаток неизвестен — считаем его нулём и
 так и пишем. Excel — с артикулом поставщика (как в его прайсе), чтобы файл можно было сразу отправить ему."""
 
 import io
+import json
 import math
 from collections import Counter
 from datetime import date, datetime, timedelta
 
-from . import db
+from . import changes, db
 
 THRESHOLD_DEFAULT = 3
 DAYS_DEFAULT = 30
@@ -84,6 +90,56 @@ def maybe_notify(now: datetime | None = None) -> int:
         notify.send("low_stock", notify_text(fresh[:NOTIFY_LIST], len(fresh) - NOTIFY_LIST if len(fresh) > NOTIFY_LIST else 0),
                     background=False)
     return len(fresh)
+
+
+# ---------- выполненный заказ уменьшает остаток ----------
+
+def mark_legacy() -> int:
+    """Уже выполненные заказы (до 2.29.0 или при первой загрузке магазина) — без списания остатка."""
+    with db.tx() as c:
+        n = c.execute("UPDATE orders SET stock_applied_at = 'legacy' WHERE status = 'delivered' AND stock_applied_at = ''"
+                      ).rowcount
+        db.set_setting("stock_applied_since", db.now())
+    return n
+
+
+def apply_delivered() -> dict:
+    """Списать остаток по выполненным заказам, по которым ещё не списывали. → {orders, products, queued}."""
+    from . import products, reports, sync
+    if not db.get_setting("stock_applied_since"):
+        mark_legacy()  # первый запуск новой версии: старые выполненные заказы уже учтены в остатках
+        return {"orders": 0, "products": 0, "queued": 0}
+    rows = db.query("SELECT id, data FROM orders WHERE status = 'delivered' AND stock_applied_at = '' ORDER BY id")
+    if not rows:
+        return {"orders": 0, "products": 0, "queued": 0}
+    batch = [{"id": r["id"], "items": reports.order_items(json.loads(r["data"] or "{}"))} for r in rows]
+    reports._link_products(batch)
+    changed: set[int] = set()
+    for o in batch:
+        with db.tx() as c:
+            # «занять» заказ в той же транзакции: два одновременных опроса не спишут его дважды
+            if not c.execute("UPDATE orders SET stock_applied_at = ? WHERE id = ? AND stock_applied_at = ''",
+                             (db.now(), o["id"])).rowcount:
+                continue
+            with changes.source(f"Заказ №{o['id']} выполнен"):
+                for i in o["items"]:
+                    p = i.get("product")
+                    if not p:
+                        continue
+                    row = c.execute("SELECT quantity, presence, status FROM products WHERE id = ?", (p["id"],)).fetchone()
+                    if row is None or row["quantity"] is None or row["status"] == "deleting":
+                        continue  # остаток не ведётся (неизвестен) — уменьшать нечего
+                    left = max(0, row["quantity"] - i["qty"])
+                    left = int(left) if float(left).is_integer() else left
+                    fields = {"quantity": left}
+                    if left == 0 and row["presence"] == "available":
+                        fields["presence"] = "not_available"
+                    products._touch(c, p["id"], fields, row["status"])
+                    changed.add(p["id"])
+    ready = {r["id"] for r in db.query("SELECT id FROM products WHERE status = 'ready' AND synced_at IS NOT NULL")}
+    to_send = sorted(changed & ready)
+    queued = sync.enqueue(to_send)["accepted"] if to_send else 0  # на Prom — сразу, иначе там остаток старый
+    return {"orders": len(batch), "products": len(changed), "queued": queued}
 
 
 # ---------- заказ поставщику ----------
