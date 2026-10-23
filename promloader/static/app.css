@@ -1060,7 +1060,8 @@ body.login-hero .login-logo { background: rgba(255, 255, 255, .92); border-radiu
   .bottom-nav .active { color: var(--accent); font-weight: 600; }
   .bottom-nav svg.i { width: 22px; height: 22px; }
   .bottom-nav .bn-icon { position: relative; line-height: 0; }
-  .bottom-nav .nav-badge { position: absolute; top: -6px; right: -12px; }
+  /* line-height: у .bn-icon он 0 (ровно по значку) — без своего число сжималось в красную черту */
+  .bottom-nav .nav-badge { position: absolute; top: -6px; right: -12px; line-height: 1.4; }
   body.has-bottom-nav .help-fab { bottom: calc(74px + env(safe-area-inset-bottom)); }
   body.has-bottom-nav #toasts { bottom: calc(76px + env(safe-area-inset-bottom)); left: 12px; right: 12px; }
   /* товары на телефоне — карточкой: крупное фото, название, цена справа */

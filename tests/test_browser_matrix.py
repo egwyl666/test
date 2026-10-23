@@ -170,3 +170,19 @@ def test_view_only_role_sees_locked_order_and_chat_actions(shop):
         page.wait_for_selector("#t-result:not(:empty)")
         assert refused == []
         browser.close()
+
+
+def test_phone_bottom_nav_badge_is_readable(shop):
+    """Число непрочитанных у «Чат» в нижней панели — целиком, а не красная черта (2.29.3: line-height 0 у значка)."""
+    url, _ = shop
+    with playwright.sync_playwright() as p:
+        browser = _browser(p)
+        ctx = browser.new_context(**PHONE)
+        _login(ctx, url, "admin")
+        page = ctx.new_page()
+        page.goto(url + "/today")
+        badge = page.locator(".bottom-nav .nav-badge").first
+        badge.wait_for()
+        box = badge.bounding_box()
+        assert box["height"] >= 14 and badge.inner_text().strip() == "1"
+        browser.close()
