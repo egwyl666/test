@@ -1038,6 +1038,7 @@ function renderAiWindow() {
       </div>
     </section>` : `<p class="small muted">Выберите сервис — ключ для него уже есть.</p>`}
     <section><h3>Расходы</h3>${renderAiSpend()}</section>
+    ${st.enabled ? `<section><h3>Массовый ИИ</h3>${parallelSwitch(st)}</section>` : ""}
     <section><h3>Лимиты</h3>${renderAiLimits()}</section>
     <section><h3>Последние запросы</h3>${renderAiRecent()}</section>
     <p class="small muted">Цены моделей — по прайсам Anthropic и Google на ${esc(formatDay(st.prices_checked))}; в гривнах —
@@ -1121,11 +1122,49 @@ function renderAiSpend() {
     ${free ? `<p class="small muted">Ключ Gemini отмечен как бесплатный — запросы к Gemini считаются по 0.</p>` : ""}${byModel}`;
 }
 
+// ---------- «Один поток / Много потоков» массового ИИ (2.30.0) ----------
+// Один и тот же переключатель — в окне «✨ ИИ», в окне массового ИИ и в «Настройках»: ползунок едет к выбранному
+// режиму, все переключатели на странице меняются вместе. st — /api/ai/status (или {parallel, streams, key_count}).
+function parallelSwitch(st) {
+  const on = !!st.parallel;
+  return `<div class="threads-box">
+    <button type="button" class="threads-switch${on ? " on" : ""}" role="switch" aria-checked="${on}" data-parallel-switch data-perm="ai"
+      title="Сколько запросов массового ИИ идёт одновременно">
+      <span class="threads-knob" aria-hidden="true"></span>
+      <span class="threads-opt opt-one">${esc(I18N.tr("Один поток"))}</span><span class="threads-opt opt-many">${esc(I18N.tr("Много потоков"))}</span>
+    </button>
+    <div class="small muted threads-note">${esc(parallelNote(st))}</div></div>`;
+}
+
+function parallelNote(st) {
+  const keys = st.key_count || 0;
+  if (!st.parallel) return I18N.tr("Запросы идут по одному — бережно к лимиту ключа.");
+  if (keys > 1) return I18N.tr(`Одновременно запросов: ${st.streams} — по потоку на ключ (ключей: ${keys}), у каждого ключа свой лимит, вместе быстрее.`);
+  return I18N.tr(`Одновременно запросов: ${st.streams} на одном ключе — быстрее, пока ИИ отвечает медленнее лимита. Добавьте запасные ключи в «Настройках» — потоков станет больше.`);
+}
+
+document.addEventListener("click", async (e) => {
+  const sw = e.target.closest("[data-parallel-switch]");
+  if (!sw || sw.disabled) return;
+  const multi = sw.getAttribute("aria-checked") !== "true";
+  $$("[data-parallel-switch]").forEach((x) => { x.classList.toggle("on", multi); x.setAttribute("aria-checked", String(multi)); });
+  try {
+    const st = await api("/api/ai/parallel", { method: "POST", json: { multi } });
+    $$(".threads-note").forEach((n) => { n.textContent = parallelNote(st); });
+    if (typeof aiWin !== "undefined" && aiWin.status) aiWin.status = st;
+    document.dispatchEvent(new CustomEvent("pl-parallel", { detail: st }));
+  } catch (err) {
+    $$("[data-parallel-switch]").forEach((x) => { x.classList.toggle("on", !multi); x.setAttribute("aria-checked", String(!multi)); });
+    toast(err.message, "error");
+  }
+});
+
 function renderAiLimits() {
   const st = aiWin.status;
   const lim = st.limits || {};
   const pace = `<div class="small muted">Массовый ИИ отправляет не больше <b>${st.pace_per_minute}</b> запросов в минуту
-    — так он не упирается в лимит (меняется в <a href="/settings#ai">Настройках</a>).</div>`;
+    с каждого ключа — так он не упирается в лимит (меняется в <a href="/settings#ai">Настройках</a>).
+    ${st.key_count > 1 ? `Ключей: <b>${st.key_count}</b> — упрётся один в лимит, программа сама перейдёт на следующий.` : ""}</div>`;
   const today = st.summary.today.requests;
   if (!st.enabled) return `<p class="small muted">Появятся, когда выберете сервис.</p>`;
   if (st.provider === "claude") {

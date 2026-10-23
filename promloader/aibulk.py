@@ -1,6 +1,9 @@
 """Массовый ИИ: очередь заданий по многим товарам с учётом лимитов бесплатного тарифа.
 
 - товары обрабатываются в фоне — по одному или пачкой в одном запросе (ai.BATCH: ключевые слова, названия, переводы), темп — не больше RATE запросов в минуту (настраивается);
+- «Один поток / Много потоков» (ai_parallel): в многопоточном режиме запросов в работе сразу несколько — по потоку на
+  ключ ИИ (не меньше 2, не больше MAX_STREAMS); темп RATE — у каждого ключа свой, поэтому ключи складывают лимиты.
+  Каждый поток «захватывает» свои товары (_claimed), и один товар не уходит в ИИ дважды;
 - при превышении лимита у провайдера (429) — пауза на минуту и повтор того же товара;
 - старые значения полей сохраняются: все изменения задания можно откатить одной кнопкой;
 - «только где пусто»: перевод/ключевые слова не трогают товары, где это уже заполнено.
@@ -8,6 +11,7 @@
 
 import json
 import logging
+import threading
 import time
 
 from . import ai, aicategory, aiprice, db, products
@@ -29,8 +33,38 @@ RATE_LIMIT_PAUSE = 60
 MAX_ATTEMPTS = 3
 
 
+MAX_STREAMS = 6
+
+
 class BulkError(ValueError):
     pass
+
+
+def parallel() -> bool:
+    return db.get_setting("ai_parallel") == "multi"
+
+
+def set_parallel(multi: bool) -> None:
+    db.set_setting("ai_parallel", "multi" if multi else "")
+
+
+def streams() -> int:
+    """Сколько запросов массового ИИ в работе одновременно: один или по потоку на ключ (2…MAX_STREAMS)."""
+    if not parallel():
+        return 1
+    return max(2, min(MAX_STREAMS, len(ai.settings()["keys"])))
+
+
+def speed_per_minute() -> int:
+    """Сколько запросов в минуту массовый ИИ делает всего: темп ключа × ключей в работе (в многопоточном режиме)."""
+    keys = len(ai.settings()["keys"]) or 1
+    return rate_per_minute() * (min(streams(), keys) if parallel() else 1)
+
+
+# товары, которые сейчас в работе у какого-то потока: их не берёт другой поток (в памяти — после перезапуска
+# программы захватов нет, и недоделанные товары просто снова «в очереди»)
+_claimed: set[int] = set()
+_claim_lock = threading.Lock()
 
 
 def rate_per_minute() -> int:
@@ -103,7 +137,7 @@ def estimate(count: int, action: str, limit: int | None = None) -> dict:
     requests = -(-count // size)  # пачками: запросов в size раз меньше, чем товаров
     # замеренная цена — уже за запрос-пачку; типичная — за один товар (пачка дешевле: инструкция одна на всех)
     total = (per * requests if measured and size > 1 else per * count) if per is not None else None
-    minutes = round(requests / max(1, rate_per_minute()))
+    minutes = round(requests / max(1, speed_per_minute()))
     return {"count": count, "requests": requests, "batch": size, "model": model, "per_request_usd": per, "per_request_uah": aiprice.to_uah(per),
             "total_usd": total, "total_uah": aiprice.to_uah(total), "measured": measured,
             "free": s["provider"] == "gemini" and aiprice.free_tier(), "minutes": minutes}
@@ -167,9 +201,10 @@ def _unpromote(job_id: int) -> int:
 
 def _next_item():
     return db.query_one(
-        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote, j.user FROM ai_items i
+        f"""SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote, j.user FROM ai_items i
            JOIN ai_jobs j ON j.id = i.job_id
-           WHERE j.status = 'running' AND i.status = 'pending' ORDER BY j.id, i.id LIMIT 1""")
+           WHERE j.status = 'running' AND i.status = 'pending' AND i.id NOT {db.IN_LIST}
+           ORDER BY j.id, i.id LIMIT 1""", (db.as_list(_claimed),))
 
 
 SINGLE = "single"  # пачка не разобралась (ответ оборвался) — эти товары дальше идут по одному
@@ -180,10 +215,11 @@ def _next_items(limit: int) -> list:
     if first is None or limit <= 1 or first["message"] == SINGLE:
         return [first] if first else []
     return db.query(
-        """SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote, j.user FROM ai_items i
+        f"""SELECT i.*, j.action, j.instruction, j.only_empty, j.auto_promote, j.user FROM ai_items i
            JOIN ai_jobs j ON j.id = i.job_id
-           WHERE i.job_id = ? AND i.status = 'pending' AND i.message != ? ORDER BY i.id LIMIT ?""",
-        (first["job_id"], SINGLE, limit))
+           WHERE i.job_id = ? AND i.status = 'pending' AND i.message != ? AND i.id NOT {db.IN_LIST}
+           ORDER BY i.id LIMIT ?""",
+        (first["job_id"], SINGLE, db.as_list(_claimed), limit))
 
 
 NOTIFY_MIN_ITEMS = 10  # о маленьких заданиях не уведомляем: их результат и так видно сразу
@@ -207,6 +243,8 @@ def _notify_job(job_id: int, stopped: str = "") -> None:
 
 
 def _finish_jobs() -> None:
+    if _claimed:
+        return  # последний товар задания ещё в работе у другого потока
     with db.tx() as c:
         finished = [r["id"] for r in c.execute(
             """SELECT id FROM ai_jobs WHERE status = 'running' AND NOT EXISTS
@@ -287,17 +325,39 @@ def _apply(item, p: dict, changes: dict) -> None:
     _mark(item["id"], "done", message, old=old, new=changes)
 
 
-def process_one(runner=None) -> str:
+def _claim(runner) -> list:
+    """Взять следующие товары в работу этим потоком (под замком: два потока не получат один товар)."""
+    with _claim_lock:
+        first = _next_item()
+        if first is None:
+            return []
+        items = _next_items(ai.batch_size(first["action"]) if runner is None else 1)
+        _claimed.update(item["id"] for item in items)
+        return items
+
+
+def process_one(runner=None, slot: int = 0) -> str:
     """Обработать следующий товар — или пачку товаров одним запросом (ключевые слова, названия, переводы: так
     бесплатного лимита хватает в разы на большее число товаров). runner — свой вызов ИИ для одного товара (тесты).
+    slot — номер потока: с какого ключа ИИ он начинает. Можно звать из нескольких потоков сразу.
     Возвращает 'idle' | 'done' | 'skipped' | 'error' | 'rate_limited'."""
-    global last_limit
-    first = _next_item()
-    if first is None:
-        _finish_jobs()
+    items = _claim(runner)
+    if not items:
+        if not _claimed:
+            _finish_jobs()
         return "idle"
-    size = ai.batch_size(first["action"]) if runner is None else 1
-    batch = [(item, p) for item in _next_items(size) if (p := _prepare(item)) is not None]
+    try:
+        with ai.prefer_key(slot):
+            return _process(items, runner)
+    finally:
+        with _claim_lock:
+            _claimed.difference_update(item["id"] for item in items)
+
+
+def _process(items: list, runner) -> str:
+    global last_limit
+    first = items[0]
+    batch = [(item, p) for item in items if (p := _prepare(item)) is not None]
     if not batch:
         return "skipped"
     try:
@@ -399,3 +459,13 @@ class Pacer:
 
     def mark(self) -> None:
         self.last = time.monotonic()
+
+
+class Pacers:
+    """Темп на каждый ключ: потоки одного ключа делят его темп, потоки разных ключей друг друга не ждут."""
+
+    def __init__(self):
+        self.by_key: dict[int, Pacer] = {}
+
+    def for_slot(self, slot: int) -> Pacer:
+        return self.by_key.setdefault(slot % max(1, len(ai.settings()["keys"])), Pacer())

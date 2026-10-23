@@ -1089,3 +1089,30 @@ body.login-hero .login-logo { background: rgba(255, 255, 255, .92); border-radiu
 /* отказ «Нет доступа» (страница без прав): в стиле программы и с выходом на главную */
 main.refused { max-width: 520px; margin: 48px auto; padding: 0 16px; }
 main.refused .toolbar { flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+/* «Один поток / Много потоков» массового ИИ (2.30.0): ползунок цвета акцента едет к выбранному режиму;
+   в многопоточном по нему бежит блик — «работают несколько сразу» */
+.threads-box { display: grid; gap: 6px; justify-items: start; }
+.threads-switch { position: relative; display: inline-grid; grid-template-columns: 1fr 1fr; padding: 4px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--chip-bg); cursor: pointer; font: inherit; isolation: isolate;
+  min-width: 270px; max-width: 100%; }
+.threads-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.threads-opt { position: relative; z-index: 1; padding: 7px 14px; font-size: 13px; font-weight: 600; color: var(--muted);
+  text-align: center; white-space: nowrap; transition: color .25s; }
+.threads-switch:not(.on) .opt-one, .threads-switch.on .opt-many { color: var(--on-accent); }
+.threads-knob { position: absolute; z-index: 0; top: 4px; bottom: 4px; left: 4px; width: calc(50% - 4px); border-radius: 999px;
+  background: var(--accent); box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 35%, transparent);
+  transition: transform .4s cubic-bezier(.34, 1.56, .64, 1); }
+.threads-switch.on .threads-knob { transform: translateX(100%);
+  background: linear-gradient(110deg, var(--accent) 35%, color-mix(in srgb, var(--accent) 70%, #fff) 50%, var(--accent) 65%);
+  background-size: 250% 100%; animation: threads-flow 2.4s linear infinite; }
+@keyframes threads-flow { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@media (prefers-reduced-motion: reduce) { .threads-knob { transition: none; } .threads-switch.on .threads-knob { animation: none; } }
+@media (pointer: coarse) { .threads-opt { padding: 10px 14px; } }
+.threads-note { max-width: 520px; }
+/* ключи ИИ: основной и запасные */
+.ai-keys { display: grid; gap: 6px; margin: 4px 0 10px; }
+.ai-key-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel-2); }
+.ai-key-row code { font-size: 13px; }
+.ai-key-row .spacer { flex: 1; }

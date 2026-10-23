@@ -1,5 +1,6 @@
 """Настройки: переменные окружения имеют приоритет над значениями, сохранёнными через веб-интерфейс."""
 
+import json
 import logging
 import os
 import re
@@ -82,7 +83,9 @@ def known_secrets() -> list[str]:
     values = [os.environ.get(ENV[k], "") for k in SECRET_SETTINGS if k in ENV] + [os.environ.get("APP_PASSWORD", "")]
     try:
         marks = ",".join("?" * len(SECRET_SETTINGS))
-        values += [r["value"] for r in db.query(f"SELECT value FROM settings WHERE key IN ({marks})", SECRET_SETTINGS)]
+        for r in db.query(f"SELECT key, value FROM settings WHERE key IN ({marks})", SECRET_SETTINGS):
+            # запасные ключи ИИ хранятся списком (JSON) — вырезать нужно каждый ключ, а не строку списка
+            values += (json.loads(r["value"] or "[]") if r["key"].endswith("_keys_extra") else [r["value"]])
         values.append((db.data_dir() / "service-token").read_text().strip())
     except Exception:  # база ещё не открыта, файла нет — вырезаем то, что известно
         pass

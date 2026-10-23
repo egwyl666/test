@@ -3,7 +3,7 @@
 
 from fastapi import APIRouter, Body
 
-from .. import aibulk
+from .. import ai, aibulk
 from .products import _selected
 
 router = APIRouter()
@@ -11,7 +11,8 @@ router = APIRouter()
 
 @router.get("/api/ai/bulk")
 def ai_bulk_jobs():
-    return {"items": aibulk.list_jobs(), "rate": aibulk.rate_per_minute()}
+    return {"items": aibulk.list_jobs(), "rate": aibulk.speed_per_minute(), "parallel": aibulk.parallel(),
+            "streams": aibulk.streams(), "key_count": len(ai.settings()["keys"])}
 
 
 @router.post("/api/ai/bulk")

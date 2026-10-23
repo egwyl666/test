@@ -186,3 +186,34 @@ def test_phone_bottom_nav_badge_is_readable(shop):
         box = badge.bounding_box()
         assert box["height"] >= 14 and badge.inner_text().strip() == "1"
         browser.close()
+
+
+def test_threads_switch_slides_and_is_saved(shop):
+    """«Один поток / Много потоков»: ползунок переезжает, режим сохраняется, все переключатели на странице — вместе."""
+    url, _ = shop
+    db.set_setting("ai_provider", "gemini")
+    db.set_setting("gemini_key", "AIzaSyTESTTESTTESTTESTTESTTESTTESTTEST1")
+    with playwright.sync_playwright() as p:
+        browser = _browser(p)
+        ctx = browser.new_context(**DESKTOP)
+        _login(ctx, url, "admin")
+        page = ctx.new_page()
+        page.goto(url + "/settings#ai")
+        sw = page.locator("#settings-threads [data-parallel-switch]")
+        sw.wait_for()
+        assert sw.get_attribute("aria-checked") == "false"
+        x0 = page.evaluate("document.querySelector('#settings-threads .threads-knob').getBoundingClientRect().x")
+        sw.click()
+        page.wait_for_selector("#settings-threads .threads-note:has-text('Одновременно запросов: 2')")
+        page.wait_for_timeout(500)  # ползунок доехал
+        x1 = page.evaluate("document.querySelector('#settings-threads .threads-knob').getBoundingClientRect().x")
+        assert x1 > x0 + 50 and sw.get_attribute("aria-checked") == "true"
+        assert db.get_setting("ai_parallel") == "multi"
+        page.reload()
+        page.wait_for_selector("#settings-threads [data-parallel-switch][aria-checked='true']")
+        # запасной ключ из «Настроек» — и в списке, и потоков стало по ключу
+        page.fill(".ai-keys-block[data-provider='gemini'] .ai-key-new", "AIzaSyTESTTESTTESTTESTTESTTESTTESTTEST2")
+        page.click(".ai-keys-block[data-provider='gemini'] [data-key-add]")
+        page.wait_for_selector(".ai-keys-block[data-provider='gemini'] .ai-key-row >> nth=1")
+        assert "запасной 1" in page.inner_text(".ai-keys-block[data-provider='gemini']")
+        browser.close()

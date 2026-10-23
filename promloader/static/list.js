@@ -623,6 +623,7 @@ function summarizeResult(r) {
 const AI_BULK = ["prepare_prom", "from_photo", "match_category", "translate_ua", "translate_ru", "improve", "keywords", "name", "shorten", "custom"];
 let aiSel = { ids: [] };
 let aiRate = 8;
+let aiBulkInfo = { parallel: false, streams: 1, key_count: 1 };  // режим потоков — для переключателя в окне
 
 let aiCount = 0;
 const aiLimit = () => Number($("#ai-limit").value) || null;
@@ -642,6 +643,7 @@ function openAiModal(sel, opts = {}) {
   $("#ai-limit").value = "";
   $("#ai-limit-wrap").classList.toggle("hidden", aiCount <= 20);
   $("#ai-auto-promote").checked = ["prepare_prom", "from_photo"].includes($("#ai-action").value);
+  $("#ai-threads").innerHTML = parallelSwitch(aiBulkInfo);
   updateAiModal();
   $("#ai-modal").classList.remove("hidden");
 }
@@ -690,6 +692,11 @@ async function updateAiModal() {
 }
 
 $("#ai-limit").addEventListener("change", updateAiModal);
+// переключили потоки — темп другой: пересчитать, сколько займёт задание
+document.addEventListener("pl-parallel", async () => {
+  await loadAiJobs();
+  if (!$("#ai-modal").classList.contains("hidden")) updateAiModal();
+});
 $("#ai-action").addEventListener("change", () => {
   // «сразу в «Готов к отправке»» по умолчанию включено для «Подготовить для Prom»
   $("#ai-auto-promote").checked = ["prepare_prom", "from_photo"].includes($("#ai-action").value);
@@ -722,6 +729,7 @@ async function loadAiJobs() {
   let data;
   try { data = await api("/api/ai/bulk"); } catch { return; }
   aiRate = data.rate;
+  aiBulkInfo = data;
   $("#ai-jobs-panel").classList.toggle("hidden", !data.items.length);
   patchChildren($("#ai-jobs"), data.items, (j) => j.id, (j) => {
     const [cls, label] = AI_JOB_STATUS[j.status] || ["draft", j.status];

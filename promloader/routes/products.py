@@ -209,7 +209,7 @@ def ai_edit(product_id: int, action: str = Body(...), instruction: str = Body(""
 def ai_status():
     """Для окна «ИИ» на любой странице: что выбрано, сколько потрачено, лимиты."""
     s = ai.settings()
-    keys = {"gemini": bool(config.get("gemini_key")), "claude": bool(config.get("anthropic_key"))}
+    keys = {"gemini": bool(ai.keys("gemini")), "claude": bool(ai.keys("claude"))}
     summary = aiprice.summary()
     for period in ("today", "month"):
         summary[period]["cost_uah"] = aiprice.to_uah(summary[period]["cost_usd"])
@@ -220,6 +220,7 @@ def ai_status():
         "summary": summary, "limits": aiprice.limits().get(s["provider"], {}),
         "key_error": aiprice.key_errors().get(s["provider"]),
         "pace_per_minute": aibulk.rate_per_minute(), "prices_checked": aiprice.PRICES_CHECKED,
+        "key_count": len(s["keys"]), "parallel": aibulk.parallel(), "streams": aibulk.streams(),
         "usd_rate": aiprice.usd_rate(), "actions": {k: v[0] for k, v in ai.ACTIONS.items()},
     }
 
@@ -247,8 +248,7 @@ def ai_choose(provider: str | None = Body(None), model: str | None = Body(None),
         if provider is not None:
             if provider not in ai.PROVIDERS:
                 raise HTTPException(400, "Неизвестный провайдер ИИ")
-            key = config.get("gemini_key" if provider == "gemini" else "anthropic_key")
-            if not key:
+            if not ai.keys(provider):
                 raise HTTPException(400, f"Для {ai.PROVIDERS[provider]} не введён ключ — вставьте его в «Настройках»")
             db.set_setting("ai_provider", provider)
         if model is not None:
@@ -258,6 +258,13 @@ def ai_choose(provider: str | None = Body(None), model: str | None = Body(None),
             db.set_setting(f"{current}_model", str(model).strip().removeprefix("models/"))
         if free_tier is not None:
             db.set_setting("gemini_free_tier", "1" if free_tier else "0")
+    return ai_status()
+
+
+@router.post("/api/ai/parallel")
+def ai_parallel(multi: bool = Body(..., embed=True)):
+    """Переключатель «Один поток / Много потоков» массового ИИ (окно «✨ ИИ», окно массового ИИ, «Настройки»)."""
+    aibulk.set_parallel(multi)
     return ai_status()
 
 

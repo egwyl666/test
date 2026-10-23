@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from contextlib import contextmanager
 
@@ -89,9 +90,10 @@ SCHEMA_PROPS = {f: "string" for f in FIELDS}
 
 class AIError(Exception):
     def __init__(self, message: str, temporary: bool = False, retry_after: float | None = None,
-                 quota: dict | None = None, key_error: bool = False):
+                 quota: dict | None = None, key_error: bool = False, limit: bool = False):
         super().__init__(message)
         self.temporary = temporary  # лимит или перегрузка: стоит подождать и повторить
+        self.limit = limit or bool(quota)  # исчерпан лимит (429) — у другого ключа он свой
         self.retry_after = retry_after  # через сколько секунд снова можно (если сервис сказал)
         self.quota = quota  # какой лимит Gemini сработал (_gemini_quota)
         self.key_error = key_error  # сервис не принял сам ключ
@@ -184,12 +186,117 @@ def _record(provider: str, model: str, action: str, tokens_in=0, tokens_out=0, o
                           key_error=bool(exc and exc.key_error), retry_after=exc.retry_after if exc else None)
 
 
+# ---------- несколько ключей ----------
+# Основной ключ — в поле «API-ключ» (как раньше), запасные — списком. Упёрся ключ в лимит (429) или сервис его не
+# принял — запрос сразу повторяется со следующим ключом, а этот отдыхает до сброса лимита. В многопоточном массовом
+# ИИ каждый поток начинает со «своего» ключа, поэтому лимиты ключей складываются.
+
+KEY_SETTINGS = {"gemini": ("gemini_key", "gemini_keys_extra"), "claude": ("anthropic_key", "anthropic_keys_extra")}
+MAX_KEYS = 10
+LIMIT_HOLD = 60          # лимит без «через сколько можно» — ключ отдыхает минуту
+KEY_ERROR_HOLD = 3600    # ключ не принят — не пробуем его час (или пока его не заменят в «Настройках»)
+_key_hold: dict[str, dict] = {}       # отпечаток ключа → {until, why, message}
+_model_hold: dict[tuple, float] = {}  # (отпечаток ключа, модель Gemini) → до какого времени у неё лимит
+_hold_lock = threading.Lock()
+_prefer_key = contextvars.ContextVar("ai_prefer_key", default=0)  # с какого ключа начинать (номер потока)
+
+
+def key_fp(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
+
+
+def extra_keys(provider: str) -> list[str]:
+    name = KEY_SETTINGS.get(provider, ("", ""))[1]
+    try:
+        value = json.loads(db.get_setting(name) or "[]") if name else []
+    except ValueError:
+        return []
+    return [k for k in value if isinstance(k, str) and k]
+
+
+def keys(provider: str) -> list[str]:
+    """Все ключи провайдера: основной первым, без повторов."""
+    if provider not in KEY_SETTINGS:
+        return []
+    return list(dict.fromkeys(k for k in [config.get(KEY_SETTINGS[provider][0]), *extra_keys(provider)] if k))
+
+
+def _hold(key: str, seconds: float, why: str, message: str) -> None:
+    with _hold_lock:
+        _key_hold[key_fp(key)] = {"until": time.time() + seconds, "why": why, "message": message[:300]}
+
+
+def key_ready(key: str) -> bool:
+    info = _key_hold.get(key_fp(key))
+    return not info or info["until"] <= time.time()
+
+
+def key_states(provider: str) -> list[dict]:
+    """Для «Настроек»: каждый ключ — маска, работает ли сейчас и почему нет."""
+    out = []
+    for n, key in enumerate(keys(provider)):
+        info = _key_hold.get(key_fp(key)) or {}
+        resting = bool(info) and info["until"] > time.time()
+        out.append({"n": n, "mask": config.mask(key), "primary": n == 0 and bool(config.get(KEY_SETTINGS[provider][0])),
+                    "state": info.get("why", "") if resting else "ok", "message": info.get("message", "") if resting else "",
+                    "wait": human_wait(info["until"] - time.time()) if resting else ""})
+    return out
+
+
+@contextmanager
+def prefer_key(index: int):
+    """Поток массового ИИ номер index начинает со своего ключа."""
+    token = _prefer_key.set(index)
+    try:
+        yield
+    finally:
+        _prefer_key.reset(token)
+
+
+def _ordered_keys(s: dict) -> list[str]:
+    all_keys = s.get("keys") or ([s["key"]] if s.get("key") else [])
+    if len(all_keys) <= 1:
+        return all_keys
+    start = _prefer_key.get() % len(all_keys)
+    turn = all_keys[start:] + all_keys[:start]
+    return sorted(turn, key=lambda k: not key_ready(k))  # отдыхающие — в конец (стабильная сортировка)
+
+
+def _with_keys(call_one, s: dict, *args, **kwargs):
+    """Запрос с перебором ключей: лимит (429) или «ключ не принят» — сразу следующий ключ."""
+    order = _ordered_keys(s)
+    if not order:
+        return call_one(s, *args, **kwargs)
+    limits, last = [], None
+    for key in order:
+        try:
+            return call_one({**s, "key": key}, *args, **kwargs)
+        except AIError as exc:
+            last = exc
+            if exc.key_error:
+                _hold(key, KEY_ERROR_HOLD, "key", str(exc))
+            elif exc.limit:
+                _hold(key, exc.retry_after or LIMIT_HOLD, "limit", str(exc))
+                limits.append(exc)
+            else:
+                raise  # ошибка запроса или товара — другой ключ её не исправит
+    if limits:  # все ключи в лимите — ждать до ближайшего сброса
+        waits = [e.retry_after for e in limits if e.retry_after]
+        if len(order) == 1:
+            raise limits[0]
+        raise AIError(f"Все ключи ({len(order)}) упёрлись в лимит. {limits[-1]}", temporary=True, limit=True,
+                      retry_after=min(waits) if waits else None, quota=limits[-1].quota)
+    raise last
+
+
 def settings() -> dict:
     provider = config.get("ai_provider")
+    all_keys = keys(provider)
     return {
         "provider": provider,
         "model": (config.get(f"{provider}_model") if provider in PROVIDERS else "") or DEFAULT_MODELS.get(provider, ""),
-        "key": config.get("gemini_key") if provider == "gemini" else config.get("anthropic_key") if provider == "claude" else "",
+        "key": all_keys[0] if all_keys else "",
+        "keys": all_keys,
     }
 
 
@@ -558,7 +665,7 @@ def _gemini_error(r: httpx.Response, model: str = "", key: str = "") -> AIError:
             return AIError(_quota_text(quota), temporary=quota.get("limit") != 0, retry_after=quota.get("retry_seconds"),
                            quota=quota)
         return AIError("Gemini: превышен лимит запросов (на бесплатном тарифе — несколько запросов в минуту). Подождите минуту",
-                       temporary=True)
+                       temporary=True, limit=True)
     if r.status_code in (500, 502, 503, 504):
         return AIError("Gemini сейчас перегружен — так бывает в часы пик у Google, обычно проходит за несколько минут. "
                        "Попробуйте позже или выберите в окне «✨ ИИ» другую модель (например, с «lite» в названии)",
@@ -635,15 +742,22 @@ def auto_models(key: str, transport=None, refresh: bool = False) -> list[str]:
     return ranked
 
 
-def _usable(models: list[str]) -> list[str]:
+def _usable(models: list[str], key: str = "") -> list[str]:
     """Модели с исчерпанным лимитом (пока он не сбросился) и недоступные ключу — в конец списка:
-    не тратить на них первую попытку."""
+    не тратить на них первую попытку. При нескольких ключах лимит модели у каждого ключа свой — смотрим лимит
+    именно этого ключа, иначе второй ключ зря начинал бы с модели похуже."""
     statuses = aiprice.model_statuses()
+    fp, several = key_fp(key) if key else "", len(keys("gemini")) > 1
+
+    def limited(m):
+        if several:
+            return _model_hold.get((fp, m), 0) > time.time()
+        return aiprice.limited_now("gemini", m)
 
     def rank(m):
         if (statuses.get(f"gemini:{m}") or {}).get("status") == "unavailable":
             return 2
-        return 1 if aiprice.limited_now("gemini", m) else 0
+        return 1 if limited(m) else 0
     return sorted(models, key=rank)
 
 
@@ -656,8 +770,12 @@ def _model_quota(error: AIError) -> bool:
 AUTO_TRIES, AUTO_OVERLOADED = 8, 3  # сколько моделей пробовать: с исчерпанным лимитом / перегруженных
 
 
-def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool = True,
-            system: str = SYSTEM, fields: tuple = FIELDS, image: tuple | None = None) -> tuple[dict, dict]:
+def _gemini(s: dict, *args, **kwargs) -> tuple[dict, dict]:
+    return _with_keys(_gemini_key, s, *args, **kwargs)
+
+
+def _gemini_key(s: dict, prompt: str, transport=None, action: str = "", switch: bool = True,
+                system: str = SYSTEM, fields: tuple = FIELDS, image: tuple | None = None) -> tuple[dict, dict]:
     """switch=False — только эта модель, без перехода на другие (проверка моделей не должна менять выбор).
     system и fields — задание и поля ответа: по умолчанию карточка товара, для чата — черновик ответа.
     image — (mime, base64): фото товара для «📷 Заполнить по фото»."""
@@ -675,13 +793,13 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
         },
     }
     chosen = s["model"].removeprefix("models/")
-    candidates = [chosen] if chosen else _usable(auto_models(s["key"], transport))
+    candidates = [chosen] if chosen else _usable(auto_models(s["key"], transport), s["key"])
     tried, limited, overloaded, r, last_error = [], [], 0, None, None
     widened = not chosen  # выбранная вручную модель не ответила — дальше пробуем остальные модели ключа
 
     def others(refresh: bool = False) -> list[str]:
         try:
-            return [m for m in _usable(auto_models(s["key"], transport, refresh=refresh)) if m not in tried]
+            return [m for m in _usable(auto_models(s["key"], transport, refresh=refresh), s["key"]) if m not in tried]
         except AIError:
             return []
 
@@ -713,6 +831,7 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
             widened, candidates = True, others(refresh=True)
         elif r.status_code == 429:
             limited.append(last_error)
+            _model_hold[(key_fp(s["key"]), model)] = time.time() + (last_error.retry_after or LIMIT_HOLD)
         elif r.status_code in (500, 502, 503, 504) and overloaded < AUTO_OVERLOADED:
             overloaded += 1
         elif r.status_code == 403:
@@ -727,7 +846,7 @@ def _gemini(s: dict, prompt: str, transport=None, action: str = "", switch: bool
             raise AIError("Gemini: исчерпаны лимиты моделей "
                           f"{', '.join(e.quota.get('model', '') for e in limited if e.quota) or ', '.join(tried)}"
                           + (f" — снова можно через {human_wait(min(waits))}" if waits else ""),
-                          temporary=True, retry_after=min(waits) if waits else None,
+                          temporary=True, retry_after=min(waits) if waits else None, limit=True,
                           quota=next((e.quota for e in reversed(limited) if e.quota), None))
         if limited and not (last_error and last_error.temporary):
             # первая модель упёрлась в лимит, а последние просто недоступны ключу (404/403) — это всё равно «подождать»,
@@ -843,9 +962,13 @@ class _ClaudeSwitch(Exception):
         self.error = error
 
 
-def _claude(s: dict, prompt: str, transport=None, action: str = "",
-            system: str = SYSTEM, fields: tuple = FIELDS, switch: bool = True,
-            image: tuple | None = None) -> tuple[dict, dict]:
+def _claude(s: dict, *args, **kwargs) -> tuple[dict, dict]:
+    return _with_keys(_claude_key, s, *args, **kwargs)
+
+
+def _claude_key(s: dict, prompt: str, transport=None, action: str = "",
+                system: str = SYSTEM, fields: tuple = FIELDS, switch: bool = True,
+                image: tuple | None = None) -> tuple[dict, dict]:
     """switch=False — только выбранная модель (проверка моделей не должна переходить на другие)."""
     client = _claude_client(s["key"], transport)
     chain = [s["model"]] + ([m for m in CLAUDE_CHAIN if m != s["model"]] if switch else [])
@@ -895,9 +1018,9 @@ def _claude_once(client, s: dict, model: str, prompt: str, action: str, system: 
     if model in FALLBACK_MODELS:
         params.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
 
-    def fail(message: str, temporary: bool = False, switchable: bool = False) -> Exception:
+    def fail(message: str, temporary: bool = False, switchable: bool = False, limit: bool = False) -> Exception:
         _record("claude", model, action, ok=False, error=message)
-        error = AIError(message, temporary=temporary)
+        error = AIError(message, temporary=temporary, limit=limit)
         return _ClaudeSwitch(error) if switchable and has_next else error
 
     def limits_of(exc) -> dict:
@@ -915,7 +1038,7 @@ def _claude_once(client, s: dict, model: str, prompt: str, action: str, system: 
     except anthropic.NotFoundError:
         raise fail(f"Claude: модель {model} не найдена — выберите другую в окне «✨ ИИ»", switchable=True)
     except anthropic.RateLimitError as exc:
-        raise fail(_claude_limit_text(limits_of(exc)), temporary=True, switchable=True)
+        raise fail(_claude_limit_text(limits_of(exc)), temporary=True, switchable=True, limit=True)
     except anthropic.BadRequestError as exc:
         raise fail(f"Claude отклонил запрос: {exc.message}")
     except anthropic.APIStatusError as exc:

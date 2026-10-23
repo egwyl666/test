@@ -60,6 +60,54 @@ def get_settings():
     return _settings_view()
 
 
+# ---------- ключи ИИ: основной и запасные (2.30.0) ----------
+
+def _ai_keys_view() -> dict:
+    return {p: ai.key_states(p) for p in ai.KEY_SETTINGS} | {"max": ai.MAX_KEYS}
+
+
+def _save_keys(provider: str, all_keys: list[str]) -> None:
+    primary, extra = ai.KEY_SETTINGS[provider]
+    with db.tx():
+        if not config.from_env(primary):
+            db.set_setting(primary, all_keys[0] if all_keys else "")
+            all_keys = all_keys[1:]
+        else:  # основной задан переменной Windows — в «Настройках» только запасные
+            all_keys = [k for k in all_keys if k != config.get(primary)]
+        db.set_setting(extra, json.dumps(all_keys))
+
+
+@router.get("/api/settings/ai-keys")
+def ai_keys():
+    return _ai_keys_view()
+
+
+@router.post("/api/settings/ai-keys")
+def add_ai_key(provider: str = Body(...), key: str = Body(...)):
+    if provider not in ai.KEY_SETTINGS:
+        raise HTTPException(400, "Неизвестный провайдер ИИ")
+    value = ai.clean_key(key)
+    if not value:
+        raise HTTPException(400, "Вставьте ключ")
+    current = ai.keys(provider)
+    if value in current:
+        raise HTTPException(400, "Этот ключ уже есть в списке")
+    if len(current) >= ai.MAX_KEYS:
+        raise HTTPException(400, f"Не больше {ai.MAX_KEYS} ключей")
+    _save_keys(provider, [*current, value])
+    aiprice.clear_key_error(provider)
+    return _ai_keys_view() | {"warning": ai.key_warning(provider, value)}
+
+
+@router.delete("/api/settings/ai-keys")
+def delete_ai_key(provider: str, n: int):
+    current = ai.keys(provider) if provider in ai.KEY_SETTINGS else []
+    if not 0 <= n < len(current):
+        raise HTTPException(404, "Такого ключа нет")
+    _save_keys(provider, current[:n] + current[n + 1:])
+    return _ai_keys_view()
+
+
 @router.post("/api/settings")
 def save_settings(data: dict = Body(...)):
     """Всё или ничего: ошибка в одном поле не оставляет половину настроек сохранённой."""

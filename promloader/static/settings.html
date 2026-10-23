@@ -235,6 +235,7 @@
           <input id="gemini-key" name="gemini_key" type="password" placeholder="вставьте новый ключ, чтобы заменить" autocomplete="new-password"></label>
         <p class="small muted" style="margin-top:-6px">Ключ бесплатно создаётся в <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a> → «Get API key».
           На бесплатном тарифе есть лимит запросов в минуту и в день, и Google может использовать запросы для улучшения своих моделей.</p>
+        <div class="ai-keys-block" data-provider="gemini"></div>
         <label class="field"><span>Модель <span class="muted" id="gemini-model-used"></span></span><input id="gemini-model" name="gemini_model" list="gemini-models" placeholder="авто — программа выберет сама (рекомендуется)"></label>
         <datalist id="gemini-models"></datalist>
       </div>
@@ -242,12 +243,14 @@
         <label class="field"><span>API-ключ Anthropic <span class="muted" id="anthropic-state"></span></span>
           <input id="anthropic-key" name="anthropic_key" type="password" placeholder="sk-ant-…" autocomplete="new-password"></label>
         <p class="small muted" style="margin-top:-6px">Ключ создаётся в <a href="https://platform.claude.com/" target="_blank" rel="noopener">консоли Anthropic</a>; оплата по использованию.</p>
+        <div class="ai-keys-block" data-provider="claude"></div>
         <label class="field"><span>Модель</span><input id="claude-model" name="claude_model" list="claude-models"
           placeholder="claude-opus-5-5"></label>
         <datalist id="claude-models"></datalist>
       </div>
-      <label class="field"><span>Массовый ИИ: запросов в минуту <span class="muted">(пусто — по умолчанию: 8 для бесплатного Gemini, 30 для Claude)</span></span>
+      <label class="field"><span>Массовый ИИ: запросов в минуту с одного ключа <span class="muted">(пусто — по умолчанию: 8 для бесплатного Gemini, 30 для Claude)</span></span>
         <input id="ai-rate" inputmode="numeric" style="max-width:160px"></label>
+      <div style="margin-bottom:14px"><span class="field-label">Массовый ИИ: сколько запросов сразу</span><div id="settings-threads"></div></div>
       <div class="toolbar">
         <button class="btn primary" id="ai-save">Сохранить</button>
         <button class="btn" id="ai-check">Проверить</button>
@@ -567,7 +570,53 @@
       $("#claude-model").value = s.claude_model;
       $("#ai-rate").value = s.ai_rate || "";
       showProvider();
+      loadAiKeys();
     }
+
+    // Ключи ИИ (2.30.0): основной — поле выше, запасные — списком. Упрётся ключ в лимит — программа сама возьмёт
+    // следующий; в многопоточном массовом ИИ каждый ключ — свой поток.
+    const KEY_STATE = { ok: ["ok-text", "работает"], limit: ["warn-text", "лимит"], key: ["err-text", "не принят"] };
+    async function loadAiKeys() {
+      let k, st;
+      try { [k, st] = await Promise.all([api("/api/settings/ai-keys"), api("/api/ai/status")]); } catch (err) { toast(err.message, "error"); return; }
+      $$(".ai-keys-block").forEach((box) => {
+        const list = k[box.dataset.provider] || [];
+        box.innerHTML = `<div class="small" style="margin-bottom:4px"><b>Ключи (${list.length} из ${k.max})</b>
+            <span class="muted">— упрётся один в лимит, программа сама перейдёт на следующий</span></div>
+          <div class="ai-keys">${list.map((x) => {
+            const [cls, label] = KEY_STATE[x.state] || ["muted", x.state];
+            return `<div class="ai-key-row"><code translate="no">${esc(x.mask)}</code>
+              <span class="small muted">${x.n === 0 ? "основной" : `запасной ${x.n}`}</span>
+              <span class="small ${cls}" title="${esc(x.message)}">${esc(label)}${x.wait ? ` · ${esc(x.wait)}` : ""}</span>
+              <span class="spacer"></span>
+              <button type="button" class="btn small" data-key-del="${x.n}" title="Удалить ключ">✕</button></div>`;
+          }).join("")}</div>
+          <div class="row" style="align-items:center;gap:8px;margin-bottom:14px">
+            <input type="password" class="ai-key-new" placeholder="ещё один ключ" autocomplete="new-password" style="min-width:180px">
+            <button type="button" class="btn small" data-key-add style="flex:none">+ Добавить ключ</button></div>`;
+      });
+      $("#settings-threads").innerHTML = parallelSwitch(st);
+    }
+    document.addEventListener("click", async (e) => {
+      const add = e.target.closest("[data-key-add]");
+      const del = e.target.closest("[data-key-del]");
+      const box = (add || del) && (add || del).closest(".ai-keys-block");
+      if (!box) return;
+      const provider = box.dataset.provider;
+      try {
+        if (add) {
+          const input = box.querySelector(".ai-key-new");
+          const r = await api("/api/settings/ai-keys", { method: "POST", json: { provider, key: input.value } });
+          toast(r.warning || "Ключ добавлен", r.warning ? "error" : "ok");
+        } else {
+          if (!confirm("Удалить этот ключ из программы?")) return;
+          await api(`/api/settings/ai-keys?provider=${provider}&n=${del.dataset.keyDel}`, { method: "DELETE" });
+        }
+        const s = await api("/api/settings");
+        fillAi(s);
+        refreshAiMeta();
+      } catch (err) { toast(err.message, "error"); }
+    });
 
     async function save(data, section = () => {}) {
       try {

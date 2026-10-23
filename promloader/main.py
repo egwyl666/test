@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -299,37 +300,59 @@ async def orders_worker(stop: asyncio.Event) -> None:
 
 
 async def ai_worker(stop: asyncio.Event) -> None:
-    """Массовый ИИ: по одному товару, не чаще лимита провайдера; при 429 — пауза на минуту."""
-    pacer = aibulk.Pacer()
+    """Массовый ИИ: один поток или несколько (по потоку на ключ, aibulk.streams), у каждого ключа свой темп;
+    лимит у всех ключей (429) — общая пауза до сброса."""
+    pacers = aibulk.Pacers()
+    busy: dict[int, asyncio.Task] = {}  # номер потока → его запрос в работе
+    hold_until = 0.0
+    stop_wait = asyncio.create_task(stop.wait())
     while not stop.is_set():
         delay = 3.0
         try:
-            if not db.paused() and await asyncio.to_thread(aibulk.has_work):
-                wait = pacer.wait_time()
-                if wait > 0:
-                    delay = wait
-                else:
+            for slot, task in list(busy.items()):
+                if not task.done():
+                    continue
+                busy.pop(slot)
+                try:
+                    result = task.result()
+                except Exception:
+                    log.exception("Сбой массового ИИ")
+                    continue
+                if result == "rate_limited":
+                    # лимит на сутки ждём до сброса (но проверяем раз в полчаса), перегрузку — минуту
+                    err = aibulk.last_limit
+                    pause = min(max(aibulk.RATE_LIMIT_PAUSE, (err.retry_after or 0) if err else 0), 1800)
+                    hold_until = time.monotonic() + pause
+                    aibulk.pause_running(f"{err or 'ИИ-сервис занят'} — продолжу сам через {ai.human_wait(pause)}")
+                elif result == "skipped":
+                    pacers.for_slot(slot).last = 0.0  # пропуск не тратит лимит
+                elif result in ("done", "error") and time.monotonic() >= hold_until:
+                    aibulk.pause_running("")
+            now = time.monotonic()
+            if now < hold_until:
+                delay = hold_until - now
+            elif not db.paused() and await asyncio.to_thread(aibulk.has_work):
+                waits = []
+                for slot in range(aibulk.streams()):
+                    if slot in busy:
+                        continue
+                    pacer = pacers.for_slot(slot)
+                    wait = pacer.wait_time()
+                    if wait > 0:
+                        waits.append(wait)
+                        continue
                     pacer.mark()
-                    result = await asyncio.to_thread(aibulk.process_one)
-                    if result == "rate_limited":
-                        # лимит на сутки ждём до сброса (но проверяем раз в полчаса), перегрузку — минуту
-                        err = aibulk.last_limit
-                        delay = min(max(aibulk.RATE_LIMIT_PAUSE, (err.retry_after or 0) if err else 0), 1800)
-                        aibulk.pause_running(f"{err or 'ИИ-сервис занят'} — продолжу сам через {ai.human_wait(delay)}")
-                    elif result == "skipped":
-                        pacer.last = 0.0  # пропуск не тратит лимит
-                        delay = 0.05
-                    else:
-                        aibulk.pause_running("")
-                        delay = 0.2
-            else:
+                    busy[slot] = asyncio.create_task(asyncio.to_thread(aibulk.process_one, None, slot))
+                delay = min(waits) if waits else 0.5
+            elif not busy:
                 await asyncio.to_thread(aibulk._finish_jobs)
         except Exception:
             log.exception("Сбой массового ИИ")
-        try:
-            await asyncio.wait_for(stop.wait(), timeout=delay)
-        except asyncio.TimeoutError:
-            pass
+        # ждём паузу, остановку программы или конец любого запроса — что раньше
+        await asyncio.wait({stop_wait, *busy.values()}, timeout=max(0.05, delay), return_when=asyncio.FIRST_COMPLETED)
+    stop_wait.cancel()
+    if busy:
+        await asyncio.wait(busy.values(), timeout=30)
 
 
 async def schedule_worker(stop: asyncio.Event) -> None:
