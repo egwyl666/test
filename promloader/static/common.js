@@ -81,6 +81,8 @@ async function loadMeta() {
   if (link) link.innerHTML = `Заказы${META.orders_unseen ? ` <span class="nav-badge">${META.orders_unseen}</span>` : ""}`;
   const chatLink = document.querySelector('.topbar nav a[href="/chat"]');
   if (chatLink) chatLink.innerHTML = `Чат${META.chat_unseen ? ` <span class="nav-badge">${META.chat_unseen}</span>` : ""}`;
+  const reviewsLink = document.querySelector('.topbar nav a[href="/reviews"]');
+  if (reviewsLink) reviewsLink.innerHTML = `Отзывы${META.reviews_unseen ? ` <span class="nav-badge">${META.reviews_unseen}</span>` : ""}`;
   for (const [href, n] of [["/orders", META.orders_unseen], ["/chat", META.chat_unseen]]) {  // счётчики и в нижней панели
     const icon = document.querySelector(`.bottom-nav a[href="${href}"] .bn-icon`);
     if (!icon) continue;
@@ -533,6 +535,7 @@ const NAV = [
   ["/", "Товары", ["/product"]],
   ["/orders", "Заказы"],
   ["/chat", "Чат"],
+  ["/reviews", "Отзывы"],
   ["/suppliers", "Поставщики", ["/supplier"]],
   ["/reports", "Отчёты"],
   ["/pricing", "Наценка", [], true],

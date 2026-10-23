@@ -37,9 +37,12 @@ EVENTS = {
     "prom_sync": "синхронизация с Prom: товары добавили или удалили прямо в кабинете",
     "parcel_waiting_alert": "посылка ждёт на отделении 3+ дня, а покупателю ещё не напомнили",
     "low_stock": "товар заканчивается: остаток не больше порога",
+    "review": "новый отзыв о магазине на Prom (негативный — заметно)",
+    "site_message": "сообщение покупателя через сайт Prom («Написать продавцу»)",
 }
 DEFAULT_EVENTS = ["order", "chat", "sync_failed", "supplier_failed", "schedule_missed", "phone", "parcel_waiting",
-                  "parcel_refused", "daily_summary", "ai_bulk", "margin_alert", "prom_sync", "parcel_waiting_alert", "low_stock"]
+                  "parcel_refused", "daily_summary", "ai_bulk", "margin_alert", "prom_sync", "parcel_waiting_alert", "low_stock",
+                  "review", "site_message"]
 
 
 class NotifyError(Exception):
@@ -120,7 +123,7 @@ def _migrate_single_chat() -> None:
 # события, появившиеся после того, как получатели уже были добавлены: включаем их всем один раз
 # (иначе новый адрес для телефона не приходил тем, кто подключил Telegram раньше)
 NEW_EVENTS = {1: ["phone", "parcel_waiting", "parcel_refused"], 2: ["daily_summary"], 3: ["ai_bulk"], 4: ["margin_alert"], 5: ["prom_sync"],
-              6: ["parcel_waiting_alert"], 7: ["low_stock"]}
+              6: ["parcel_waiting_alert"], 7: ["low_stock"], 8: ["review", "site_message"]}
 
 
 def _add_new_events() -> None:

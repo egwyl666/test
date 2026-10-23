@@ -62,6 +62,8 @@ RULES = [
     # ИИ — отдельное право. Адреса с номером товара — регулярным выражением (начинается с «^»)
     (r"^/api/products/\d+/ai$", "view", "ai"),
     (r"^/api/chat/rooms/[^/]+/ai-draft$", "view", "ai"),
+    (r"^/api/reviews/\d+/ai-draft$", "view", "ai"),
+    (r"^/api/reviews/messages/\d+/ai-draft$", "view", "ai"),
     ("/api/ai/bulk", "view", ("catalog", "ai")),
     (r"^/api/orders/\d+/remind$", "view", ("orders", "chat")),  # напоминание о посылке — это сообщение в чат
     (r"^/api/orders/\d+/prepay-request$", "view", ("orders", "chat")),  # просьба о предоплате — тоже  # массовый ИИ меняет товары — нужны оба права
@@ -90,6 +92,9 @@ RULES = [
     ("/api/orders", "view", "orders"),
     ("/api/chat/refresh", "view", "view"),  # «↻ Проверить новые» только читает Prom — и роли «просмотр»
     ("/api/chat", "view", "chat"),
+    ("/api/reviews/refresh", "view", "view"),  # «↻ Проверить» только читает Prom
+    ("/api/reviews/seen", "view", "view"),     # «просмотрено» — отметка в программе, на Prom ничего не меняет
+    ("/api/reviews", "view", "chat"),          # ответы покупателям — то же право, что чат
     ("/api/np", "view", "orders"),
     ("/api/meta", "view", "view"),
     ("/api/today", "view", "view"),

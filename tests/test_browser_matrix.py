@@ -68,6 +68,12 @@ def shop(data_dir):
                   "VALUES ('r1', 'Олена', 'Добрий день!', ?, 1, ?)", (db.now(), db.now()))
         c.execute("INSERT INTO chat_messages (id, room_ident, sender, body, is_my, created_at, type, status) "
                   "VALUES (1, 'r1', 'buyer', 'Добрий день!', 0, ?, 'message', 'unread')", (db.now(),))
+        c.execute("INSERT INTO reviews (id, rating, author, text, tags, products, order_id, reply, created_at) VALUES "
+                  "(1, 2, 'Ірина', 'Довго відправляли', '[\"Швидко\"]', ?, 101, '', ?), "
+                  "(2, 5, 'Олег', 'Супер', '[]', '[]', NULL, 'Дякуємо!', ?)",
+                  (f'[{{"prom_id": 1, "name": "Ялинка", "product_id": {ids[0]}}}]', db.now(), db.now()))
+        c.execute("INSERT INTO site_messages (id, client, phone, subject, text, created_at) "
+                  "VALUES (1, 'Олег', '+380671112233', 'Питання', 'Чи є в наявності?', ?)", (db.now(),))
     orders.store([prom_order(101), prom_order(102, status="received"), prom_order(103, status="delivered")],
                  notify_new=False)
     branding.save_logo(make_image(size=(300, 120), color="#e6a700"))  # жёлтый логотип — цвет кнопок должен читаться
@@ -79,7 +85,7 @@ def shop(data_dir):
         if srv.started:
             break
         time.sleep(0.05)
-    pages = ["/today", "/", "/?status=error", f"/product?id={ids[1]}", "/orders", "/chat", "/suppliers",
+    pages = ["/today", "/", "/?status=error", f"/product?id={ids[1]}", "/orders", "/chat", "/reviews", "/suppliers",
              f"/supplier?id={sup}", "/reports", "/pricing", "/categories", "/changes", "/import", f"/diagnose?id={ids[2]}",
              "/support", "/settings"]
     yield f"http://127.0.0.1:{port}", pages

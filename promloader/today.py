@@ -5,7 +5,7 @@
 
 from datetime import datetime, timedelta, timezone
 
-from . import chat, db, products, reports, stock, suppliers
+from . import chat, db, products, reports, reviews, stock, suppliers
 
 ACTIVE = ("pending", "received", "paid")
 
@@ -32,6 +32,11 @@ def attention() -> list[dict]:
          _n("SELECT COUNT(*) AS n FROM shipments WHERE stage = 'arrived' AND arrived_at != '' AND arrived_at <= ?",
             (waiting_since,)), "/orders", "warn"),
         ("chat", "💬", "Непрочитанные сообщения покупателей", chat.unseen(), "/chat", "warn"),
+        ("site_messages", "📨", "Сообщения с сайта Prom без ответа", reviews.unread_messages(), "/reviews?tab=messages", "warn"),
+        ("reviews_negative", "⚠", "Негативные отзывы без ответа",
+         _n(f"SELECT COUNT(*) AS n FROM reviews WHERE rating <= {reviews.NEGATIVE} AND reply = ''"), "/reviews?f=negative", "bad"),
+        ("reviews_new", "🔔", "Новые отзывы о магазине", _n("SELECT COUNT(*) AS n FROM reviews WHERE seen = 0"),
+         "/reviews?f=new", "info"),
         ("sync_errors", "⚠", "Товары с ошибкой отправки на Prom", status.get("error", 0), "/?status=error", "bad"),
         ("ready_send", "🚀", "Готовы к отправке на Prom", status.get("ready", 0), "/?status=ready", "good"),
         ("ready_promote", "✓", "Черновики готовы для Prom", ready.get("ready_to_promote", 0),

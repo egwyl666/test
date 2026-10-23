@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Отзывы — Prom Loader</title>
+  <script src="/static/i18n-uk.js"></script>
+  <script src="/static/i18n.js"></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="/static/icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#6d3fe0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Prom Loader">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+</head>
+<body>
+  <header class="topbar">
+    <a class="logo" href="/">Prom<span>Loader</span></a>
+    <nav></nav>
+  </header>
+
+  <main>
+    <div class="toolbar">
+      <h1 style="margin:0">Отзывы и вопросы</h1>
+      <span class="spacer"></span>
+      <span class="small muted" id="poll-info"></span>
+      <button class="btn" id="refresh">↻ Проверить</button>
+    </div>
+    <div id="off" class="panel hidden">Чтобы видеть отзывы и сообщения, укажите API-токен Prom в <a href="/settings">Настройках</a>.</div>
+    <div class="err-text" id="error"></div>
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="reviews">Отзывы <span class="nav-badge hidden" id="reviews-badge"></span></button>
+      <button class="tab" data-tab="messages">Сообщения с сайта <span class="nav-badge hidden" id="messages-badge"></span></button>
+    </div>
+
+    <section id="tab-reviews">
+      <div class="kpis" id="review-kpis"></div>
+      <div class="toolbar" style="margin:12px 0">
+        <div class="chips" id="review-filters">
+          <button class="chip active" data-f="">Все</button>
+          <button class="chip" data-f="no_reply">Без ответа</button>
+          <button class="chip" data-f="negative">Негативные</button>
+          <button class="chip" data-f="with_text">С текстом</button>
+          <button class="chip" data-f="new">Новые</button>
+        </div>
+        <span class="spacer"></span>
+        <a class="btn small hidden" id="public-link" target="_blank" rel="noopener">Отзывы на Prom ↗</a>
+      </div>
+      <p class="small muted">Prom не даёт отвечать на отзывы через программу: подготовьте ответ здесь (сами или ✨ ИИ),
+        нажмите «Скопировать» и опубликуйте его в кабинете Prom — после следующей проверки ответ появится здесь.</p>
+      <div id="reviews"></div>
+    </section>
+
+    <section id="tab-messages" class="hidden">
+      <p class="small muted">Вопросы покупателей из формы «Написать продавцу» на Prom. Ответ уходит покупателю прямо из
+        программы (до 1000 символов).</p>
+      <div id="messages"></div>
+    </section>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/reviews.js"></script>
+</body>
+</html>

@@ -1116,3 +1116,19 @@ main.refused .toolbar { flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   border-radius: 8px; background: var(--panel-2); }
 .ai-key-row code { font-size: 13px; }
 .ai-key-row .spacer { flex: 1; }
+
+/* «Отзывы и вопросы» (2.31.0) */
+.review { margin-bottom: 10px; }
+.review-new { border-color: var(--accent); }
+.review-bad { border-left: 3px solid var(--err); }
+.review-text { margin: 6px 0; line-height: 1.5; overflow-wrap: anywhere; }
+.review-tags { margin: 4px 0; }
+.review-tags .chip { cursor: default; font-size: 12px; }
+.review-reply { margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+.review-answer { margin-top: 8px; }
+.review-answer textarea { width: 100%; }
+.stars { color: var(--warn); letter-spacing: 1px; font-size: 15px; white-space: nowrap; }
+.stars .stars-off { color: var(--muted); }
+.stars.r1, .stars.r2 { color: var(--err); }
+.kpi.warn .kpi-value { color: var(--warn-strong); }
+.kpi.bad .kpi-value { color: var(--err); }

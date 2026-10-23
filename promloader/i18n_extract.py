@@ -25,7 +25,7 @@ SQL = re.compile(r"\s*(SELECT|UPDATE|INSERT|DELETE|CREATE|ALTER|WITH)\s", re.I)
 PY_SKIP_MODULES = {"i18n_extract.py", "tray.py", "launcher.py", "__main__.py"}
 PY_SKIP_NAMES = {
     "STAGE_UA", "ORDER_UA",              # chat.py — фразы покупателю (по-украински)
-    "SYSTEM", "CHECK_PROMPT", "CHAT_SYSTEM",  # ai.py, aicategory.py — задания для модели
+    "SYSTEM", "CHECK_PROMPT", "CHAT_SYSTEM", "REVIEW_SYSTEM",  # ai.py, aicategory.py, reviews.py — задания для модели
     "HINTS", "VIDEO_HINT",               # excel.py — распознавание заголовков колонок
     "_presence_words", "CURRENCY_CODES",  # products.py — распознавание значений из прайсов
     "EXPORT_COLUMNS",                    # products.py — заголовки файла Excel
@@ -38,7 +38,9 @@ PY_SKIP_NAMES = {
     "XLSX_HEADERS",                      # stock.py — колонки файла заказа поставщику
 }
 PY_SKIP_RETURNS = {"build_prompt", "build_batch_prompt"}     # ai.py, aicategory.py — что возвращается, уходит модели
-PY_SKIP_FUNCS = {"ai_draft",           # chat.py — текст для модели, а не для экрана
+PY_SKIP_FUNCS = {"ai_draft",           # chat.py, reviews.py — текст для модели, а не для экрана
+                 "ai_message_draft",   # reviews.py — текст для модели
+                 "stars",              # reviews.py — звёзды для Telegram (Telegram — по-русски)
                  "prompt_for",          # aicategory.py — задание для модели
                  "build_batch_prompt",  # ai.py — задание для модели
                  "ttn_message",         # chat.py — сообщение покупателю по-украински

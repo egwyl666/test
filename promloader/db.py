@@ -293,6 +293,40 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
     updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chat_rooms_unread ON chat_rooms(unread);
+-- отзывы о магазине с Prom (2.31.0): читаются с публичной страницы отзывов, ответ магазина — comments на Prom
+CREATE TABLE IF NOT EXISTS reviews (
+    id            INTEGER PRIMARY KEY,           -- номер отзыва на Prom
+    rating        INTEGER,                       -- 1..5; NULL — опубликован без оценки
+    author        TEXT NOT NULL DEFAULT '',
+    text          TEXT NOT NULL DEFAULT '',
+    tags          TEXT NOT NULL DEFAULT '[]',
+    products      TEXT NOT NULL DEFAULT '[]',    -- [{prom_id, name, product_id}]
+    order_id      INTEGER,                       -- номер заказа Prom (= orders.id)
+    reply         TEXT NOT NULL DEFAULT '',      -- ответ магазина на Prom
+    reply_at      TEXT NOT NULL DEFAULT '',
+    draft         TEXT NOT NULL DEFAULT '',      -- подготовленный в программе ответ (вставить на Prom)
+    seen          INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL DEFAULT '',
+    first_seen_at TEXT NOT NULL DEFAULT '',
+    updated_at    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS reviews_created ON reviews(created_at);
+-- сообщения с сайта (форма «Написать продавцу»): /messages/list, ответ — /messages/reply
+CREATE TABLE IF NOT EXISTS site_messages (
+    id              INTEGER PRIMARY KEY,
+    client          TEXT NOT NULL DEFAULT '',
+    phone           TEXT NOT NULL DEFAULT '',
+    subject         TEXT NOT NULL DEFAULT '',
+    text            TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'unread',
+    prom_product_id INTEGER,
+    product_id      INTEGER,
+    reply           TEXT NOT NULL DEFAULT '',
+    replied_at      TEXT NOT NULL DEFAULT '',
+    replied_by      TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT '',
+    updated_at      TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint    TEXT NOT NULL UNIQUE,

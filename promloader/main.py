@@ -45,6 +45,7 @@ from . import (
     r2,
     rates,
     reports,
+    reviews,
     schedule,
     stock,
     suppliers,
@@ -69,6 +70,7 @@ PAGES = {
     "/suppliers": "suppliers.html", "/supplier": "supplier.html", "/pricing": "pricing.html", "/orders": "orders.html",
     "/support": "support.html", "/diagnose": "diagnose.html", "/changes": "changes.html",
     "/categories": "categories.html", "/reports": "reports.html", "/chat": "chat.html", "/today": "today.html",
+    "/reviews": "reviews.html",
 }
 SUPPLIER_CHECK_SECONDS = 30
 MAINTENANCE_SECONDS = 3600
@@ -134,6 +136,7 @@ async def lifespan(app: FastAPI):
                  asyncio.create_task(support_worker(stop)), asyncio.create_task(r2_worker(stop)),
                  asyncio.create_task(rates_worker(stop)), asyncio.create_task(notify_worker(stop)),
                  asyncio.create_task(chat_worker(stop)), asyncio.create_task(phone_worker(stop)),
+                 asyncio.create_task(reviews_worker(stop)),
                  asyncio.create_task(np_worker(stop)), asyncio.create_task(catalog_worker(stop))]
     try:
         yield
@@ -226,6 +229,28 @@ async def chat_worker(stop: asyncio.Event) -> None:
             log.exception("Сбой опроса чата")
         try:
             await asyncio.wait_for(stop.wait(), timeout=chat.POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def reviews_worker(stop: asyncio.Event) -> None:
+    """Раз в 30 минут — отзывы о магазине (публичная страница Prom) и сообщения с сайта (API)."""
+    await asyncio.sleep(20)  # не в первую же секунду запуска — вместе с заказами и чатом
+    while not stop.is_set():
+        if reviews.enabled() and not db.paused():
+            try:
+                await asyncio.to_thread(reviews.poll_reviews)
+            except Exception as exc:
+                log.warning("Отзывы Prom: %s", exc)
+            try:
+                async with sync.make_client() as client:
+                    await reviews.poll_messages(client)
+                db.set_setting("site_messages_error", "")
+            except Exception as exc:
+                db.set_setting("site_messages_error", str(exc))
+                log.warning("Сообщения с сайта Prom: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=reviews.POLL_SECONDS)
         except asyncio.TimeoutError:
             pass
 

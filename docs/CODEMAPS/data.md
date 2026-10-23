@@ -11,6 +11,8 @@ SQLite `promloader.sqlite3` в папке данных (`PROMLOADER_DATA`), ря
 | `prom_categories` | Справочник категорий каталога Prom: `caption`, `path`, `url` |
 | `group_categories` | Правило «группа → категория Prom» |
 | `chat_rooms`, `chat_messages` | Копия чата Prom: комната (`room_ident`, покупатель, последнее сообщение, `unread`, товар, заказ) и сообщения (`is_my`, `type` message / attachment / context) |
+| `reviews` | Отзывы о магазине с публичной страницы Prom: `rating` (NULL — без оценки), `author`, `text`, `tags`, `products` (JSON `[{prom_id, name, product_id}]`), `order_id`, `reply` (ответ магазина на Prom), `draft` (подготовленный в программе), `seen`; удалённые на Prom удаляются |
+| `site_messages` | Сообщения «Написать продавцу» (`/messages/list`): клиент, телефон, тема, текст, `status` (unread/read), товар, `reply`/`replied_at`/`replied_by` |
 | `images` | Фото товара: `file` (в `uploads/`) или `url`, `position` |
 | `sync_jobs` | Задачи выгрузки: `kind` (`import`/`quick`), `status` (`pending`/`waiting`/`done`/`failed`), `products` (JSON {id: revision}), `import_id`, `attempts`, `next_run_at`, `result`, `started_at`, `sent` |
 | `suppliers` | Поставщик: источник, `mapping`, `header_row`, `prefix`, `interval_hours`, `new_status`, `auto_sync`, `missing_action`, `merge_by_barcode`, `rate_mode`/`rate_currency`/`rate_value`/`rate_add` (свой курс — только для `rate_currency`), `clean_names` |

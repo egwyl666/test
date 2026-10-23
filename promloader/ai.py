@@ -591,8 +591,9 @@ CHAT_SYSTEM = """Ты помогаешь продавцу интернет-ма�
 Верни JSON с одним полем reply — текст ответа."""
 
 
-def chat_reply(context: str, transport=None) -> tuple[str, dict]:
-    """Черновик ответа покупателю (не отправляется — его правит и отправляет человек). Расход пишется в ai_usage."""
+def chat_reply(context: str, transport=None, system: str = CHAT_SYSTEM, action: str = "chat_reply") -> tuple[str, dict]:
+    """Черновик ответа покупателю (не отправляется — его правит и отправляет человек). Расход пишется в ai_usage.
+    system — задание ИИ: по умолчанию чат, для отзыва — публичный ответ (reviews.REVIEW_SYSTEM)."""
     s = settings()
     if not s["provider"]:
         raise AIError("ИИ не подключён: выберите провайдера и вставьте ключ в «Настройках»")
@@ -601,7 +602,7 @@ def chat_reply(context: str, transport=None) -> tuple[str, dict]:
     call = _gemini if s["provider"] == "gemini" else _claude if s["provider"] == "claude" else None
     if call is None:
         raise AIError("Неизвестный провайдер ИИ")
-    result, used = call(s, context, transport, "chat_reply", system=CHAT_SYSTEM, fields=("reply",))
+    result, used = call(s, context, transport, action, system=system, fields=("reply",))
     reply = str(result.get("reply") or "").strip()
     if not reply:
         raise AIError("ИИ не предложил ответа — попробуйте ещё раз")

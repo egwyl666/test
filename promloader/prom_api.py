@@ -128,6 +128,16 @@ class PromClient:
     async def chat_mark_read(self, room_id: str, message_id: int) -> dict:
         return await self._chat("POST", "/chat/mark_message_read", json={"room_id": room_id, "message_id": int(message_id)})
 
+    # ---------- сообщения с сайта (форма «Написать продавцу») ----------
+    async def list_messages(self, limit: int = 100) -> list[dict]:
+        return (await self._request("GET", "/messages/list", params={"limit": limit})).get("messages") or []
+
+    async def reply_message(self, message_id: int, text: str) -> dict:
+        return await self._request("POST", "/messages/reply", json={"id": int(message_id), "message": text})
+
+    async def set_message_status(self, ids: list[int], status: str) -> dict:
+        return await self._request("POST", "/messages/set_status", json={"status": status, "ids": [int(i) for i in ids]})
+
     async def list_orders(self, limit: int = 100, last_id: int | None = None, **params) -> dict:
         query = {"limit": limit, **{k: v for k, v in params.items() if v not in (None, "")}}
         if last_id:

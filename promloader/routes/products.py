@@ -71,6 +71,9 @@ def meta(request: Request):
         "missed_schedules": schedule.missed(),
         "orders_unseen": db.query_one("SELECT COUNT(*) AS n FROM orders WHERE seen = 0")["n"],
         "chat_unseen": chat.unseen(),
+        # «Отзывы»: новые отзывы + сообщения с сайта без ответа
+        "reviews_unseen": db.query_one("SELECT COUNT(*) AS n FROM reviews WHERE seen = 0")["n"]
+                          + db.query_one("SELECT COUNT(*) AS n FROM site_messages WHERE status = 'unread'")["n"],
         "paused": db.paused(),
         "ai": _ai_meta(),
         "suppliers": [{"id": r["id"], "name": r["name"]} for r in db.query(
